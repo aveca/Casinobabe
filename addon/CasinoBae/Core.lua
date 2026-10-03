@@ -7,9 +7,22 @@ CasinoBae.rolls={}
 CasinoBae.pendingAction=nil
 CasinoBaeDB=CasinoBaeDB or {queue={}}
 CasinoBaeDB.queue=CasinoBaeDB.queue or {}
+
+local function CasinoBaeEscapeBridgeValue(value)
+ local s=tostring(value or "")
+ return s:gsub("\\","\\\\"):gsub("\t","\\t"):gsub("\n","\\n"):gsub(";","\\;"):gsub("=","\\=")
+end
+
 function CasinoBae:QueueBridgeEvent(name,payload)
+ local fields={}
+ for k,v in pairs(payload or {}) do
+  if type(v)=="string" or type(v)=="number" or type(v)=="boolean" then
+   fields[#fields+1]=CasinoBaeEscapeBridgeValue(k).."="..CasinoBaeEscapeBridgeValue(v)
+  end
+ end
+ table.sort(fields)
  local q=CasinoBaeDB.queue
- q[#q+1]={name=name,state=self.STATE,time=date("%H:%M:%S"),payload=payload or {}}
+ q[#q+1]={name=name,state=self.STATE,time=date("%H:%M:%S"),payload_line=table.concat(fields,";")}
  if #q>200 then table.remove(q,1) end
 end
 
