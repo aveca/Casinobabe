@@ -1,3 +1,31 @@
 <!doctype html>
-<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="CasinoBae World of Warcraft companion"><title>CasinoBae</title></head>
-<body><main><h1>CasinoBae</h1><p>World of Warcraft social casino companion.</p><section id="connection">Addon connection: waiting for a real WoW event.</section></main><script type="module" src="./app.js"></script></body></html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="CasinoBae — plateforme sociale World of Warcraft">
+<title>CasinoBae — WoW Social Casino</title>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<header class="topbar">
+<a class="brand" href="./">Casino<span>Bae</span></a>
+<nav><a href="#games">Jeux</a><a href="#how">Comment ça marche</a><a href="#status">Connexion</a></nav>
+<button id="connect" class="button">Connecter l’addon</button>
+</header>
+<main>
+<section class="hero">
+<div><p class="eyebrow">WORLD OF WARCRAFT · SOCIAL GAMING</p><h1>Le lobby commence<br><span>dans WoW.</span></h1><p class="lead">CasinoBae coordonne les joueurs, les parties et les événements réels observés par l’addon. Aucun résultat inventé.</p><div class="actions"><a class="button" href="#games">Voir les jeux</a><a class="button ghost" href="#how">Découvrir</a></div></div>
+<div class="panel live"><div class="panel-head"><span>LIVE STATUS</span><b id="dot">● OFFLINE</b></div><div class="big-state" id="state">WAITING</div><p id="detail">Installe l’addon CasinoBae puis lance WoW.</p><div class="event"><span>Dernier événement</span><strong id="event">—</strong></div></div>
+</section>
+<section id="games" class="section"><p class="eyebrow">JEUX</p><h2>Des parties simples, confirmées par WoW.</h2><div class="cards">
+<article><span class="icon">🎲</span><h3>WoW Rand</h3><p>Chaque joueur lance son vrai /rand. Les résultats sont enregistrés uniquement après observation de l’événement WoW.</p><button class="button small" data-game="rand">Préparer une partie</button></article>
+<article><span class="icon">👥</span><h3>Lobby</h3><p>Accueille les joueurs, détecte les whispers et garde une liste de participants synchronisée avec l’addon.</p><button class="button small" data-game="lobby">Ouvrir le lobby</button></article>
+<article><span class="icon">⚡</span><h3>Action Required</h3><p>Lorsqu’une action nécessite le joueur, CasinoBae l’affiche clairement puis attend la confirmation réelle de WoW.</p><button class="button small" data-game="action">Voir le principe</button></article>
+</div></section>
+<section id="how" class="section split"><div><p class="eyebrow">WORKFLOW</p><h2>WoW reste la source de vérité.</h2></div><ol class="steps"><li><b>01</b><span>Le joueur rejoint le lobby ou contacte l’organisateur.</span></li><li><b>02</b><span>L’addon observe les événements WoW réels.</span></li><li><b>03</b><span>Le moteur avance l’état uniquement après confirmation.</span></li><li><b>04</b><span>Si une intervention est nécessaire, le statut passe en ACTION_REQUIRED.</span></li></ol></section>
+<section id="status" class="section status"><div><p class="eyebrow">ADDON BRIDGE</p><h2>Connexion locale prête.</h2><p>Cette interface accepte les événements confirmés exposés par l’intégration CasinoBae.</p></div><pre id="payload">{ "state": "WAITING" }</pre></section>
+</main>
+<footer>CasinoBae · World of Warcraft companion · Prototype fonctionnel</footer>
+<script src="./app.js"></script>
+</body></html>
