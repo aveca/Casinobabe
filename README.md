@@ -17,8 +17,11 @@ Dépôt: https://github.com/aveca/Casinobabe
 - Parties /rand basées sur les résultats réellement observés
 - Fin de manche et gagnant
 - ACTION_REQUIRED pour les actions humaines
-- Dashboard web responsive
+- Dashboard web responsive / Dealer Cockpit
 - Démo interactive
+- Guide d’installation + FAQ
+- Sitemap + robots.txt
+- Contrat d’événements documenté dans docs/WEB_PLATFORM.md
 - Workflow GitHub Pages
 
 ## Installation addon
