@@ -1,5 +1,1 @@
-const connection=document.querySelector("#connection");
-const state={connected:false,lastEvent:null};
-function render(){connection.textContent=state.connected?"Addon connection: connected":"Addon connection: waiting for a real WoW event.";}
-window.CasinoBae={receiveAddonEvent(event){state.connected=true;state.lastEvent=event;render();}};
-render();
+const state={connected:false,state:"WAITING",lastEvent:null};const $=s=>document.querySelector(s);function render(){$("#dot").textContent=state.connected?"● ONLINE":"● OFFLINE";$("#dot").style.color=state.connected?"#8ed19a":"#777";$("#state").textContent=state.state;$("#detail").textContent=state.connected?"Addon événementiel connecté.":"Installe l’addon CasinoBae puis lance WoW.";"#event";$("#event").textContent=state.lastEvent?.name||"—";$("#payload").textContent=JSON.stringify(state.lastEvent||{state:state.state},null,2)}window.CasinoBae={receiveAddonEvent(event){state.connected=true;state.state=event?.state||"READY";state.lastEvent=event;render()}};$("#connect").onclick=()=>alert("Le bridge navigateur doit être fourni par l’intégration autorisée. Le site ne simule pas une connexion WoW.");document.querySelectorAll("[data-game]").forEach(b=>b.onclick=()=>document.querySelector("#status").scrollIntoView({behavior:"smooth"}));render();
