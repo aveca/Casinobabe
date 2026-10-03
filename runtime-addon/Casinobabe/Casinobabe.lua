@@ -1432,7 +1432,7 @@ local CasinoShow = {
     else
       print("|cffFFD700Casinobabe|r " .. (variant or "Failed to start show"))
     end
-    return success
+    return success, variant
   end,
   
   StartQuickAd = function(self)
