@@ -31,7 +31,8 @@ end
 
 function CasinoBae:Yell(message)
  if type(message)=="string" and message~="" then
-  self:RequireAction("Utilise /yell manuellement si WoW demande une action matérielle.","YELL",message)
+  SendChatMessage(message,"YELL")
+  self:Emit("YELL_SENT",{message=message})
  end
 end
 
