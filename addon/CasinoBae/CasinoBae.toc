@@ -1,8 +1,8 @@
 ## Interface: 120001
 ## Title: CasinoBae
-## Notes: CasinoBae World of Warcraft companion
+## Notes: Social gaming host companion — WoW authoritative
 ## Author: CasinoBae
-## Version: 0.3.0
+## Version: 0.4.0
 ## SavedVariables: CasinoBaeDB
 
 Core.lua
