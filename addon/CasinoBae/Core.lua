@@ -5,6 +5,13 @@ CasinoBae.players={}
 CasinoBae.lobby={host=nil,players={},game=nil,round=0}
 CasinoBae.rolls={}
 CasinoBae.pendingAction=nil
+CasinoBaeDB=CasinoBaeDB or {queue={}}
+CasinoBaeDB.queue=CasinoBaeDB.queue or {}
+function CasinoBae:QueueBridgeEvent(name,payload)
+ local q=CasinoBaeDB.queue
+ q[#q+1]={name=name,state=self.STATE,time=date("%H:%M:%S"),payload=payload or {}}
+ if #q>200 then table.remove(q,1) end
+end
 
 function CasinoBae:SetState(state,detail)
  self.STATE=state
@@ -15,6 +22,7 @@ end
 function CasinoBae:Emit(name,payload)
  self.lastEvent={name=name,payload=payload,state=self.STATE,time=date("%H:%M:%S")}
  if self.OnEvent then self:OnEvent(self.lastEvent) end
+ self:QueueBridgeEvent(name,payload)
  if self.UI and self.UI.Refresh then self.UI:Refresh() end
 end
 
