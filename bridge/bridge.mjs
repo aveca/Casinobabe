@@ -1,72 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
+import { parseLua } from "./parser.mjs";
 
 const configPath = path.join(process.cwd(), "config.json");
 if (!fs.existsSync(configPath)) {
   console.error("Missing config.json");
   process.exit(1);
 }
-
 const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
 const endpoint = new URL(cfg.eventFunctionPath, cfg.supabaseUrl).toString();
 let sent = new Set();
-
-function unescapeLuaString(value) {
-  return value
-    .replace(/\\(["'\\])/g, "$1")
-    .replace(/\\n/g, "\n")
-    .replace(/\\r/g, "\r")
-    .replace(/\\t/g, "\t");
-}
-
-function parsePayloadLine(line) {
-  const out = {};
-  if (!line) return out;
-  const parts = [];
-  let current = "";
-  let escaped = false;
-  for (const ch of line) {
-    if (escaped) { current += ch; escaped = false; continue; }
-    if (ch === "\\") { escaped = true; continue; }
-    if (ch === ";") { parts.push(current); current = ""; continue; }
-    current += ch;
-  }
-  parts.push(current);
-  for (const part of parts) {
-    const i = part.indexOf("=");
-    if (i <= 0) continue;
-    out[part.slice(0, i)] = part.slice(i + 1);
-  }
-  return out;
-}
-
-function extractField(record, field) {
-  const re = new RegExp(
-    "\\[\\s*[\\\"']" + field + "[\\\"']\\s*\\]\\s*=\\s*[\\\"']((?:\\\\.|[^\\\"'\\\\])*)[\\\"']",
-    "m"
-  );
-  const m = record.match(re);
-  return m ? unescapeLuaString(m[1]) : "";
-}
-
-function parseLua(text) {
-  const records = [];
-  const queueMatch = text.match(/(?:\\[\"queue\\"]|queue)\\s*=\\s*{([\\s\\S]*?)}\\s*[,}]/m);
-  if (!queueMatch) return records;
-
-  const body = queueMatch[1];
-  const recordRe = /{([\\s\\S]*?)}\\s*,?/g;
-  let m;
-  while ((m = recordRe.exec(body))) {
-    const record = m[1];
-    const name = extractField(record, "name");
-    const state = extractField(record, "state");
-    const time = extractField(record, "time");
-    const payloadLine = extractField(record, "payload_line");
-    if (name) records.push({ name, state, time, payload: parsePayloadLine(payloadLine) });
-  }
-  return records;
-}
 
 async function send(event) {
   const key = JSON.stringify(event);
