@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#08070b"><meta name="description" content="CasinoBae — Dealer cockpit and session monitor."><title>CasinoBae — Dealer Cockpit</title><link rel="stylesheet" href="./styles.css"></head>
+<body>
+<header class="nav"><a class="logo" href="./"><span class="logo-mark">CB</span><span>Casino<span class="pink">Bae</span></span></a><nav><a href="./">Home</a><a href="./demo.html">Demo</a><a href="./sales.html">Download</a></nav><span class="status-badge">DEMO / BRIDGE READY</span></header>
+<main>
+<section class="section" style="padding-bottom:45px"><span class="eyebrow">CASINOBAE / DEALER COCKPIT</span><h1 style="font-size:clamp(56px,7vw,92px)">Host.<br><em>Control.</em></h1><p class="hero-text">Un cockpit web pensé pour suivre les événements réellement observés par l'addon. Cette page ne fabrique jamais un trade, un payout ou un succès WoW.</p>
+<div class="lobby-shell" style="margin-top:40px">
+<div class="lobby-bar"><div><span class="live-dot"></span><strong id="bridge">BRIDGE OFFLINE</strong><small id="bridgeDetail">Aucun bridge connecté</small></div><div><span>STATE</span><b id="state">WAITING</b></div><div><span>PLAYERS</span><b id="count">0</b></div></div>
+<div class="lobby-main">
+<div class="lobby-col"><label>SESSION</label><div style="margin-top:17px;display:grid;gap:10px;font-size:11px;color:#aaa4b0"><div>Current player <strong id="player">—</strong></div><div>Current game <strong id="game">—</strong></div><div>Current action <strong id="action">—</strong></div><div>Last roll <strong id="roll">—</strong></div><div>Last result <strong id="result">—</strong></div><div>Last payout <strong id="payout">—</strong></div></div></div>
+<div class="lobby-col"><label>PLAYERS</label><div id="players" class="players"><span class="empty">Aucun événement reçu.</span></div></div>
+<div class="lobby-col log-col"><label>EVENT LOG</label><div id="log" class="log"><span class="empty">Le bridge doit appeler window.CasinoBae.receiveAddonEvent(event).</span></div></div>
+</div></div></section>
+<section class="section" style="padding-top:45px"><div class="game-grid">
+<article class="game-card"><span class="tag">STATE MACHINE</span><h3>Observed state</h3><p>WAITING → GAME → ACTION_REQUIRED → RESULT → CLOSED. Les transitions sont affichées à partir des événements reçus.</p></article>
+<article class="game-card"><span class="tag muted-tag">SAFETY</span><h3>No fake success</h3><p>Le navigateur ne déclare jamais un trade ou un payout réussi sans événement WoW réellement confirmé.</p></article>
+<article class="game-card"><span class="tag muted-tag">INTEGRATION</span><h3>Bridge contract</h3><p>Le contrat public est volontairement petit : l'addon pousse des événements, le cockpit les rend visibles.</p></article>
+</div></section>
+</main>
+<footer><div class="logo"><span class="logo-mark">CB</span><span>Casino<span class="pink">Bae</span></span></div><span>Dealer cockpit · WoW authoritative</span></footer>
+<script>
+const S={state:"WAITING",players:[],last:null};const $=id=>document.getElementById(id);const esc=v=>String(v??"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+function render(){ $("state").textContent=S.state; $("count").textContent=S.players.length; const e=S.last||{},p=e.payload||{}; $("player").textContent=p.player||p.name||"—"; $("game").textContent=p.game||"—"; $("action").textContent=p.action||p.message||"—"; $("roll").textContent=p.value!=null?((p.player||"Player")+" · "+p.value):"—"; $("result").textContent=p.winner?((p.winner)+" · "+p.value):e.name||"—"; $("payout").textContent=p.payout!=null?String(p.payout):"—"; $("players").innerHTML=S.players.length?S.players.map(x=>'<span class="player">'+esc(x)+'</span>').join(""):'<span class="empty">Aucun joueur confirmé.</span>'; $("log").innerHTML=S.log?.length?S.log.slice(0,24).map(x=>'<div class="log-row"><b>'+esc(x.name)+'</b><span>'+esc(JSON.stringify(x.payload||{}))+'</span></div>').join(""):'<span class="empty">Aucun événement.</span>'; }
+window.CasinoBae={receiveAddonEvent(event){if(!event||typeof event!=="object")return;S.state=event.state||event.name||"READY";S.last=event;if(event.name==="PLAYER_JOINED"&&event.payload?.name&&!S.players.includes(event.payload.name))S.players.push(event.payload.name);S.log=S.log||[];S.log.unshift(event);S.log=S.log.slice(0,24);$("bridge").textContent="BRIDGE ONLINE";$("bridgeDetail").textContent="Dernier événement "+(event.time||"reçu");render()}};render();
+</script></body></html>
