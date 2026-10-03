@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://aveca.github.io/Casinobabe/sitemap.xml
