@@ -30,6 +30,7 @@ local DealerComputePayout, DealerValidateTransition
 
 -- Utility forward declarations
 local shortName
+local C -- forward declare color table
 
 -- ===== spel =====
 local GAMES = {
@@ -42,6 +43,14 @@ local GAMES = {
 }
 local QUICK = { 10, 25, 50, 100, 250, 500, 750 }
 local MAX_BET, MIN_BET = 1000, 1   -- casinots insatsgranser (1g - 1000g)
+
+-- ============================================================================
+-- COLOR TABLE (defined early so all functions can reference it)
+-- ============================================================================
+C = { gold={0.96,0.80,0.35}, goldDk={0.83,0.69,0.22}, green={0.47,0.92,0.59},
+      red={0.92,0.37,0.31}, light={0.93,0.91,0.89}, mute={0.70,0.67,0.65},
+      gray={0.60,0.60,0.60} }
+local function uc(t,a) return t[1],t[2],t[3],a or 1 end
 
 -- ============================================================================
 -- DEALER MODE - Central Game Rules (Single Source of Truth)
@@ -1824,10 +1833,6 @@ local DEALER_CAPITALS = {
   },
 }
 
--- ===== farger =====
-local C={ gold={0.96,0.80,0.35}, goldDk={0.83,0.69,0.22}, green={0.47,0.92,0.59},
-          red={0.92,0.37,0.31}, light={0.93,0.91,0.89}, mute={0.70,0.67,0.65},
-          gray={0.60,0.60,0.60} }
 local function uc(t,a) return t[1],t[2],t[3],a or 1 end
 
 -- ===== DB =====
