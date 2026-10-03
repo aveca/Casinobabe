@@ -1,0 +1,7 @@
+{
+  "supabaseUrl":"https://vgeoprcuzkugaecbpbjg.supabase.co",
+  "eventFunctionPath":"/functions/v1/casino-addon-event",
+  "sessionToken":"PASTE_DEALER_COCKPIT_TOKEN_HERE",
+  "wowSavedVariables":"C:/Program Files (x86)/World of Warcraft/_retail_/WTF/Account/YOUR_ACCOUNT/SavedVariables/CasinoBae.lua",
+  "pollMs":1500
+}
