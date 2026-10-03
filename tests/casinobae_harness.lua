@@ -87,6 +87,7 @@ assert(CasinoBae.stateDetail.value==55)
 
 -- Self-roll localization paths.
 CasinoBae:SetState("LOBBY_OPEN")
+CasinoBae:AddPlayer("Host")
 assert(CasinoBae.Game:StartRand())
 event("CHAT_MSG_SYSTEM","You roll 91 (1-100).")
 assert(CasinoBae.rolls["Host"]==91)
