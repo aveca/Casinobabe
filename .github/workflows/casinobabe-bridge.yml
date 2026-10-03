@@ -1,0 +1,21 @@
+name: CasinoBae bridge tests
+on:
+  push:
+    paths:
+      - "bridge/**"
+      - "addon/CasinoBae/**"
+  pull_request:
+    paths:
+      - "bridge/**"
+      - "addon/CasinoBae/**"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --check bridge/bridge.mjs
+      - run: node --check bridge/parser.mjs
+      - run: node bridge/parser.test.mjs
