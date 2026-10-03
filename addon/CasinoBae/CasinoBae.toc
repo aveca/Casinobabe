@@ -2,7 +2,8 @@
 ## Title: CasinoBae
 ## Notes: CasinoBae World of Warcraft companion
 ## Author: CasinoBae
-## Version: 0.2.0
+## Version: 0.3.0
+## SavedVariables: CasinoBaeDB
 
 Core.lua
 Events.lua
