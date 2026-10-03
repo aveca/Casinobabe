@@ -2,44 +2,29 @@
 
 CasinoBae is a World of Warcraft companion platform combining a web application and a World of Warcraft addon.
 
-Goal
+## MVP
+Site: https://aveca.github.io/Casinobabe/
 
-Build a fully usable social casino experience inside World of Warcraft, with a companion website for players and operators.
+Demo: https://aveca.github.io/Casinobabe/demo.html
 
-Core capabilities:
+Page de vente: https://aveca.github.io/Casinobabe/sales.html
 
-* Player discovery and lobby
-* Player whispers and invitations
-* Announcements and event notifications
-* Game creation and launch
-* /rand-based games and real WoW results
-* Player-to-player trading workflows
-* Game state and settlement tracking
-* Web companion interface
-* Addon ↔ web integration
-* Automatic state progression
-* Explicit ACTION_REQUIRED handling when human interaction is required
+Dépôt: https://github.com/aveca/Casinobabe
 
-Authority and safety model
+## MVP livré
+- Lobby et découverte par whispers
+- Annonces WoW
+- Parties /rand basées sur les résultats réellement observés
+- Fin de manche et gagnant
+- ACTION_REQUIRED pour les actions humaines
+- Dashboard web responsive
+- Démo interactive
+- Workflow GitHub Pages
 
-World of Warcraft is the source of truth.
+## Installation addon
+Copier addon/CasinoBae/ dans World of Warcraft/_retail_/Interface/AddOns/CasinoBae/, activer l’addon, puis utiliser /cb lobby.
 
-CasinoBae must never claim that a protected or unavailable Blizzard action succeeded when it did not.
+## Transparence
+Le site de démo peut simuler son interface pour présentation. Le jeu WoW, lui, ne doit jamais fabriquer un succès d’action Blizzard. Le bridge navigateur↔addon doit utiliser une intégration réellement autorisée.
 
-When an action requires the player to interact with WoW manually, the system enters:
-
-ACTION_REQUIRED
-
-It displays the exact required action and resumes automatically only after a real WoW event confirms completion.
-
-Repository
-
-* addon/CasinoBae/ — World of Warcraft addon
-* site/ — web application
-* docs/ — architecture and technical documentation
-
-Development status
-
-Project bootstrap.
-
-The implementation is being developed incrementally with automated validation and real-event-driven state management.
+Voir docs/MVP.md pour le périmètre exact.
