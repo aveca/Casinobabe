@@ -22,7 +22,17 @@ function unescapeLuaString(value) {
 function parsePayloadLine(line) {
   const out = {};
   if (!line) return out;
-  for (const part of line.split(";")) {
+  const parts = [];
+  let current = "";
+  let escaped = false;
+  for (const ch of line) {
+    if (escaped) { current += ch; escaped = false; continue; }
+    if (ch === "\\") { escaped = true; continue; }
+    if (ch === ";") { parts.push(current); current = ""; continue; }
+    current += ch;
+  }
+  parts.push(current);
+  for (const part of parts) {
     const i = part.indexOf("=");
     if (i <= 0) continue;
     out[part.slice(0, i)] = part.slice(i + 1);
