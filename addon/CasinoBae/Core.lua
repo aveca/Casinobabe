@@ -88,7 +88,6 @@ function CasinoBae:CreateLobby()
  self.lobby={host=host,players={},game=nil,round=0}
  self.rolls={}
  self.pendingAction=nil
- self:AddPlayer(host)
  self:SetState("LOBBY_OPEN",{host=host})
  self:Emit("LOBBY_CREATED",{host=host})
  self:Announce("LOBBY OPEN — whisper « join » pour rejoindre.")
