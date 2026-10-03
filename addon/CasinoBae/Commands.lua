@@ -3,6 +3,7 @@ SlashCmdList.CASINOBAE=function(message)
  local command,args=(message or ""):match("^%s*(%S*)%s*(.*)$")
  command=string.lower(command or "")
  if command=="" or command=="ui" then CasinoBae.UI:Show(); return end
+ if command=="help" or command=="?" then print("|cffff4f9aCasinoBae|r /cb ui status lobby close start rules join remove invite whisper say yell emote announce action demo"); return end
  if command=="hide" then CasinoBae.UI:Hide(); return end
  if command=="status" then CasinoBae.UI:PrintStatus(); return end
  if command=="lobby" then CasinoBae:CreateLobby(); return end
