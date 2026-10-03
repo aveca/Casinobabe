@@ -105,6 +105,7 @@ event("GROUP_ROSTER_UPDATE")
 assert(CasinoBae.STATE=="READY")
 
 -- Command parser smoke test.
+CasinoBae.UI={Show=function() end,Hide=function() end,PrintStatus=function() end}
 dofile("addon/CasinoBae/Commands.lua")
 SlashCmdList.CASINOBAE("status")
 SlashCmdList.CASINOBAE("rules")
