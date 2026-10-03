@@ -2,7 +2,7 @@
 ## Title: CasinoBae
 ## Notes: Social gaming host companion — WoW authoritative
 ## Author: CasinoBae
-## Version: 0.4.0
+## Version: 0.5.0
 ## SavedVariables: CasinoBaeDB
 
 Core.lua
