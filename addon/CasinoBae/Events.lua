@@ -38,8 +38,12 @@ frame:SetScript("OnEvent",function(_,event,...)
   CasinoBae:Emit("TEXT_EMOTE_RECEIVED",{message=message,sender=sender})
  elseif event=="GROUP_ROSTER_UPDATE" then
   if CasinoBae.pendingAction and CasinoBae.pendingAction.action=="INVITE_PLAYER" then
-   local target=C_UITargeting and nil or nil
-   CasinoBae:ConfirmAction(event,{note="group roster changed; verify player manually"})
+   local target=CasinoBae.pendingAction.extra
+   if target and UnitInParty(target) then
+    CasinoBae:ConfirmAction(event,{player=target,verified=true})
+   else
+    CasinoBae:Emit("INVITE_WAITING",{player=target,verified=false})
+   end
   end
   CasinoBae:Emit(event)
  end
