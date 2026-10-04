@@ -4653,10 +4653,12 @@ function OnMyRoll(roll)
     local isManual = pending.manualTrade
     if isManual then
       -- MANUAL TRADE FLOW: real gold via trade window, balance untouched.
-      -- Show WIN with real payout (net per ComputePayout) + trade guidance.
+      -- Explicit net vs total (no ambiguity): net = stake*(mult-1) per
+      -- ComputePayout, total = stake*mult. GameRules untouched.
       -- Dealer auto-payout (trade) runs in parallel on dealer client.
       -- Never claim payment received before real WoW trade event.
-      SetStatus(("%s - YOU WIN! +%dg. Opening trade with %s..."):format(rolledStr, net, DEALER_NAME), C.green)
+      local total = pending.stake * mult
+      SetStatus(("%s - YOU WIN! +%dg net (total %dg). Opening trade with %s..."):format(rolledStr, net, total, DEALER_NAME), C.green)
       RecordResult(pending.game, pending.stake, true, net)
       ShowResult(true, net)
     else
