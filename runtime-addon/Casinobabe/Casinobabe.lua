@@ -70,7 +70,7 @@ local MAX_BET, MIN_BET = 1000, 1   -- casinots insatsgranser (1g - 1000g)
 CB.state.dealerEnabled = false  -- manual toggle via /cb dealer on
 CB.state.autoAttractRunning = false  -- auto-dealer attract state
 CB.state.isDealerMode = false
-CB.state.DEALER_NAME = "Casinobae"
+-- Dealer identity is dynamic: the active dealer is the currently logged-in character when dealer mode is enabled.
 
 -- ============================================================================
 -- DEALER COOLDOWN MANAGER - Single canonical cooldown system
@@ -179,6 +179,7 @@ end
 -- trade/roll handlers, dealer panel) must see them. They were previously
 -- declared near the file end, which made every earlier call hit a nil global.
 function CB.shortName(full) if not full then return nil end return full:match("^([^%-]+)") or full end
+shortName = CB.shortName
 function CB.MakeBorder(f,t)
   t=t or 2
   local function line() local x=f:CreateTexture(nil,"OVERLAY"); x:SetColorTexture(0,0,0,0); return x end
@@ -2172,24 +2173,27 @@ end
 
 -- Check if current character is the dealer (Casinobae)
 local function IsDealerCharacter()
-  local name = CB.shortName(UnitName("player"))
-  return name and name:lower() == (CB.state.DEALER_NAME or "Casinobae"):lower()
+  -- Dealer identity is role/state based, not a hard-coded character name.
+  -- When dealer mode is enabled, the currently logged-in character is the dealer.
+  return dealerEnabled == true or isDealerMode == true
 end
 
--- Auto-enable dealer mode if character is Casinobae
+-- Reconcile persisted dealer mode without assuming a fixed character name.
 local function AutoDetectDealerMode()
-  if IsDealerCharacter() and not dealerEnabled then
-    dealerEnabled = true
+  if dealerEnabled then
     isDealerMode = true
-    CasinobabeDB.dealer.enabled = true
-    print("|cffFFD700Casinobabe|r Dealer mode AUTO-ENABLED for Casinobae.")
+    if CasinobabeDB and CasinobabeDB.dealer then
+      CasinobabeDB.dealer.enabled = true
+    end
+    local dealer = CB.shortName(UnitName("player")) or "Unknown"
+    print("|cffFFD700Casinobabe|r Dealer mode active for " .. dealer .. ".")
   end
 end
 
 -- Generate unique session ID
 local function GenerateSessionId()
   dealerSessionCounter = dealerSessionCounter + 1
-  return string.format("%s-%d-%d", CB.state.DEALER_NAME or "Casinobae", time(), dealerSessionCounter)
+  return string.format("%s-%d-%d", CB.shortName(UnitName("player")) or "Dealer", time(), dealerSessionCounter)
 end
 
 -- Dealer Audit Log
@@ -4207,6 +4211,22 @@ local function groupLeaderName()
   end
   return nil
 end
+
+-- Resolve the dealer target without hard-coding a character name.
+-- Dealer mode: current character is the dealer.
+-- Player mode: the casino/raid leader is the remote dealer.
+function CB.GetDealerName()
+  if dealerEnabled or isDealerMode then
+    return CB.shortName(UnitName("player"))
+  end
+  local leader = groupLeaderName()
+  if leader then return leader end
+  if CasinobabeDB and CasinobabeDB.casino then
+    return CB.shortName(CasinobabeDB.casino)
+  end
+  return nil
+end
+
 local function SendControl(msg)
   local ch=groupChannel(); if not ch then return false end
   if C_ChatInfo and C_ChatInfo.SendAddonMessage then C_ChatInfo.SendAddonMessage(PREFIX,msg,ch)
@@ -5415,7 +5435,7 @@ local function CreatePanel()
     f.announceSayBtn:SetScript("OnClick", function()
       if type(SendChatMessage) == "function" then
         local msg = string.format("[CasinoBae] Table open! %s | Whisper %s JOIN", 
-          GetRealZoneText and GetRealZoneText() or GetZoneText(), DEALER_NAME)
+          GetRealZoneText and GetRealZoneText() or GetZoneText(), CB.GetDealerName() or "dealer")
         pcall(SendChatMessage, msg, "SAY")
         print("|cffFFD700[CB AUTOPILOT]|r SAY announcement sent")
       end
@@ -5436,7 +5456,7 @@ local function CreatePanel()
     ayHl:SetColorTexture(1, 0.8, 0.5, 0.12)
     f.announceYellBtn:SetScript("OnClick", function()
       if type(SendChatMessage) == "function" then
-        local msg = string.format("[CasinoBae] Casino open! Whisper %s JOIN", DEALER_NAME)
+        local msg = string.format("[CasinoBae] Casino open! Whisper %s JOIN", CB.GetDealerName() or "dealer")
         pcall(SendChatMessage, msg, "YELL")
         print("|cffFFD700[CB AUTOPILOT]|r YELL announcement sent")
       end
@@ -6084,7 +6104,7 @@ function OnMyRoll(roll)
       -- Dealer auto-payout (trade) runs in parallel on dealer client.
       -- Never claim payment received before real WoW trade event.
       local total = pending.stake + net
-      SetStatus(("%s - YOU WIN! +%dg net (total %dg). Opening trade with %s..."):format(rolledStr, net, total, DEALER_NAME), C.green)
+      SetStatus(("%s - YOU WIN! +%dg net (total %dg). Opening trade with %s..."):format(rolledStr, net, total, CB.GetDealerName() or "dealer"), C.green)
       RecordResult(pending.game, pending.stake, true, net)
       ShowResult(true, net)
     else
@@ -6171,8 +6191,8 @@ function PlaceBet()
   if not inRaid then
     do
       local me = CB.shortName(UnitName("player"))
-      if me and me:lower() ~= DEALER_NAME:lower() and SendChatMessage then
-        local dealer = DEALER_NAME
+      local dealer = CB.GetDealerName()
+      if me and dealer and me:lower() ~= dealer:lower() and SendChatMessage then
         local gkey = selectedGame
         local samt = tostring(amt)
         pcall(SendChatMessage, "JOIN", "WHISPER", nil, dealer)
