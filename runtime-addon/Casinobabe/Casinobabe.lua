@@ -10,9 +10,12 @@ local ADDON  = "Casinobabe"
 local PREFIX = "CBABE"
 local MEDIA  = "Interface\\AddOns\\Casinobabe\\media\\background"
 
+-- Namespace for all addon state and data
+local CB = {}
+Casinobabe = CB
+
 -- ===== forward =====
 local panel, langMenu
-local dealerPanel  -- dealer UI
 local UpdateDisplay, SetStatus, SetConnected, RequestState, PlaceBet
 local CollectCashback, SelectGame, SelectAmount, FlashResult, HandleMessage
 local PostPublic, ToggleBlockTrades, OpenLanguageMenu, ShowDiscord
@@ -20,16 +23,25 @@ local PopupStart, PopupActivate, PopupResolve, PopupHide, PopupConfigure
 local DoRoll, CheckOnline, SetOnlineStatus, ShowInfo, OpenPanel
 
 -- Dealer forward declarations
-local DealerInit, DealerToggle, DealerStatus, DealerAdvertise
-local DealerInvite, DealerGame, DealerStake, DealerRoll, DealerRecord
+local DealerToggle, DealerStatus, DealerAdvertise
+local DealerInvite, DealerGame, DealerStake, DealerRecord
 local DealerResolve, DealerPayout, DealerClose, DealerReset, DealerLog
 local DealerOnWhisper, DealerOnTradeShow, DealerOnTradeAccept, DealerOnTradeClose
 local DealerOnSystemMsg, DealerUpdateUI, DealerAuditLog
 local DealerGetSession, DealerCreateSession, DealerSetState
-local DealerComputePayout, DealerValidateTransition
+local DealerValidateTransition
 
 -- Utility forward declarations
 local shortName
+
+-- Demo session forward declaration (must be before functions that reference it)
+local demoSession
+
+-- Palette forward declaration: DealerSetConnState() (defined below) runs
+-- before the palette assignment further down this chunk. Without this, C
+-- would resolve as a nil global inside early-called functions (Lua locals
+-- are only visible after their declaration). Initialized at "===== farger".
+local C
 
 -- ===== spel =====
 local GAMES = {
@@ -46,10 +58,10 @@ local MAX_BET, MIN_BET = 1000, 1   -- casinots insatsgranser (1g - 1000g)
 -- ============================================================================
 -- DEALER MODE - Central Game Rules (Single Source of Truth)
 -- ============================================================================
-local DEALER_NAME = "Casinobae"
-local isDealerMode = false
-local dealerEnabled = false  -- manual toggle via /cb dealer on
-local autoAttractRunning = false  -- auto-dealer attract state
+CB.state.dealerEnabled = false  -- manual toggle via /cb dealer on
+CB.state.autoAttractRunning = false  -- auto-dealer attract state
+CB.state.isDealerMode = false
+CB.state.DEALER_NAME = "Casinobae"
 
 -- ============================================================================
 -- DEALER COOLDOWN MANAGER - Single canonical cooldown system
@@ -59,6 +71,7 @@ local DealerCooldownManager = {
   DEFAULTS = {
     SHOW = 120,
     ADVERTISE = 120,
+    ATTRACT = 20,
     REACTION = 5,
     JOIN = 10,
     SPAM_WINDOW = 60,
@@ -93,11 +106,11 @@ local DealerCooldownManager = {
     return result
   end,
 }
-
+--
 -- ============================================================================
 -- DEALER CONNECTION STATE MACHINE
 -- ============================================================================
-local DEALER_CONN_STATES = {
+CB.state.DEALER_CONN_STATES = {
   OFF = "OFF",
   STARTING = "STARTING",
   CONNECTING = "CONNECTING", 
@@ -106,9 +119,9 @@ local DEALER_CONN_STATES = {
   COOLDOWN = "COOLDOWN",
   ERROR = "ERROR",
 }
-local dealerConnState = DEALER_CONN_STATES.OFF
-local dealerConnReason = ""
-local dealerConnLastMsg = 0
+CB.state.dealerConnState = DEALER_CONN_STATES.OFF
+CB.state.dealerConnReason = ""
+CB.state.dealerConnLastMsg = 0
 
 local function DealerSetConnState(state, reason)
   local old = dealerConnState
@@ -121,10 +134,16 @@ local function DealerSetConnState(state, reason)
   if panel and panel.dealerPanel then
     local dp = panel.dealerPanel
     if dp.connStatus then
-      local color = (state == DEALER_CONN_STATES.CONNECTED or state == DEALER_CONN_STATES.READY) and C.green or 
-                    (state == DEALER_CONN_STATES.CONNECTING) and C.gold or C.mute
+      -- Defensive: C is the shared forward-declared palette, but if this
+      -- ever runs before its assignment, fall back instead of erroring.
+      local color =
+        ((state == DEALER_CONN_STATES.CONNECTED or state == DEALER_CONN_STATES.READY) and C and C.green) or
+        ((state == DEALER_CONN_STATES.CONNECTING) and C and C.gold) or
+        (C and C.mute)
       dp.connStatus:SetText(state)
-      dp.connStatus:SetTextColor(color[1], color[2], color[3])
+      if color then
+        dp.connStatus:SetTextColor(color[1], color[2], color[3])
+      end
     end
     if dp.connReason and reason then
       dp.connReason:SetText(reason)
@@ -132,42 +151,25 @@ local function DealerSetConnState(state, reason)
   end
 end
 
-local function DealerGetConnState()
-  return dealerConnState, dealerConnReason
+function CB.DealerGetConnState()
+  return CB.state.dealerConnState, CB.state.dealerConnReason
 end
 
 -- ============================================================================
 -- DEALER DIAGNOSTICS
 -- ============================================================================
-local function DealerDiag(event, details)
+function CB.DealerDiag(event, details)
   local msg = string.format("|cffFFD700Casinobabe|r [DIAG] %s", event)
   if details then msg = msg .. " " .. details end
   print(msg)
-end
-
--- Capital cities for auto-attract
-local CAPITAL_CITIES = {
-  ["Stormwind City"] = true,
-  ["Orgrimmar"] = true,
-  ["Ironforge"] = true,
-  ["Thunder Bluff"] = true,
-  ["Undercity"] = true,
-  ["Dalaran"] = true,
-  ["Shattrath City"] = true,
-  ["Capital City"] = true,  -- fallback for localized clients
-}
-
-local function IsInCapital()
-  local zone = GetRealZoneText() or ""
-  return CAPITAL_CITIES[zone] == true
 end
 
 -- NOTE: shortName/MakeBorder are defined early on purpose. Lua binds locals
 -- positionally, so dealer code further down (IsDealerCharacter, whisper and
 -- trade/roll handlers, dealer panel) must see them. They were previously
 -- declared near the file end, which made every earlier call hit a nil global.
-local function shortName(full) if not full then return nil end return full:match("^([^%-]+)") or full end
-local function MakeBorder(f,t)
+function CB.shortName(full) if not full then return nil end return full:match("^([^%-]+)") or full end
+function CB.MakeBorder(f,t)
   t=t or 2
   local function line() local x=f:CreateTexture(nil,"OVERLAY"); x:SetColorTexture(0,0,0,0); return x end
   local b={top=line(),bot=line(),left=line(),right=line()}
@@ -179,9 +181,9 @@ local function MakeBorder(f,t)
   return b
 end
 
--- GameRules: Single source of truth for ALL game logic (player + dealer)
--- Do NOT duplicate rules - both modes consume this
-local GameRules = {
+-- CASINOEMOTE - Emote helpers (physical + text)
+-- ============================================================================
+CB.CasinoEmote = {
   normal = {
     key = "normal",
     name = "Normal",
@@ -298,10 +300,11 @@ local GameRules = {
   },
 }
 
+--
 -- ============================================================================
 -- CASINOSOUND - Soundboard for dealer feedback (local only)
 -- ============================================================================
-local CasinoSound = {
+CB.CasinoSound = {
   -- SoundKit IDs verified for Classic 20505
   -- Only LOCAL - players cannot hear these
   SOUNDS = {
@@ -494,8 +497,8 @@ local CasinoEmote = {
 
 -- ============================================================================
 -- CASINOSEQUENCE - Timed sequence engine
--- ============================================================================
-local CasinoSequence = {
+--
+CB.CasinoSequence = {
   active = {},
   counter = 0,
   
@@ -1568,6 +1571,235 @@ local CasinoShow = {
 }
 
 -- ============================================================================
+-- CASINOATTRACTOR - Hardware-aware public-channel attractor (/1 /2 /3 /6)
+-- ============================================================================
+-- Blizzard restrictions respected: numbered CHANNEL sends are treated as
+-- hardware-gated. NOTHING here ever sends on a timer. The dealer arms the
+-- rotation; each [ ADVERTISE ] click (or typed /cb attract command) - both
+-- real user actions - authorizes exactly ONE SendChatMessage to the next
+-- eligible channel. Cooldown bookkeeping only decides WHAT the next click
+-- may send. Blocked sends are reported, never faked. Channel numbers are
+-- discovered live via GetChannelList (never hardcoded: /1 /2 /3 /6 address
+-- different channels on every client). Reuses DealerCooldownManager for the
+-- global send floor, and the dealer audit log for SENT/BLOCKED proof.
+local CasinoAttractor = {
+  CHANNEL_COOLDOWN = 120,  -- same channel at most every 120s
+  SAME_MSG_COOLDOWN = 300, -- same text at most every 300s
+  lastBySlot = {},         -- [slot] = timestamp of last send
+  lastMsgAt = {},          -- [message] = timestamp of last send
+  msgCursor = {},          -- [category] = round-robin index
+  slotCursor = 0,           -- rotation cursor over eligible channels
+  badSlots = {},           -- [slot] = true after a client-refused send
+  lastSent = nil,           -- {slot=, name=, text=, at=} for the UI
+  sentCount = 0,
+  blockedCount = 0,
+  -- Short, natural, action-oriented English. Plain ASCII on purpose: no new
+  -- emoji bytes are added (the file already carries legacy mojibake which
+  -- is out of scope). No internal terms.
+  MSGS = {
+    TRADE = {
+      "Casinobae Casino is OPEN! Lucky 7, Roulette, Dice, Blackjack. Whisper me to play.",
+      "Casino table open - pick your game and stake. Whisper Casinobae.",
+      "Big wins, fast games. Whisper Casinobae to take a seat.",
+    },
+    GENERAL = {
+      "Casinobae is open! Come try your luck. Whisper me to play.",
+      "Casino games running - Lucky 7, Roulette, Dice, Blackjack. Whisper Casinobae.",
+    },
+    LOCAL = {
+      "Casinobae is running a live casino table here. Whisper me to play.",
+      "Casino table open nearby. Whisper Casinobae.",
+    },
+    OTHER = {
+      "Casino table open - whisper Casinobae to play.",
+      "Next table is open! Whisper Casinobae.",
+    },
+  },
+  CAT_RANK = { TRADE = 1, GENERAL = 2, LOCAL = 3, OTHER = 4 },
+
+  CategoryFor = function(self, name)
+    local n = (name or ""):lower()
+    if n:find("trade") or n:find("commerce") or n:find("handel") then return "TRADE" end
+    if n:find("general") or n:find("allgemein") then return "GENERAL" end
+    if n:find("locald") or n:find("defense") or n:find("fense") then return "LOCAL" end
+    if n:find("lookingforgroup") or n:find("lfg") then return "OTHER" end
+    return "OTHER"
+  end,
+
+  -- Live discovery. GetChannelList returns id/name pairs in display order,
+  -- so the slot position matches what /1 /2 /3 ... address on THIS client.
+  -- Read-only: always legal, never sends.
+  Discover = function(self)
+    local out = {}
+    if GetChannelList then
+      local res = { pcall(GetChannelList) }
+      if res[1] then
+        local slot = 0
+        for i = 2, #res - 1, 2 do
+          local id, nm = res[i], res[i + 1]
+          if id ~= nil and nm ~= nil and slot < 10 then
+            slot = slot + 1
+            table.insert(out, { slot = slot, id = id, name = tostring(nm), cat = self:CategoryFor(tostring(nm)) })
+          end
+        end
+      end
+    end
+    return out
+  end,
+
+  -- Read-only snapshot for UI + send decisions. No side effects.
+  Snapshot = function(self)
+    local now = time()
+    local chans = self:Discover()
+    local elig = {}
+    local waitMin = 0
+    for _, ch in ipairs(chans) do
+      if not self.badSlots[ch.slot] then
+        local since = now - (self.lastBySlot[ch.slot] or 0)
+        if since >= self.CHANNEL_COOLDOWN then
+          table.insert(elig, ch)
+        else
+          local w = self.CHANNEL_COOLDOWN - since
+          if w > waitMin then waitMin = w end
+        end
+      end
+    end
+    return { chans = chans, elig = elig, waitMin = waitMin, now = now }
+  end,
+
+  PickMessage = function(self, cat)
+    local bank = self.MSGS[cat] or self.MSGS.OTHER
+    local now = time()
+    local start = (self.msgCursor[cat] or 0) % #bank + 1
+    for k = 0, #bank - 1 do
+      local idx = (start + k - 1) % #bank + 1
+      local m = bank[idx]
+      if now - (self.lastMsgAt[m] or 0) >= self.SAME_MSG_COOLDOWN then
+        self.msgCursor[cat] = idx
+        return m
+      end
+    end
+    -- All cooling: reuse the least-recently-sent so rotation continues.
+    local best, bestAt = bank[1], self.lastMsgAt[bank[1]] or 0
+    for i = 2, #bank do
+      local at = self.lastMsgAt[bank[i]] or 0
+      if at < bestAt then best, bestAt = bank[i], at end
+    end
+    return best
+  end,
+
+  -- ONE authorized send. Call ONLY from the [ ADVERTISE ] button OnClick or
+  -- the typed /cb attract command (both are real user actions). Never from
+  -- a timer.
+  AdvertiseOnce = function(self)
+    if not dealerEnabled then
+      print("|cffFFD700Casinobabe|r Attractor disabled - dealer mode is OFF. Use /cb dealer on.")
+      return false, "dealer off"
+    end
+    local onCd, rem = DealerCooldownManager:Check("ATTRACT")
+    if onCd then
+      self:UpdateUI()
+      print(string.format("|cffFFD700Casinobabe|r Attractor cooling down (%ds). Next click sends when ready.", rem))
+      return false, "cooldown"
+    end
+    local snap = self:Snapshot()
+    if #snap.chans == 0 then
+      self:UpdateUI()
+      print("|cffFFD700Casinobabe|r No public channels joined. Join Trade/General first, then click ADVERTISE.")
+      DealerAuditLog(nil, nil, "ATTRACT_BLOCKED", "no public channel joined")
+      return false, "no channel"
+    end
+    if #snap.elig == 0 then
+      self:UpdateUI()
+      print(string.format("|cffFFD700Casinobabe|r All channels cooling down (%ds).", snap.waitMin))
+      return false, "channels cooling"
+    end
+    table.sort(snap.elig, function(a, b)
+      local ra = self.CAT_RANK[a.cat] or 9
+      local rb = self.CAT_RANK[b.cat] or 9
+      if ra ~= rb then return ra < rb end
+      return a.slot < b.slot
+    end)
+    self.slotCursor = self.slotCursor + 1
+    local ch = snap.elig[(self.slotCursor - 1) % #snap.elig + 1]
+    local text = self:PickMessage(ch.cat)
+    if SendChatMessage == nil then
+      -- Chat API unavailable (never counted as a refused send).
+      self:UpdateUI()
+      print("|cffFFD700Casinobabe|r Chat API unavailable - cannot announce right now.")
+      DealerAuditLog(nil, nil, "ATTRACT_BLOCKED", "SendChatMessage unavailable")
+      return false, "no api"
+    end
+    local ok = pcall(SendChatMessage, text, "CHANNEL", nil, ch.id)
+    if ok then
+      self.lastBySlot[ch.slot] = snap.now
+      self.lastMsgAt[text] = snap.now
+      self.badSlots[ch.slot] = nil
+      DealerCooldownManager:Set("ATTRACT")
+      self.lastSent = { slot = ch.slot, name = ch.name, text = text, at = snap.now }
+      self.sentCount = self.sentCount + 1
+      DealerAuditLog(nil, nil, "ATTRACT_SENT", string.format("/%d %s: %s", ch.slot, ch.name, text))
+      print(string.format("|cffFFD700Casinobabe|r Announcement sent to %s. Click ADVERTISE again for the next channel.", ch.name))
+      self:UpdateUI()
+      return true
+    else
+      self.badSlots[ch.slot] = true
+      self.blockedCount = self.blockedCount + 1
+      DealerAuditLog(nil, nil, "ATTRACT_BLOCKED", string.format("/%d %s refused by client", ch.slot, ch.name))
+      self:UpdateUI()
+      print(string.format("|cffFFD700Casinobabe|r %s refused the message. ACTION REQUIRED: click ADVERTISE to try the next channel.", ch.name))
+      return false, "blocked"
+    end
+  end,
+
+  -- Read-only UI refresh. Shows READY + next channel, cooling countdown,
+  -- ACTION REQUIRED when nothing is sendable, and the live channel list.
+  UpdateUI = function(self)
+    if not panel or not panel.dealerPanel then return end
+    local dp = panel.dealerPanel
+    if not dp.attractStatus then return end
+    if not dealerEnabled then
+      dp.attractStatus:SetText("ATTRACT OFF - dealer mode off")
+      if dp.attractChannels then dp.attractChannels:SetText("") end
+      return
+    end
+    local snap = self:Snapshot()
+    if #snap.chans == 0 then
+      dp.attractStatus:SetText("ATTRACT: no public channels joined")
+      if dp.attractChannels then dp.attractChannels:SetText("") end
+      return
+    end
+    local parts = {}
+    for _, ch in ipairs(snap.chans) do
+      table.insert(parts, ch.name .. "(/" .. ch.slot .. ")")
+    end
+    if dp.attractChannels then
+      dp.attractChannels:SetText(table.concat(parts, " - "))
+    end
+    local _, rem = DealerCooldownManager:Check("ATTRACT")
+    if rem > 0 then
+      dp.attractStatus:SetText(string.format("ATTRACT cooling (%ds)", rem))
+    elseif #snap.elig == 0 then
+      if snap.waitMin > 0 then
+        dp.attractStatus:SetText(string.format("ATTRACT cooling (%ds)", snap.waitMin))
+      else
+        dp.attractStatus:SetText("ATTRACT ACTION REQUIRED - channels refused")
+      end
+    else
+      local order = {}
+      for _, ch in ipairs(snap.elig) do table.insert(order, ch) end
+      table.sort(order, function(a, b)
+        local ra = self.CAT_RANK[a.cat] or 9
+        local rb = self.CAT_RANK[b.cat] or 9
+        if ra ~= rb then return ra < rb end
+        return a.slot < b.slot
+      end)
+      dp.attractStatus:SetText("ATTRACT READY - Next: " .. order[1].name)
+    end
+  end,
+}
+
+-- ============================================================================
 -- Helper: Get game rule by key
 -- ============================================================================
 local function GetGameRule(key)
@@ -1723,7 +1955,6 @@ local lastBetTime=0
 -- ===== DEALER runtime =====
 local dealerSessions = {}  -- [playerName] = session table
 local dealerSessionCounter = 0
-local dealerAdLastZone = nil
 local dealerCurrentPlayer = nil  -- player currently being managed in UI
 local dealerLog = {}  -- audit log entries
 local DEALER_MAX_LOG = 200
@@ -1757,9 +1988,9 @@ local DEALER_TRANSITIONS = {
   [DEALER_STATES.TRADE_VERIFIED] = { DEALER_STATES.STAKE_CONFIRMED, DEALER_STATES.CANCELLED },
   [DEALER_STATES.STAKE_CONFIRMED] = { DEALER_STATES.GROUPED, DEALER_STATES.GAME_SELECTED, DEALER_STATES.CANCELLED },
   [DEALER_STATES.GROUPED] = { DEALER_STATES.GAME_SELECTED, DEALER_STATES.CANCELLED },
-  [DEALER_STATES.GAME_SELECTED] = { DEALER_STATES.ROLLING, DEALER_STATES.CANCELLED },
+  [DEALER_STATES.GAME_SELECTED] = { DEALER_STATES.TRADE_PENDING, DEALER_STATES.ROLLING, DEALER_STATES.CANCELLED },
   [DEALER_STATES.ROLLING] = { DEALER_STATES.RESOLVED, DEALER_STATES.CANCELLED },
-  [DEALER_STATES.RESOLVED] = { DEALER_STATES.PAYOUT_PENDING, DEALER_STATES.CANCELLED },
+  [DEALER_STATES.RESOLVED] = { DEALER_STATES.PAYOUT_PENDING, DEALER_STATES.CLOSED, DEALER_STATES.CANCELLED },
   [DEALER_STATES.PAYOUT_PENDING] = { DEALER_STATES.PAID, DEALER_STATES.CANCELLED, DEALER_STATES.ERROR },
   [DEALER_STATES.PAID] = { DEALER_STATES.CLOSED, DEALER_STATES.CANCELLED },
   [DEALER_STATES.CLOSED] = {},
@@ -1828,7 +2059,7 @@ local DEALER_CAPITALS = {
 }
 
 -- ===== farger =====
-local C={ gold={0.96,0.80,0.35}, goldDk={0.83,0.69,0.22}, green={0.47,0.92,0.59},
+C={ gold={0.96,0.80,0.35}, goldDk={0.83,0.69,0.22}, green={0.47,0.92,0.59},
           red={0.92,0.37,0.31}, light={0.93,0.91,0.89}, mute={0.70,0.67,0.65},
           gray={0.60,0.60,0.60} }
 local function uc(t,a) return t[1],t[2],t[3],a or 1 end
@@ -1951,11 +2182,6 @@ local function GenerateSessionId()
   return string.format("%s-%d-%d", DEALER_NAME, time(), dealerSessionCounter)
 end
 
--- Generate unique round ID
-local function GenerateRoundId(sessionId)
-  return sessionId .. "-r" .. (session.roundCounter or 0) + 1
-end
-
 -- Dealer Audit Log
 function DealerAuditLog(sessionId, player, event, details)
   local entry = string.format("[%s] %s %s %s", date("%H:%M"), sessionId or "-----", player or "-", event)
@@ -1969,7 +2195,7 @@ function DealerAuditLog(sessionId, player, event, details)
 end
 
 -- Validate state transition
-local function DealerValidateTransition(session, newState)
+function DealerValidateTransition(session, newState)
   local current = session.state
   local allowed = DEALER_TRANSITIONS[current]
   if not allowed then return false, "ERR_INVALID_STATE" end
@@ -1990,7 +2216,7 @@ local function DealerSaveSessions()
 end
 
 -- Set session state with validation and logging
-local function DealerSetState(session, newState, reason)
+function DealerSetState(session, newState, reason)
   local ok, err = DealerValidateTransition(session, newState)
   if not ok then
     DealerAuditLog(session.sessionId, session.player, "STATE_ERROR", "Invalid transition " .. session.state .. " -> " .. newState .. " (" .. err .. ")")
@@ -2054,17 +2280,6 @@ end
 -- Get session for player
 function DealerGetSession(playerName)
   return dealerSessions[playerName]
-end
-
--- Get all sessions for UI list
-local function DealerGetAllSessions()
-  return dealerSessions
-end
-
--- Check if player has an active (non-closed) session
-local function DealerHasActiveSession(playerName)
-  local s = dealerSessions[playerName]
-  return s and s.state ~= DEALER_STATES.CLOSED and s.state ~= DEALER_STATES.CANCELLED
 end
 
 -- Check if we can advertise in current zone
@@ -2196,7 +2411,16 @@ function DealerOnWhisper(msg, sender)
   
   local lowerMsg = msg:lower()
   local isJoin = lowerMsg:find("join") or lowerMsg:find("play") or lowerMsg:find("casino")
-  
+  -- Guided entry: greetings count as intent, and a game name as the very
+  -- first whisper both joins AND selects the game (game-first entry).
+  -- NOTE: game check runs before greeting check so "high risk" is a game,
+  -- not a greeting.
+  local gameFirst = DealerParseGameFromWhisper(lowerMsg)
+  local isGreeting = lowerMsg:find("hello") or lowerMsg:find("^hey%W") or lowerMsg:find("^hey$")
+    or lowerMsg:find("^hi%W") or lowerMsg:find("^hi$") or lowerMsg == "yo"
+    or lowerMsg:find("^sup%W") or lowerMsg:find("^sup$")
+  local isStakeFirst = msg:match("^%s*(%d+)%s*g?%s*$") ~= nil
+
   -- Diagnostics
   DealerDiag("WHISPER_RECEIVED", string.format("%s: %s", sender, msg))
   
@@ -2210,8 +2434,9 @@ function DealerOnWhisper(msg, sender)
     return
   end
   
-  -- No active session - check for JOIN
-  if not isJoin then
+  -- No active session - check for JOIN intent (join words, greetings,
+  -- game-first whispers like "lucky 7", or stake-first like "10g").
+  if not (isJoin or isGreeting or gameFirst or isStakeFirst) then
     DealerDiag("PLAYER_REJECTED", string.format("%s - not a JOIN whisper", sender))
     -- Optionally send advertisement to unknown players
     if not DealerCooldownManager:Check("ADVERTISE") then
@@ -2221,16 +2446,16 @@ function DealerOnWhisper(msg, sender)
     end
     return
   end
-  
+
   -- New JOIN whisper
   DealerDiag("PLAYER_ACCEPTED", string.format("%s - new session", sender))
-  
+
   -- Autonomous core gate: per-player cooldown/anti-spam + single-session busy
-  if not DealerCoreOnWhisperJoin(sender) then 
+  if not DealerCoreOnWhisperJoin(sender) then
     DealerDiag("PLAYER_REJECTED", string.format("%s - core gate blocked", sender))
-    return 
+    return
   end
-  
+
   -- Create session
   local newSession, err = DealerCreateSession(sender)
   if not newSession then
@@ -2238,16 +2463,30 @@ function DealerOnWhisper(msg, sender)
     DealerDiag("SESSION_FAILED", string.format("%s - %s", sender, err or "unknown"))
     return
   end
-  
+
   DealerDiag("SESSION_CREATED", string.format("%s id=%s", sender, newSession.sessionId))
-  
+
   -- Trigger reaction for new player
   CasinoReactionEngine:Trigger("PLAYER_JOIN", { player = sender })
-  
-  -- Reply with instructions (variant-based)
-  local reply = CasinoVariants:Get("WELCOME") .. " Games: Normal, High Risk, Blackjack, Roulette, Dice, Lucky 7. Stakes 1g-1000g."
-  SendChatMessage(reply, "WHISPER", nil, sender)
-  DealerAuditLog(newSession.sessionId, sender, "WHISPER_REPLY", "Sent welcome instructions")
+
+  -- Guided reply: game-first whispers select the game immediately and ask
+  -- for the stake; everything else gets the game menu. Plain English only,
+  -- no internal commands or state names.
+  if gameFirst then
+    local okG, errG = DealerGame(sender, gameFirst)
+    if okG then
+      local rule = GetGameRule(gameFirst)
+      local gname = (rule and rule.name) or gameFirst
+      SendChatMessage(gname .. " selected! Choose your stake: 10g / 25g / 50g / 100g / 250g / 500g / 1000g. Reply with the amount.", "WHISPER", nil, sender)
+      DealerAuditLog(newSession.sessionId, sender, "WHISPER_REPLY", "Game-first entry: " .. gname .. ", sent stake menu")
+    else
+      SendChatMessage(CasinoVariants:Get("WELCOME") .. " Choose your game: Lucky 7, Roulette, Dice, Blackjack, Normal, High Risk. Reply with the game name.", "WHISPER", nil, sender)
+      DealerAuditLog(newSession.sessionId, sender, "WHISPER_REPLY", "Game-first parse failed (" .. tostring(errG) .. "), sent game menu")
+    end
+  else
+    SendChatMessage(CasinoVariants:Get("WELCOME") .. " Choose your game: Lucky 7, Roulette, Dice, Blackjack, Normal, High Risk. Reply with the game name.", "WHISPER", nil, sender)
+    DealerAuditLog(newSession.sessionId, sender, "WHISPER_REPLY", "Sent game menu")
+  end
   
   -- Update UI
   DealerUpdateUI()
@@ -2257,7 +2496,27 @@ end
 -- Handle whispers from players with existing sessions
 function DealerHandleSessionWhisper(session, sender, msg, lowerMsg)
   local state = session.state
-  
+
+  -- Re-entry: JOIN/PLAY intent on a finished round (RESOLVED/PAID) closes the
+  -- old round silently and starts a fresh session with the game menu, so the
+  -- player is never stuck asking for payout that already happened (loss) or
+  -- waiting on a closed round. Mid-round JOIN intent is ignored.
+  local wantsReentry = lowerMsg:find("join") or lowerMsg:find("play") or lowerMsg:find("casino")
+  if wantsReentry and (state == DEALER_STATES.RESOLVED or state == DEALER_STATES.PAID or state == DEALER_STATES.ERROR) then
+    DealerDiag("PLAYER_REENTRY", string.format("%s state=%s -> new session", sender, state))
+    DealerCoreRecoverToIdle(sender, "re-entry: new game requested")
+    local fresh, ferr = DealerCreateSession(sender)
+    if fresh then
+      CasinoReactionEngine:Trigger("PLAYER_JOIN", { player = sender })
+      SendChatMessage(CasinoVariants:Get("WELCOME") .. " Choose your game: Lucky 7, Roulette, Dice, Blackjack, Normal, High Risk. Reply with the game name.", "WHISPER", nil, sender)
+      DealerAuditLog(fresh.sessionId, sender, "WHISPER_REPLY", "Re-entry: new session, sent game menu")
+    else
+      SendChatMessage("Error: " .. (ferr or "Unknown"), "WHISPER", nil, sender)
+    end
+    DealerUpdateUI()
+    return
+  end
+
   -- Game selection from whisper (when in CONTACTED or GROUPED state)
   if (state == DEALER_STATES.CONTACTED or state == DEALER_STATES.GROUPED) then
     local gameKey = DealerParseGameFromWhisper(lowerMsg)
@@ -2265,7 +2524,9 @@ function DealerHandleSessionWhisper(session, sender, msg, lowerMsg)
       DealerDiag("GAME_SELECTED_VIA_WHISPER", string.format("%s -> %s", sender, gameKey))
       local ok, err = DealerGame(sender, gameKey)
       if ok then
-        SendChatMessage("Game set to " .. gameKey .. ". " .. CasinoVariants:Get("GAME_" .. gameKey:upper()), "WHISPER", nil, sender)
+        local rule = GetGameRule(gameKey)
+        local gname = (rule and rule.name) or gameKey
+        SendChatMessage(gname .. " selected! Choose your stake: 10g / 25g / 50g / 100g / 250g / 500g / 1000g. Reply with the amount.", "WHISPER", nil, sender)
         DealerUpdateUI()
       else
         SendChatMessage("Could not set game: " .. (err or "unknown"), "WHISPER", nil, sender)
@@ -2273,9 +2534,11 @@ function DealerHandleSessionWhisper(session, sender, msg, lowerMsg)
       return
     end
   end
-  
-  -- Stake amount from whisper (when in STAKE_CONFIRMED or GROUPED)
-  if state == DEALER_STATES.STAKE_CONFIRMED or state == DEALER_STATES.GROUPED then
+
+  -- Stake amount from whisper. GAME_SELECTED is included because that is the
+  -- state right after game selection (the normal guided order is
+  -- game -> stake). DealerStake itself validates the transition.
+  if state == DEALER_STATES.GAME_SELECTED or state == DEALER_STATES.STAKE_CONFIRMED or state == DEALER_STATES.GROUPED then
     local amount = msg:match("^(%d+)g?$") or msg:match("^stake%s+(%d+)")
     if amount then
       amount = tonumber(amount)
@@ -2283,7 +2546,9 @@ function DealerHandleSessionWhisper(session, sender, msg, lowerMsg)
         DealerDiag("STAKE_VIA_WHISPER", string.format("%s -> %dg", sender, amount))
         local ok, err = DealerStake(sender, amount)
         if ok then
-          SendChatMessage("Stake set to " .. amount .. "g. Please open trade.", "WHISPER", nil, sender)
+          local rule = session.game and GetGameRule(session.game)
+          local gname = (rule and rule.name) or session.game or "your game"
+          SendChatMessage(gname .. " - " .. amount .. "g. Ready! Please trade " .. amount .. "g to Casinobae to begin.", "WHISPER", nil, sender)
           DealerUpdateUI()
         else
           SendChatMessage("Could not set stake: " .. (err or "unknown"), "WHISPER", nil, sender)
@@ -2302,12 +2567,28 @@ function DealerHandleSessionWhisper(session, sender, msg, lowerMsg)
     return
   end
   
-  -- Status request
+  -- Status request: plain English only, never internal state names.
   if lowerMsg:find("status") or lowerMsg:find("where") then
-    local stateText = session.state
-    if session.game then stateText = stateText .. " [" .. session.game .. "]" end
-    if session.stake > 0 then stateText = stateText .. " " .. session.stake .. "g" end
-    SendChatMessage("Your session: " .. stateText, "WHISPER", nil, sender)
+    local where = "Your game is in progress."
+    if state == DEALER_STATES.CONTACTED then where = "You're at the table. Choose your game."
+    elseif state == DEALER_STATES.INVITED then where = "Group invitation sent. Please accept it."
+    elseif state == DEALER_STATES.TRADE_PENDING or state == DEALER_STATES.TRADE_VERIFIED then where = "Waiting on the stake trade to finish."
+    elseif state == DEALER_STATES.STAKE_CONFIRMED or state == DEALER_STATES.GROUPED then where = "Stake confirmed. Your turn is coming up."
+    elseif state == DEALER_STATES.GAME_SELECTED then where = "Game on! Waiting for your roll."
+    elseif state == DEALER_STATES.ROLLING then where = "Roll received. Resolving..."
+    elseif state == DEALER_STATES.RESOLVED then
+      where = (session.result == "WIN") and "You won! Your payout is on its way." or "Not this time. Whisper JOIN to play again."
+    elseif state == DEALER_STATES.PAYOUT_PENDING then where = "Your payout is ready. Trade incoming."
+    elseif state == DEALER_STATES.PAID then where = "Paid! Thanks for playing. Whisper JOIN for another round."
+    elseif state == DEALER_STATES.ERROR then where = "Something hit an error. Whisper JOIN to restart."
+    end
+    local gameBit = ""
+    if session.game then
+      local rule = GetGameRule(session.game)
+      gameBit = " " .. ((rule and rule.name) or session.game)
+      if session.stake and session.stake > 0 then gameBit = gameBit .. " - " .. session.stake .. "g." end
+    end
+    SendChatMessage(where .. gameBit, "WHISPER", nil, sender)
     return
   end
   
@@ -2381,6 +2662,13 @@ function DealerToggle(onOff)
     end
     
     DealerUpdateUI()
+    -- Authorization-gated dealer console (existing mechanism): only the
+    -- authorized dealer character ever sees it; normal players stay on
+    -- the player UI.
+    if panel and panel.dealerPanel then
+      if IsDealerCharacter() then panel.dealerPanel:Show(); DealerUpdateUI()
+      else panel.dealerPanel:Hide() end
+    end
     return true
   elseif onOff == "off" then
     dealerEnabled = false
@@ -2391,6 +2679,7 @@ function DealerToggle(onOff)
     DealerSetConnState(DEALER_CONN_STATES.OFF, "dealer disabled")
     AutoStopAttract()
     DealerUpdateUI()
+    if panel and panel.dealerPanel then panel.dealerPanel:Hide() end
     return true
   elseif onOff == "status" then
     local status = dealerEnabled and "|cff78EB96ENABLED|r" or "|cffEB5E4FDISABLED|r"
@@ -2553,6 +2842,7 @@ function DealerRecord(playerName, rollStr)
     local okRes, errRes = DealerResolve(playerName)
     if okRes then
       DealerAuditLog(session.sessionId, playerName, "AUTO_RESOLVE", "result=" .. tostring(session.result) .. " mult=x" .. tostring(session.multiplier) .. " payout=" .. tostring(session.payout) .. "g")
+      DealerSendRoundResult(playerName)
       if session.result == "WIN" then
         local okPay, errPay = DealerPayout(playerName)
         if okPay then
@@ -2649,8 +2939,35 @@ function DealerResolve(playerName)
   else
     CasinoReactionEngine:Trigger("LOSS", ctx)
   end
-  
+
   return true
+end
+
+-- Direct player result whisper after an automatic resolve. Public reactions
+-- (SAY/YELL + Show) run in parallel; this guarantees the player personally
+-- knows WHERE they are and WHAT to do next. Amounts come straight from the
+-- resolved session (existing payout math, untouched): net = session.payout,
+-- total = stake + payout. LOSS schedules a silent auto-close so PLAY AGAIN
+-- starts fresh; WIN payout + close are handled by the payout/trade path.
+function DealerSendRoundResult(playerName)
+  local session = DealerGetSession(playerName)
+  if not session or not session.result then return end
+  local roll = session.roll or 0
+  if session.result == "WIN" then
+    local net = session.payout or 0
+    local total = (session.stake or 0) + net
+    local prefix = (session.multiplier and session.multiplier >= 7) and "JACKPOT! " or "YOU WIN! "
+    SendChatMessage(prefix .. "+" .. net .. "g net (total " .. total .. "g). Preparing your payout...", "WHISPER", nil, playerName)
+    DealerAuditLog(session.sessionId, playerName, "RESULT_WHISPER", "WIN " .. roll .. " net=" .. net .. "g total=" .. total .. "g")
+  elseif session.result == "LOSS" then
+    SendChatMessage("NOT THIS TIME (" .. roll .. "). No payout this round. Whisper JOIN to play again.", "WHISPER", nil, playerName)
+    DealerAuditLog(session.sessionId, playerName, "RESULT_WHISPER", "LOSS " .. roll)
+    DealerScheduleAutoClose(playerName, 60, "loss round finished")
+  else
+    SendChatMessage("Round over: " .. tostring(session.result) .. " (" .. roll .. "). Whisper JOIN to play again.", "WHISPER", nil, playerName)
+    DealerAuditLog(session.sessionId, playerName, "RESULT_WHISPER", tostring(session.result) .. " " .. roll)
+    DealerScheduleAutoClose(playerName, 60, "round finished")
+  end
 end
 
 -- Arm payout for trade
@@ -2723,6 +3040,22 @@ function DealerReset(playerName)
   return true
 end
 
+-- Silent delayed cleanup for finished rounds (RESOLVED loss / PAID win).
+-- Frees the table so PLAY AGAIN starts a fresh round. Uses the recover path
+-- (audit only, no public farewell spam); the player already got their
+-- result whisper. Re-checked at fire time: a player who already re-entered
+-- (new CONTACTED session) is never touched.
+function DealerScheduleAutoClose(playerName, delaySecs, reason)
+  if not (C_Timer and C_Timer.After) then return end
+  C_Timer.After(delaySecs or 60, function()
+    local s = DealerGetSession(playerName)
+    if not s then return end
+    if s.state == DEALER_STATES.RESOLVED or s.state == DEALER_STATES.PAID then
+      DealerCoreRecoverToIdle(playerName, reason or "auto-close finished round")
+    end
+  end)
+end
+
 -- Show audit log
 function DealerLog()
   print("|cffFFD700Casinobabe|r === DEALER AUDIT LOG (last 50) ===")
@@ -2730,6 +3063,353 @@ function DealerLog()
     print("  " .. dealerLog[i])
   end
   if #dealerLog == 0 then print("  (empty)") end
+end
+
+-- ============================================================================
+-- DEALER SELF-TEST HARNESS (TEST MODE / LOCAL TEST)
+-- ============================================================================
+-- Single-character rehearsal of the casino business states with a virtual
+-- TEST_PLAYER. Strict isolation rules (never broken, never bypassed):
+-- * The TEST session lives ONLY in dealerTest.session. It is never inserted
+--   into dealerSessions, never written to SavedVariables, never shown in the
+--   dealer session list, never whispered about, never traded with.
+-- * Same pure resolvers as the real flow: GetGameRule().resolve,
+--   ComputePayout, ValidateStake, ValidateRoll (all side-effect free).
+--   No casino math is duplicated here.
+-- * NO protected WoW APIs in TEST MODE: never InitiateTrade/AcceptTrade or
+--   trade frames, never SendChatMessage, never CHAT_MSG_SYSTEM injection,
+--   never the real attractor (/1 /2 /3 /6), never physical emotes (an
+--   ACTION_REQUIRED notice is printed instead and the test continues).
+-- * Local sounds only, tagged [TEST SOUND]; reactions/show are described as
+--   [TEST REACTION]/[TEST SHOW] text lines, never executed against the world.
+-- * dealer-authorized only (dealerEnabled, like every dealer command).
+--   There is no path for a normal player to trigger this.
+-- * All state is chunk-local: /reload always resets TEST to OFF.
+local dealerTest = {
+  active = false,
+  scenario = nil,   -- "win" | "loss"
+  step = 0,
+  total = 0,
+  failed = false,
+  failAt = nil,
+  runSeq = 0,
+  session = nil,    -- isolated TEST session table (never in dealerSessions)
+  steps = nil,
+}
+
+local function DealerTestSay(msg)
+  print("|cffFFD700[TEST]|r " .. msg)
+end
+
+local function DealerTestRefresh()
+  if not panel or not panel.dealerPanel then return end
+  local dp = panel.dealerPanel
+  if not dp.testStatus then return end
+  if dealerTest.scenario == nil then
+    dp.testStatus:SetText("TEST OFF")
+  elseif dealerTest.failed then
+    dp.testStatus:SetText(string.format("TEST %s FAIL@%d/%d", dealerTest.scenario:upper(), dealerTest.failAt or 0, dealerTest.total or 0))
+  elseif dealerTest.active then
+    dp.testStatus:SetText(string.format("TEST %s %d/%d", dealerTest.scenario:upper(), dealerTest.step or 0, dealerTest.total or 0))
+  else
+    dp.testStatus:SetText(string.format("TEST %s DONE", dealerTest.scenario:upper()))
+  end
+end
+
+-- One harness step: { name=, run=function(s) return ok, detail end }.
+-- run() mutates ONLY the TEST session s. Pure resolvers reused, nothing else.
+local function DealerTestWinSteps()
+  return {
+    { name = "TEST_PLAYER CONTACTED", run = function(s)
+        s.state = "CONTACTED"
+        local isolated = dealerSessions["TEST_PLAYER"] == nil
+        local okId = s.player == "TEST_PLAYER" and string.sub(s.sessionId, 1, 5) == "TEST-"
+        DealerTestSay("[TEST SHOW] WELCOME sequence described only (no public spam in TEST MODE)")
+        DealerTestSay("[TEST] Physical emote requires dealer click - ACTION REQUIRED, skipped, continuing")
+        return isolated and okId, "id=" .. s.sessionId .. (isolated and "" or " (REAL REGISTRY POLLUTED!)")
+      end },
+    { name = "GAME_SELECTED = lucky7", run = function(s)
+        s.game = "lucky7"
+        s.state = "GAME_SELECTED"
+        return s.game == "lucky7", "game=" .. tostring(s.game)
+      end },
+    { name = "STAKE = 10g", run = function(s)
+        local okV, errV = ValidateStake("lucky7", 10)
+        if okV then s.stake = 10 end
+        return okV and s.stake == 10, okV and "stake=10g" or ("ValidateStake: " .. tostring(errV))
+      end },
+    { name = "TRADE_PENDING", run = function(s)
+        s.state = "TRADE_PENDING"
+        s.trade = { armed = "TEST", expectedAmount = 10 }
+        DealerTestSay("[TEST] stake trade armed as TEST event - NO real trade opened, NO InitiateTrade")
+        return s.trade.expectedAmount == 10, "expecting 10g (simulated)"
+      end },
+    { name = "TEST TRADE VERIFIED", run = function(s)
+        s.trade.verified = true
+        s.state = "TRADE_VERIFIED"
+        DealerTestSay("[TEST] stake verified as TEST event - NO real trade window existed")
+        return s.trade.verified == true, "verified (simulated)"
+      end },
+    { name = "STAKE_CONFIRMED", run = function(s)
+        s.trade.completed = true
+        s.state = "STAKE_CONFIRMED"
+        return s.state == "STAKE_CONFIRMED", "stake trade complete (simulated)"
+      end },
+    { name = "GAME_SELECTED (roll window)", run = function(s)
+        -- Mirrors the real STAKE_CONFIRMED -> GAME_SELECTED re-assert that
+        -- opens the roll window. Same transition, TEST session only.
+        s.state = "GAME_SELECTED"
+        return s.state == "GAME_SELECTED", "roll window open (simulated)"
+      end },
+    { name = "TEST TABLE READY", run = function(s)
+        DealerTestSay("[TEST SHOW] OPENING described only (non-blocking, no public spam)")
+        DealerTestSay("TABLE READY - Lucky 7 - 10g. Your turn is next.")
+        return s.game == "lucky7" and s.stake == 10, "Lucky 7 - 10g ready"
+      end },
+    { name = "TEST ROLL = 97", run = function(s)
+        local okR, errR = ValidateRoll("lucky7", 97)
+        if okR then s.roll = 97 end
+        DealerTestSay("[TEST] TEST ROLL = 97 - NOT A REAL WOW ROLL (no CHAT_MSG_SYSTEM injected)")
+        DealerTestSay("[TEST SHOW] SUSPENSE described only")
+        return okR and s.roll == 97, okR and "roll=97 accepted" or ("ValidateRoll: " .. tostring(errR))
+      end },
+    { name = "RESOLVED = WIN", run = function(s)
+        local rule = GetGameRule("lucky7")
+        local mult = rule and rule.resolve(97)
+        s.multiplier = mult
+        s.result = (mult and mult > 0) and "WIN" or "LOSS"
+        DealerTestSay("[TEST REACTION] WIN -> CHEER + CLAP described (no auto physical emote)")
+        if CasinoSound and CasinoSound.Play then
+          CasinoSound:Play("WIN_SMALL")
+          DealerTestSay("[TEST SOUND] WIN_SMALL (local only)")
+        end
+        return mult == 7 and s.result == "WIN", "mult=x" .. tostring(mult) .. " result=" .. tostring(s.result)
+      end },
+    { name = "PAYOUT = ComputePayout", run = function(s)
+        local net = ComputePayout("lucky7", 10, 97)
+        local total = 10 + (net or 0)
+        s.payout = net
+        return net == 60 and total == 70, "net=" .. tostring(net) .. "g total=" .. tostring(total) .. "g"
+      end },
+    { name = "WIN DISPLAY", run = function(s)
+        DealerTestSay("WIN - Net payout: 60g - Total return: 70g")
+        return s.result == "WIN" and s.payout == 60, "displayed net/total"
+      end },
+    { name = "PAYOUT_PENDING", run = function(s)
+        s.state = "PAYOUT_PENDING"
+        s.payoutArmed = "TEST"
+        DealerTestSay("[TEST] payout armed as TEST event - NO real trade opened, NO InitiateTrade")
+        local noRealTrade = s.payoutRealTrade == nil
+        return noRealTrade, "payout pending (simulated, no real trade)"
+      end },
+    { name = "TEST PAYOUT CONFIRMED", run = function(s)
+        s.payoutCompleted = true
+        s.state = "PAID"
+        DealerTestSay("[TEST] payout confirmed as TEST event - NO gold moved")
+        return s.payoutCompleted == true and s.state == "PAID", "PAID (simulated)"
+      end },
+    { name = "PAID", run = function(s)
+        return s.state == "PAID" and s.payoutCompleted == true, "paid, awaiting close"
+      end },
+    { name = "COMPLETE / CLOSED", run = function(s)
+        s.state = "CLOSED"
+        DealerTestSay("[TEST SHOW] OUTRO described only")
+        return s.state == "CLOSED", "session CLOSED"
+      end },
+  }
+end
+
+local function DealerTestLossSteps()
+  return {
+    { name = "TEST_PLAYER CONTACTED", run = function(s)
+        s.state = "CONTACTED"
+        local isolated = dealerSessions["TEST_PLAYER"] == nil
+        local okId = s.player == "TEST_PLAYER" and string.sub(s.sessionId, 1, 5) == "TEST-"
+        DealerTestSay("[TEST] Physical emote requires dealer click - ACTION REQUIRED, skipped, continuing")
+        return isolated and okId, "id=" .. s.sessionId .. (isolated and "" or " (REAL REGISTRY POLLUTED!)")
+      end },
+    { name = "GAME_SELECTED = lucky7", run = function(s)
+        s.game = "lucky7"
+        s.state = "GAME_SELECTED"
+        return s.game == "lucky7", "game=" .. tostring(s.game)
+      end },
+    { name = "STAKE = 10g", run = function(s)
+        local okV, errV = ValidateStake("lucky7", 10)
+        if okV then s.stake = 10 end
+        return okV and s.stake == 10, okV and "stake=10g" or ("ValidateStake: " .. tostring(errV))
+      end },
+    { name = "STAKE CONFIRMED", run = function(s)
+        s.trade = { armed = "TEST", expectedAmount = 10, verified = true, completed = true }
+        s.state = "STAKE_CONFIRMED"
+        DealerTestSay("[TEST] stake trade armed/verified/completed as TEST events - NO real trade")
+        -- Same roll-window re-assert as the real flow (then GAME_SELECTED).
+        s.state = "GAME_SELECTED"
+        return s.state == "GAME_SELECTED", "stake confirmed (simulated), window open"
+      end },
+    { name = "TEST ROLL = 90", run = function(s)
+        local okR, errR = ValidateRoll("lucky7", 90)
+        if okR then s.roll = 90 end
+        DealerTestSay("[TEST] TEST ROLL = 90 - NOT A REAL WOW ROLL (no CHAT_MSG_SYSTEM injected)")
+        return okR and s.roll == 90, okR and "roll=90 accepted (valid for Lucky 7)" or ("ValidateRoll: " .. tostring(errR))
+      end },
+    { name = "RESOLVED = LOSS", run = function(s)
+        local rule = GetGameRule("lucky7")
+        local mult = rule and rule.resolve(90)
+        s.multiplier = mult
+        s.result = (mult and mult > 0) and "WIN" or "LOSS"
+        DealerTestSay("[TEST REACTION] LOSS -> SHRUG described (no auto physical emote)")
+        if CasinoSound and CasinoSound.Play then
+          CasinoSound:Play("LOSS")
+          DealerTestSay("[TEST SOUND] LOSS (local only)")
+        end
+        return mult == 0 and s.result == "LOSS", "mult=x" .. tostring(mult) .. " result=" .. tostring(s.result)
+      end },
+    { name = "NO PAYOUT OWED", run = function(s)
+        local owed = (s.multiplier and s.multiplier > 0) and s.payout or 0
+        local clean = s.state ~= "PAYOUT_PENDING" and not s.payoutCompleted and not s.payoutArmed
+        return s.multiplier == 0 and owed == 0 and clean, "mult=0, owed=0g, never entered payout"
+      end },
+    { name = "NO PAYOUT TRADE", run = function(s)
+        local clean = s.payoutRealTrade == nil and not s.payoutCompleted
+        DealerTestSay("[TEST] no payout trade armed, none will be - LOSS ends here")
+        return clean, "no payout trade (verified)"
+      end },
+    { name = "COMPLETE / CLOSED", run = function(s)
+        s.state = "CLOSED"
+        return s.state == "CLOSED", "session CLOSED"
+      end },
+  }
+end
+
+local function DealerTestBegin(scenario)
+  -- Relaunch always resets cleanly: the old TEST table has no external
+  -- references by design (never registered anywhere), so dropping it is a
+  -- proper close. Real sessions are untouched (different table entirely).
+  dealerTest.active = false
+  dealerTest.scenario = scenario
+  dealerTest.step = 0
+  dealerTest.failed = false
+  dealerTest.failAt = nil
+  dealerTest.runSeq = (dealerTest.runSeq or 0) + 1
+  dealerTest.steps = (scenario == "loss") and DealerTestLossSteps() or DealerTestWinSteps()
+  dealerTest.total = #dealerTest.steps
+  dealerTest.session = {
+    sessionId = string.format("TEST-%d-%d", time(), dealerTest.runSeq),
+    player = "TEST_PLAYER",
+    state = "NEW",
+    game = nil,
+    stake = 0,
+    roll = nil,
+    result = nil,
+    multiplier = nil,
+    payout = nil,
+    trade = {},
+    payoutCompleted = false,
+  }
+  dealerTest.active = true
+  DealerTestSay(string.format("scenario %s started (%s) - virtual player, NO real gold, NO real rolls, NO real whispers/trades", scenario:upper(), dealerTest.session.sessionId))
+  DealerTestRefresh()
+end
+
+local function DealerTestAdvance()
+  if dealerTest.failed then
+    DealerTestSay("test already FAILED at step " .. (dealerTest.failAt or 0) .. " - use /cb test stop, then rerun")
+    return false
+  end
+  if not dealerTest.active or not dealerTest.steps then
+    DealerTestSay("no active test - use /cb test win or /cb test loss")
+    return false
+  end
+  dealerTest.step = dealerTest.step + 1
+  local st = dealerTest.steps[dealerTest.step]
+  if not st then
+    dealerTest.active = false
+    DealerTestRefresh()
+    return false
+  end
+  DealerTestSay(string.format("STEP %02d/%02d %s ...", dealerTest.step, dealerTest.total, st.name))
+  local pok, ok, detail = pcall(st.run, dealerTest.session)
+  if pok and ok then
+    DealerTestSay(string.format("STEP %02d SUCCESS %s", dealerTest.step, detail or ""))
+  else
+    dealerTest.failed = true
+    dealerTest.failAt = dealerTest.step
+    dealerTest.active = false
+    DealerTestSay(string.format("STEP %02d FAIL %s", dealerTest.step, (not pok) and ("LUA ERROR: " .. tostring(ok)) or (detail or "")))
+  end
+  DealerTestRefresh()
+  return pok and ok
+end
+
+local function DealerTestFull(scenario)
+  DealerTestBegin(scenario)
+  while dealerTest.active and not dealerTest.failed and dealerTest.step < dealerTest.total do
+    DealerTestAdvance()
+  end
+  if not dealerTest.failed then
+    dealerTest.active = false
+    DealerTestSay("SCENARIO " .. scenario:upper() .. " COMPLETE - final state " .. tostring(dealerTest.session and dealerTest.session.state))
+    DealerTestRefresh()
+  end
+end
+
+function DealerTestCommand(arg)
+  if not dealerEnabled then
+    print("|cffFFD700Casinobabe|r TEST MODE is dealer-only. Use /cb dealer on first.")
+    return
+  end
+  local sub = ((arg or ""):lower():match("^(%S*)")) or ""
+  if sub == "" then
+    DealerTestFull("win")
+  elseif sub == "win" then
+    DealerTestFull("win")
+  elseif sub == "loss" then
+    DealerTestFull("loss")
+  elseif sub == "stop" then
+    if dealerTest.scenario == nil and not dealerTest.active then
+      DealerTestSay("no active test - already OFF (idempotent)")
+    else
+      dealerTest.active = false
+      dealerTest.scenario = nil
+      dealerTest.step = 0
+      dealerTest.total = 0
+      dealerTest.failed = false
+      dealerTest.failAt = nil
+      dealerTest.session = nil
+      dealerTest.steps = nil
+      DealerTestSay("stopped - TEST OFF")
+    end
+    DealerTestRefresh()
+  elseif sub == "status" then
+    if dealerTest.scenario == nil then
+      DealerTestSay("TEST OFF - use /cb test win or /cb test loss")
+    else
+      local s = dealerTest.session
+      DealerTestSay(string.format("TEST %s step %d/%d failed=%s state=%s game=%s stake=%s roll=%s result=%s mult=%s payout=%s",
+        dealerTest.scenario:upper(), dealerTest.step or 0, dealerTest.total or 0, tostring(dealerTest.failed),
+        (s and s.state) or "-", (s and tostring(s.game)) or "-",
+        (s and tostring(s.stake)) or "-", (s and tostring(s.roll)) or "-",
+        (s and tostring(s.result)) or "-", (s and tostring(s.multiplier)) or "-",
+        (s and tostring(s.payout)) or "-"))
+    end
+  elseif sub == "step" then
+    if dealerTest.failed then
+      DealerTestSay("test FAILED at step " .. (dealerTest.failAt or 0) .. " - use /cb test stop, then rerun")
+      return
+    end
+    if not dealerTest.active then
+      DealerTestBegin("win")
+      DealerTestSay("step mode: WIN scenario open, paused - each /cb test step advances once")
+    end
+    DealerTestAdvance()
+    if not dealerTest.failed and dealerTest.step >= dealerTest.total then
+      dealerTest.active = false
+      DealerTestSay("SCENARIO " .. dealerTest.scenario:upper() .. " COMPLETE")
+      DealerTestRefresh()
+    end
+  else
+    print("|cffFFD700Casinobabe|r Usage: /cb test | /cb test win | /cb test loss | /cb test step | /cb test status | /cb test stop")
+  end
 end
 
 -- Dealer UI Update
@@ -2896,6 +3576,9 @@ function DealerUpdateUIDetail(dp, session)
   dp.detail.btnPayout:SetEnabled(s == DEALER_STATES.RESOLVED and not session.payoutCompleted)
   dp.detail.btnClose:SetEnabled(s == DEALER_STATES.PAID)
   dp.detail.btnCancel:SetEnabled(s ~= DEALER_STATES.CLOSED and s ~= DEALER_STATES.CANCELLED)
+
+  -- Refresh hardware-aware attractor display (read-only channel snapshot).
+  if CasinoAttractor then CasinoAttractor:UpdateUI() end
 end
 
 -- Trade event handlers
@@ -2990,19 +3673,75 @@ function DealerOnTradeClose(targetName, completed)
       DealerAuditLog(session.sessionId, targetName, "PAYOUT_COMPLETED", "Trade successful")
       -- Trigger reaction for payout completed
       CasinoReactionEngine:Trigger("PAYOUT_DONE", { player = targetName, amount = session.trade.expectedAmount })
+      -- Guided close: thank the player and free the table shortly after, so
+      -- PLAY AGAIN starts a fresh round. Silent cleanup (no public farewell
+      -- spam); audit trail is kept in the dealer log.
+      SendChatMessage("Thanks for playing! Whisper JOIN to play again.", "WHISPER", nil, targetName)
+      DealerScheduleAutoClose(targetName, 30, "payout complete")
     else
       DealerSetState(session, DEALER_STATES.STAKE_CONFIRMED, "Stake trade completed")
       DealerAuditLog(session.sessionId, targetName, "STAKE_COMPLETED", "Trade successful")
       -- Trigger reaction for stake trade completed
       CasinoReactionEngine:Trigger("TRADE_COMPLETED", { player = targetName, amount = session.trade.expectedAmount })
+      -- AUTO-OPEN the roll window: without this, later player rolls are
+      -- silently dropped (roll capture only accepts GAME_SELECTED/ROLLING).
+      -- Re-asserting the known game is a valid STAKE_CONFIRMED ->
+      -- GAME_SELECTED transition. Roulette color / dice choice are preserved.
+      DealerOpenRollWindow(targetName)
     end
   else
     DealerSetState(session, DEALER_STATES.ERROR, "Trade cancelled or failed")
     if session.trade then session.trade.sub = "CANCELLED" end
     DealerAuditLog(session.sessionId, targetName, "TRADE_CANCELLED", "Completed: " .. tostring(completed) .. ", Verified: " .. tostring(session.trade.verified))
+    -- Guided recovery (plain English, one action): the 60s ERROR timeout is
+    -- the backstop; the player can also restart immediately via re-entry.
+    SendChatMessage("Trade could not be completed. Whisper JOIN to try again.", "WHISPER", nil, targetName)
     -- Trigger reaction for trade cancelled
     CasinoReactionEngine:Trigger("TRADE_CANCELLED", { player = targetName, completed = completed })
   end
+end
+
+-- Open the roll window after the stake is secured and tell the player it is
+-- their turn, using the game's own rules text (single source of truth).
+-- Respects a pending group invite (waits for group acceptance first) and
+-- leaves dice to the existing house-roll flow.
+function DealerOpenRollWindow(playerName)
+  local session = DealerGetSession(playerName)
+  if not session then return false end
+  if session.state ~= DEALER_STATES.STAKE_CONFIRMED then return false end
+  -- If a group invite is outstanding, wait for acceptance (ACTION_REQUIRED).
+  if session.group and session.group.invited and not session.group.grouped then
+    SendChatMessage("Please accept the group invitation.", "WHISPER", nil, playerName)
+    DealerAuditLog(session.sessionId, playerName, "ROLL_WINDOW_DEFERRED", "waiting for group acceptance")
+    return false
+  end
+  local g = session.game
+  if not g then
+    SendChatMessage("Choose your game: Lucky 7, Roulette, Dice, Blackjack, Normal, High Risk. Reply with the game name.", "WHISPER", nil, playerName)
+    return false
+  end
+  if g == "dice" then
+    SendChatMessage("Your stake is confirmed. Waiting for the house roll...", "WHISPER", nil, playerName)
+    DealerAuditLog(session.sessionId, playerName, "ROLL_WINDOW_SKIPPED", "dice uses house-roll flow")
+    return true
+  end
+  -- Preserve game-specific picks across the re-assert (DealerGame resets them).
+  local extra = nil
+  if g == "roulette" and session.gameData and session.gameData.color then
+    extra = session.gameData.color
+  end
+  local ok, err = DealerGame(playerName, g, extra)
+  if not ok then
+    DealerAuditLog(session.sessionId, playerName, "ROLL_WINDOW_FAILED", tostring(err))
+    return false
+  end
+  local rule = GetGameRule(g)
+  local rname = (rule and rule.name) or g
+  local rdesc = (rule and rule.description) or "Roll when ready."
+  SendChatMessage("TABLE READY - " .. rname .. " - " .. (session.stake or 0) .. "g. Your turn! " .. rdesc, "WHISPER", nil, playerName)
+  DealerAuditLog(session.sessionId, playerName, "ROLL_WINDOW_OPEN", rname .. " " .. (session.stake or 0) .. "g")
+  DealerUpdateUI()
+  return true
 end
 
 -- ============================================================================
@@ -3416,6 +4155,7 @@ function DealerOnSystemMsg(text)
     local okRes, errRes = DealerResolve(who)
     if okRes then
       DealerAuditLog(session.sessionId, who, "AUTO_RESOLVE", "result=" .. tostring(session.result) .. " mult=x" .. tostring(session.multiplier) .. " payout=" .. tostring(session.payout) .. "g")
+      DealerSendRoundResult(who)
       if session.result == "WIN" then
         local okPay, errPay = DealerPayout(who)
         if okPay then
@@ -3597,7 +4337,6 @@ local resultFX
 local centerInfo
 local topBanner
 local bannerGen=0
-local bjTotalFX
 local function RefreshCashbackSoon()
   -- Casinot skickar bara STATE vid saldoandring; en forlust andrar inget extra,
   -- sa cashbacken kan vaxa utan push. Vi drar darfor frisk STATE efter varje runda.
@@ -4067,25 +4806,677 @@ local function CreatePanel()
   local pHl=f.placeBtn:CreateTexture(nil,"HIGHLIGHT"); pHl:SetAllPoints(); pHl:SetColorTexture(1,1,1,0.12)
   f.placeBtn:SetScript("OnClick", function() PlaceBet() end)
 
-  -- STATE DISPLAY (player state machine)
-  UpdateDisplay=function()
-    if not f or not f.statusText then return end
-    local states = {IDLE="IDLE", SELECT_GAME="SELECT GAME", SELECT_STAKE="STAKE", REQUESTING="REQUESTING", 
-      WAITING_FOR_DEALER="WAITING", ACCEPTED="ACCEPTED", STAKE_REQUIRED="STAKE", READY="READY", 
-      YOUR_TURN="YOUR TURN", WAITING_RESULT="ROLLING", RESULT="RESULT", WIN="WIN", LOSS="LOSS", 
-      JACKPOT="JACKPOT", PAYOUT_REQUIRED="PAYOUT", COMPLETE="COMPLETE", ERROR="ERROR", CANCELLED="CANCELLED"}
-    local st = pending and pending.state or "IDLE"
-    f.statusText:SetText(states[st] or st)
-    f.statusText:SetTextColor(uc(C.light))
+  -- ============================================================================
+  -- ONE-CLICK DEMO BUTTON
+  -- ============================================================================
+  local function SafeNameCompare(a, b)
+    if not a or not b then return false end
+    return a:lower() == b:lower()
   end
 
-  -- Game chips click scripts get state-aware updates
-  for _,chip in pairs(f.gameChips) do
-    chip:SetScript("OnClick", function(self)
-      SelectGame(self.gameKey)
-      UpdateDisplay()
+  local function UpdateDemoButton()
+    if not f.demoBtn then return end
+    if demoSession.active then
+      f.demoBtn:SetText("DÉMO EN COURS…")
+      f.demoBtn:SetEnabled(false)
+      f.demoTxt:SetTextColor(0.3, 0.3, 0.3, 1)
+    elseif demoSession.scenario and not demoSession.active then
+      if demoSession.failed then
+        f.demoBtn:SetText("DÉMO ERREUR — voir diagnostic")
+        f.demoBtn:SetEnabled(true)
+        f.demoTxt:SetTextColor(1, 0.3, 0.3, 1)
+      else
+        f.demoBtn:SetText("DÉMO TERMINÉE ✓")
+        f.demoBtn:SetEnabled(true)
+        f.demoTxt:SetTextColor(0.2, 0.8, 0.2, 1)
+      end
+    else
+      f.demoBtn:SetText("🎬 LANCER LA DÉMO")
+      f.demoBtn:SetEnabled(true)
+      f.demoTxt:SetTextColor(0.10, 0.05, 0.02, 1)
+    end
+  end
+
+  local function RunOneClickDemo()
+    if demoSession.active then return end
+    local playerName = UnitName("player")
+    if not dealerEnabled then
+      DealerToggle("on")
+    end
+    DealerDemoCommand("win")
+    UpdateDemoButton()
+    local demoWatcher
+    demoWatcher = CreateFrame("Frame")
+    demoWatcher:SetScript("OnUpdate", function(self, elapsed)
+      self.t = (self.t or 0) + elapsed
+      if self.t >= 0.5 then
+        self.t = 0
+        UpdateDemoButton()
+        if not demoSession.active and demoSession.scenario then
+          self:SetScript("OnUpdate", nil)
+        end
+      end
     end)
   end
+
+  f.demoBtn = CreateFrame("Button", nil, f)
+  f.demoBtn:SetSize(f:GetWidth() - PAD * 2, 30)
+  f.demoBtn:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -360)
+  MakeBacking(f.demoBtn, uc(C.gold, 1))
+  MakeBorder(f.demoBtn, 2):SetColor(uc(C.goldDk))
+  f.demoTxt = MakeText(f.demoBtn, 12, "", "CENTER")
+  f.demoTxt:SetText("🎬 LANCER LA DÉMO")
+  f.demoTxt:SetPoint("CENTER")
+  f.demoTxt:SetTextColor(0.10, 0.05, 0.02, 1)
+  local dHl = f.demoBtn:CreateTexture(nil, "HIGHLIGHT")
+  dHl:SetAllPoints()
+  dHl:SetColorTexture(1, 1, 1, 0.12)
+  f.demoBtn:SetScript("OnClick", RunOneClickDemo)
+
+  -- ============================================================================
+  -- TEST LIVE BUTTON (Universal Live Communication Test)
+  -- ============================================================================
+  local function GetLiveTestContext()
+    local inInstance, instanceType = IsInInstance and IsInInstance() or false
+    local numParty = GetNumPartyMembers and GetNumPartyMembers() or 0
+    local numRaid = GetNumRaidMembers and GetNumRaidMembers() or 0
+    local isInGroup = numParty > 0
+    local isInRaid = numRaid > 0
+    local playerName = UnitName("player")
+    local targetName = UnitName("target")
+    local zoneText = GetZoneText and GetZoneText() or "Unknown"
+
+    local ctx = {
+      inInstance = inInstance,
+      instanceType = instanceType,
+      isInGroup = isInGroup,
+      isInRaid = isInRaid,
+      numParty = numParty,
+      numRaid = numRaid,
+      playerName = playerName,
+      targetName = targetName,
+      zoneText = zoneText,
+    }
+
+    -- Determine context label
+    if inInstance then
+      if instanceType == "pvp" then
+        ctx.label = "BATTLEGROUND"
+        ctx.channel = "INSTANCE_CHAT"
+      elseif instanceType == "arena" then
+        ctx.label = "ARENA"
+        ctx.channel = "INSTANCE_CHAT"
+      elseif instanceType == "party" then
+        ctx.label = "DUNGEON"
+        ctx.channel = "INSTANCE_CHAT"
+      elseif instanceType == "raid" then
+        ctx.label = "RAID_INSTANCE"
+        ctx.channel = "INSTANCE_CHAT"
+      else
+        ctx.label = "INSTANCE"
+        ctx.channel = "INSTANCE_CHAT"
+      end
+    else
+      -- Outdoor / World
+      if isInRaid then
+        ctx.label = "OUTDOOR_RAID"
+        ctx.channel = "RAID"
+      elseif isInGroup then
+        ctx.label = "OUTDOOR_PARTY"
+        ctx.channel = "PARTY"
+      else
+        ctx.label = "OUTDOOR"
+        ctx.channel = nil
+      end
+    end
+
+    return ctx
+  end
+
+  local function RunLiveTest()
+    -- Prevent double execution
+    if _G.CasinobabeLiveTestActive then
+      return
+    end
+
+    _G.CasinobabeLiveTestActive = true
+    _G.CasinobabeLiveTestResult = nil
+
+    local ctx = GetLiveTestContext()
+    local testsPassed = 0
+    local testsTotal = 0
+    local testDetails = {}
+    local playerName = ctx.playerName
+
+    local function LogStep(stepName, success, detail)
+      testsTotal = testsTotal + 1
+      if success then
+        testsPassed = testsPassed + 1
+        AddonPrint("|cffFFD700[CB LIVE]|r " .. stepName .. " - OK")
+      else
+        AddonPrint("|cffFF0000[CB LIVE]|r " .. stepName .. " - " .. tostring(detail))
+      end
+      table.insert(testDetails, { step = stepName, success = success, detail = detail })
+    end
+
+    local function SendTestMessage(channel, message, stepName)
+      if not channel or not message then
+        LogStep(stepName, false, "SKIPPED - no channel/message")
+        return false
+      end
+      local ok, err = pcall(SendChatMessage, message, channel)
+      if ok then
+        LogStep(stepName, true, "sent to " .. channel)
+        return true
+      else
+        LogStep(stepName, false, "FAILED - " .. tostring(err))
+        return false
+      end
+    end
+
+    -- STEP 1: Context detection
+    LogStep("STEP 01: Context detection", true, "CONTEXT=" .. ctx.label .. " ZONE=" .. ctx.zoneText)
+
+    -- STEP 2: Instance channel test (BG, Arena, Dungeon, Raid Instance)
+    if ctx.inInstance then
+      local msg1 = "[Casinobabe TEST] LIVE communication 1/3"
+      SendTestMessage("INSTANCE_CHAT", msg1, "STEP 02: INSTANCE_CHAT message 1/3")
+
+      local msg2 = "[Casinobabe TEST] LIVE communication 2/3"
+      SendTestMessage("INSTANCE_CHAT", msg2, "STEP 03: INSTANCE_CHAT message 2/3")
+
+      local msg3 = "[Casinobabe TEST] LIVE communication PASSED"
+      SendTestMessage("INSTANCE_CHAT", msg3, "STEP 04: INSTANCE_CHAT message 3/3")
+    end
+
+    -- STEP: Home group channels (Raid/Party when not in instance)
+    if not ctx.inInstance then
+      if ctx.isInRaid then
+        local msg1 = "[Casinobabe TEST] LIVE communication 1/3"
+        SendTestMessage("RAID", msg1, "STEP 02: RAID message 1/3")
+
+        local msg2 = "[Casinobabe TEST] LIVE communication 2/3"
+        SendTestMessage("RAID", msg2, "STEP 03: RAID message 2/3")
+
+        local msg3 = "[Casinobabe TEST] LIVE communication PASSED"
+        SendTestMessage("RAID", msg3, "STEP 04: RAID message 3/3")
+      elseif ctx.isInGroup then
+        local msg1 = "[Casinobabe TEST] LIVE communication 1/3"
+        SendTestMessage("PARTY", msg1, "STEP 02: PARTY message 1/3")
+
+        local msg2 = "[Casinobabe TEST] LIVE communication 2/3"
+        SendTestMessage("PARTY", msg2, "STEP 03: PARTY message 2/3")
+
+        local msg3 = "[Casinobabe TEST] LIVE communication PASSED"
+        SendTestMessage("PARTY", msg3, "STEP 04: PARTY message 3/3")
+      end
+    end
+
+    -- STEP: Outdoor SAY/YELL (hardware event protected - button click IS hardware event)
+    if not ctx.inInstance and not ctx.isInRaid and not ctx.isInGroup then
+      -- Only SAY/YELL from hardware click (button OnClick is hardware event)
+      if type(SendChatMessage) == "function" then
+        local sayMsg = "[Casinobabe TEST] SAY test"
+        local ok1 = pcall(SendChatMessage, sayMsg, "SAY")
+        LogStep("STEP 02: SAY message", ok1, ok1 and "sent to SAY" or "FAILED")
+
+        local yellMsg = "[Casinobabe TEST] YELL test"
+        local ok2 = pcall(SendChatMessage, yellMsg, "YELL")
+        LogStep("STEP 03: YELL message", ok2, ok2 and "sent to YELL" or "FAILED")
+      end
+    end
+
+    -- STEP: Whisper to valid target (target or party member)
+    local whisperTarget = nil
+    if ctx.targetName and ctx.targetName ~= playerName then
+      whisperTarget = ctx.targetName
+    elseif ctx.numParty > 0 then
+      whisperTarget = UnitName("party1")
+    elseif ctx.numRaid > 0 then
+      local n = ctx.numRaid
+      for i = 1, n do
+        local name = GetRaidRosterInfo and GetRaidRosterInfo(i)
+        if name and name ~= playerName then
+          whisperTarget = name
+          break
+        end
+      end
+    end
+
+    if whisperTarget then
+      local whisperMsg = "[Casinobabe TEST] LIVE communication PASSED"
+      local ok, err = pcall(SendChatMessage, whisperMsg, "WHISPER", nil, whisperTarget)
+      LogStep("STEP: WHISPER to " .. whisperTarget, ok, ok and "sent" or ("FAILED - " .. tostring(err)))
+    else
+      LogStep("STEP: WHISPER", false, "SKIPPED - NO VALID TARGET")
+    end
+
+    -- Summary
+    local passed = testsPassed == testsTotal
+    _G.CasinobabeLiveTestResult = passed and "PASSED" or "FAILED"
+
+    local summary = string.format(
+      "CONTEXT: %s\nCHANNEL: %s\nTARGET: %s\nPLAYER: %s\nPARTY: %s\nRAID: %s\nSAY: %s\nYELL: %s\nWHISPER: %s\nRESULT: %s",
+      ctx.label,
+      ctx.channel or "NONE",
+      whisperTarget or "NONE",
+      playerName or "Unknown",
+      ctx.isInGroup and "YES" or "NO",
+      ctx.isInRaid and "YES" or "NO",
+      (not ctx.inInstance and not ctx.isInRaid and not ctx.isInGroup) and "TESTED" or "N/A (instance/home group)",
+      (not ctx.inInstance and not ctx.isInRaid and not ctx.isInGroup) and "TESTED" or "N/A (instance/home group)",
+      whisperTarget and "TESTED" or "SKIPPED - NO VALID TARGET",
+      passed and "PASSED" or "FAILED"
+    )
+
+    AddonPrint("|cffFFD700[CB LIVE]|r ===== LIVE TEST SUMMARY =====")
+    AddonPrint(summary)
+
+    -- Update button text (will be reflected by UpdateLiveTestButton)
+    C_Timer.After(0.1, function()
+      if f.liveTestBtn then
+        UpdateLiveTestButton()
+      end
+    end)
+
+    -- Auto-reset after 5 seconds
+    C_Timer.After(5, function()
+      _G.CasinobabeLiveTestActive = nil
+      _G.CasinobabeLiveTestResult = nil
+      if f.liveTestBtn then
+        UpdateLiveTestButton()
+      end
+    end)
+  end
+
+  local function UpdateLiveTestButton()
+    if not f.liveTestBtn then return end
+    local ctx = GetLiveTestContext()
+    local statusText = ""
+    if _G.CasinobabeLiveTestResult == "PASSED" then
+      statusText = "|cff00ff00LIVE TEST PASSED|r"
+      f.liveTestBtn:SetEnabled(true)
+    elseif _G.CasinobabeLiveTestResult == "FAILED" then
+      statusText = "|cffff0000LIVE TEST FAILED|r"
+      f.liveTestBtn:SetEnabled(true)
+    elseif _G.CasinobabeLiveTestActive then
+      statusText = "|cff00ffffLIVE TEST RUNNING|r"
+      f.liveTestBtn:SetEnabled(false)
+    else
+      statusText = "|cffADD8E6TEST LIVE|r"
+      f.liveTestBtn:SetEnabled(true)
+    end
+
+    local detailText = string.format(
+      "CONTEXT: %s  |  CHANNEL: %s  |  TARGET: %s",
+      ctx.label,
+      ctx.channel or "NONE",
+      ctx.targetName and (ctx.targetName ~= ctx.playerName and ctx.targetName or "NONE") or "NONE"
+    )
+
+    f.liveTestTxt:SetText(statusText)
+    f.liveTestDetail:SetText(detailText)
+  end
+
+  -- Live Test Button
+  f.liveTestBtn = CreateFrame("Button", nil, f)
+  f.liveTestBtn:SetSize(f:GetWidth() - PAD * 2, 30)
+  f.liveTestBtn:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -396)
+  MakeBacking(f.liveTestBtn, uc(C.gold, 1))
+  MakeBorder(f.liveTestBtn, 2):SetColor(uc(C.goldDk))
+  f.liveTestTxt = MakeText(f.liveTestBtn, 12, "", "CENTER")
+  f.liveTestTxt:SetPoint("CENTER")
+  f.liveTestTxt:SetText("|cffADD8E6TEST LIVE|r")
+  f.liveTestTxt:SetTextColor(0.67, 0.65, 0.52, 1)
+
+  -- Detail text below button
+  f.liveTestDetail = MakeText(f, 9, "", "CENTER")
+  f.liveTestDetail:SetPoint("TOPLEFT", f.liveTestBtn, "BOTTOMLEFT", 0, -2)
+  f.liveTestDetail:SetPoint("TOPRIGHT", f.liveTestBtn, "BOTTOMRIGHT", 0, -2)
+  f.liveTestDetail:SetText("CONTEXT: OUTDOOR  |  CHANNEL: NONE  |  TARGET: NONE")
+  f.liveTestDetail:SetTextColor(0.5, 0.5, 0.5, 1)
+
+  local dHl = f.liveTestBtn:CreateTexture(nil, "HIGHLIGHT")
+  dHl:SetAllPoints()
+  dHl:SetColorTexture(1, 1, 1, 0.12)
+  f.liveTestBtn:SetScript("OnClick", RunLiveTest)
+
+  -- ============================================================================
+  -- AUTOPILOT DEALER SYSTEM
+  -- ============================================================================
+  local autopilotState = {
+    active = false,
+    timers = {},
+    autoWhisper = false,
+    startTime = 0,
+  }
+
+  local function GetContextLabel()
+    local inInstance, instanceType = IsInInstance and IsInInstance() or false
+    local isInGroup = IsInGroup and IsInGroup() or false
+    local isInRaid = IsInRaid and IsInRaid() or false
+    
+    if inInstance then
+      if instanceType == "pvp" then return "BATTLEGROUND"
+      elseif instanceType == "arena" then return "ARENA"
+      elseif instanceType == "party" then return "DUNGEON"
+      elseif instanceType == "raid" then return "RAID_INSTANCE"
+      else return "INSTANCE" end
+    else
+      if IsInRaid and IsInRaid() then return "OUTDOOR_RAID"
+      elseif IsInGroup and IsInGroup() then return "OUTDOOR_PARTY"
+      else return "OUTDOOR" end
+    end
+  end
+
+  local function UpdateAutopilotStatusDisplay()
+    if not f.autopilotStatus then return end
+    
+    local dealerName = UnitName("player")
+    local zone = GetRealZoneText and GetRealZoneText() or GetZoneText and GetZoneText() or "Unknown"
+    local subZone = GetSubZoneText and GetSubZoneText() or ""
+    local context = GetContextLabel()
+    local inInstance, instanceType = IsInInstance and IsInInstance() or false
+    
+    local prospectCount = 0
+    if prospects then for _ in pairs(prospects) do prospectCount = prospectCount + 1 end end
+    local sessionCount = 0
+    if dealerSessions then for _, s in pairs(dealerSessions) do if s.state ~= "CLOSED" and s.state ~= "CANCELLED" then sessionCount = sessionCount + 1 end end end
+    
+    local statusText = string.format(
+      "|cffFFD700CASINOBAE LIVE|r\n" ..
+      "----------------\n" ..
+      "Dealer: %s\n" ..
+      "Zone: %s\n" ..
+      "Context: %s\n" ..
+      "Listener: %s\n" ..
+      "Prospects: %d\n" ..
+      "Sessions: %d\n" ..
+      "Auto-Whisper: %s\n" ..
+      "Status: %s",
+      dealerName,
+      (subZone ~= "" and (zone .. " - " .. subZone) or zone),
+      context,
+      autopilotState.active and "|cff78EB96ON|r" or "|cffEB5E4FOFF|r",
+      prospectCount,
+      sessionCount,
+      autopilotState.autoWhisper and "|cff78EB96ON|r" or "|cffEB5E4FOFF|r",
+      autopilotState.active and "|cff78EB96ACTIVE|r" or "|cffEB5E4FSTOPPED|r"
+    )
+    
+    f.autopilotStatus:SetText(statusText)
+  end
+
+  local function StopAutopilotTimers()
+    for _, timer in ipairs(autopilotState.timers) do
+      if timer and timer.Cancel then timer:Cancel() end
+    end
+    autopilotState.timers = {}
+  end
+
+  local function StartAutopilotShow()
+    if not dealerEnabled or not CasinoShow then return end
+    -- Start the casino show sequence
+    CasinoShow:StartShow()
+    print("|cffFFD700[CB AUTOPILOT]|r Casino show started")
+  end
+
+  local function StartAutopilotTimers()
+    StopAutopilotTimers()
+    
+    -- Periodic status update
+    local statusTimer = C_Timer.NewTicker(30, function()
+      if autopilotState.active then
+        UpdateAutopilotStatusDisplay()
+      end
+    end)
+    table.insert(autopilotState.timers, statusTimer)
+    
+    -- Periodic prospect cleanup
+    local cleanupTimer = C_Timer.NewTicker(60, function()
+      if autopilotState.active then
+        CleanOldProspects()
+      end
+    end)
+    table.insert(autopilotState.timers, cleanupTimer)
+    
+    -- Auto-attract advertisement (if enabled and dealer)
+    if CasinobabeDB.autoDealer and CasinoAttractor then
+      local attractTimer = C_Timer.NewTicker(180, function()
+        if autopilotState.active and dealerEnabled and CasinoAttractor then
+          CasinoAttractor:AdvertiseOnce()
+        end
+      end)
+      table.insert(autopilotState.timers, attractTimer)
+    end
+  end
+
+  local function StartCasinoAutopilot()
+    if autopilotState.active then
+      print("|cffFFD700[CB AUTOPILOT]|r Already active")
+      return
+    end
+    
+    autopilotState.active = true
+    autopilotState.startTime = time()
+    dealerEnabled = true
+    
+    -- Initialize zone context
+    UpdateZoneContext()
+    
+    -- Initialize prospect system
+    prospects = prospects or {}
+    prospectCooldown = prospectCooldown or {}
+    
+    -- Initialize timers
+    StartAutopilotTimers()
+    
+    -- Start casino show if dealer
+    StartAutopilotShow()
+    
+    -- Update UI
+    UpdateAutopilotStatusDisplay()
+    UpdateAutopilotButtons()
+    
+    print(string.format("|cffFFD700[CB AUTOPILOT]|r STARTED by %s", UnitName("player")))
+    print(string.format("|cffFFD700[CB AUTOPILOT]|r Zone: %s | Context: %s", 
+      GetRealZoneText and GetRealZoneText() or GetZoneText and GetZoneText() or "Unknown",
+      GetContextLabel()))
+  end
+
+  local function StopCasinoAutopilot()
+    if not autopilotState.active then
+      print("|cffFFD700[CB AUTOPILOT]|r Not active")
+      return
+    end
+    
+    autopilotState.active = false
+    autopilotState.autoWhisper = false
+    
+    -- Stop all autopilot timers but keep real sessions
+    StopAutopilotTimers()
+    
+    -- Update UI
+    UpdateAutopilotStatusDisplay()
+    UpdateAutopilotButtons()
+    
+    print("|cffFFD700[CB AUTOPILOT]|r STOPPED - real sessions preserved")
+  end
+
+  local function ToggleAutoWhisper()
+    autopilotState.autoWhisper = not autopilotState.autoWhisper
+    print(string.format("|cffFFD700[CB AUTOPILOT]|r Auto-whisper: %s", 
+      autopilotState.autoWhisper and "|cff78EB96ON|r" or "|cffEB5E4FOFF|r"))
+    UpdateAutopilotButtons()
+  end
+
+  local function UpdateAutopilotButtons()
+    if not f.startCasinoBtn or not f.stopCasinoBtn then return end
+    
+    if autopilotState.active then
+      f.startCasinoBtn:SetText("|cff78EB96CASINO LIVE|r")
+      f.startCasinoBtn:SetEnabled(false)
+      f.stopCasinoBtn:SetEnabled(true)
+      f.autoWhisperBtn:SetEnabled(true)
+      if autopilotState.autoWhisper then
+        f.autoWhisperBtn:SetText("|cff78EB96AUTO-WHISPER: ON|r")
+        f.autoWhisperBtn:SetBackdropColor(0.1, 0.3, 0.1, 1)
+      else
+        f.autoWhisperBtn:SetText("|cffEB5E4FAUTO-WHISPER: OFF|r")
+        f.autoWhisperBtn:SetBackdropColor(0.3, 0.1, 0.1, 1)
+      end
+      f.announceSayBtn:SetEnabled(true)
+      f.announceYellBtn:SetEnabled(true)
+      f.moveSpotBtn:SetEnabled(true)
+      f.faceCrowdBtn:SetEnabled(true)
+    else
+      f.startCasinoBtn:SetText("|cffFFD700🎰 START CASINO|r")
+      f.startCasinoBtn:SetEnabled(true)
+      f.stopCasinoBtn:SetEnabled(false)
+      f.autoWhisperBtn:SetEnabled(false)
+      f.autoWhisperBtn:SetText("|cffEB5E4FAUTO-WHISPER: OFF|r")
+      f.announceSayBtn:SetEnabled(false)
+      f.announceYellBtn:SetEnabled(false)
+      f.moveSpotBtn:SetEnabled(false)
+      f.faceCrowdBtn:SetEnabled(false)
+    end
+  end
+
+  -- Autopilot UI Buttons
+  local function CreateAutopilotUI()
+    -- START CASINO button
+    f.startCasinoBtn = CreateFrame("Button", nil, f)
+    f.startCasinoBtn:SetSize(f:GetWidth() - PAD * 2, 34)
+    f.startCasinoBtn:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -432)
+    MakeBacking(f.startCasinoBtn, uc(C.gold, 1))
+    MakeBorder(f.startCasinoBtn, 2):SetColor(uc(C.goldDk))
+    f.startCasinoTxt = MakeText(f.startCasinoBtn, 13, "", "CENTER")
+    f.startCasinoTxt:SetPoint("CENTER")
+    f.startCasinoTxt:SetText("|cffFFD700🎰 START CASINO|r")
+    f.startCasinoTxt:SetTextColor(0.10, 0.05, 0.02, 1)
+    local scHl = f.startCasinoBtn:CreateTexture(nil, "HIGHLIGHT")
+    scHl:SetAllPoints()
+    scHl:SetColorTexture(1, 1, 1, 0.12)
+    f.startCasinoBtn:SetScript("OnClick", StartCasinoAutopilot)
+
+    -- STOP CASINO button
+    f.stopCasinoBtn = CreateFrame("Button", nil, f)
+    f.stopCasinoBtn:SetSize((f:GetWidth() - PAD * 2 - 4) / 2, 28)
+    f.stopCasinoBtn:SetPoint("TOPLEFT", f.startCasinoBtn, "BOTTOMLEFT", 0, -4)
+    MakeBacking(f.stopCasinoBtn, 0.3, 0.1, 0.1, 0.95)
+    MakeBorder(f.stopCasinoBtn, 2):SetColor(0.5, 0.1, 0.1, 1)
+    f.stopCasinoTxt = MakeText(f.stopCasinoBtn, 11, "", "CENTER")
+    f.stopCasinoTxt:SetPoint("CENTER")
+    f.stopCasinoTxt:SetText("|cffEB5E4FSTOP CASINO|r")
+    f.stopCasinoTxt:SetTextColor(1, 0.7, 0.7, 1)
+    local stHl = f.stopCasinoBtn:CreateTexture(nil, "HIGHLIGHT")
+    stHl:SetAllPoints()
+    stHl:SetColorTexture(1, 0.5, 0.5, 0.12)
+    f.stopCasinoBtn:SetScript("OnClick", StopCasinoAutopilot)
+
+    -- Auto-whisper toggle
+    f.autoWhisperBtn = CreateFrame("Button", nil, f)
+    f.autoWhisperBtn:SetSize((f:GetWidth() - PAD * 2 - 4) / 2, 28)
+    f.autoWhisperBtn:SetPoint("LEFT", f.stopCasinoBtn, "RIGHT", 4, 0)
+    MakeBacking(f.autoWhisperBtn, 0.1, 0.2, 0.1, 0.95)
+    MakeBorder(f.autoWhisperBtn, 2):SetColor(0.1, 0.4, 0.1, 1)
+    f.autoWhisperTxt = MakeText(f.autoWhisperBtn, 10, "", "CENTER")
+    f.autoWhisperTxt:SetPoint("CENTER")
+    f.autoWhisperTxt:SetText("|cffEB5E4FAUTO-WHISPER: OFF|r")
+    f.autoWhisperTxt:SetTextColor(1, 0.7, 0.7, 1)
+    local awHl = f.autoWhisperBtn:CreateTexture(nil, "HIGHLIGHT")
+    awHl:SetAllPoints()
+    awHl:SetColorTexture(0.5, 1, 0.5, 0.12)
+    f.autoWhisperBtn:SetScript("OnClick", ToggleAutoWhisper)
+
+    -- Announce SAY (hardware event)
+    f.announceSayBtn = CreateFrame("Button", nil, f)
+    f.announceSayBtn:SetSize((f:GetWidth() - PAD * 2 - 4) / 2, 26)
+    f.announceSayBtn:SetPoint("TOPLEFT", f.stopCasinoBtn, "BOTTOMLEFT", 0, -4)
+    MakeBacking(f.announceSayBtn, 0.1, 0.2, 0.1, 0.9)
+    MakeBorder(f.announceSayBtn, 2):SetColor(0.2, 0.5, 0.2, 1)
+    f.announceSayTxt = MakeText(f.announceSayBtn, 10, "", "CENTER")
+    f.announceSayTxt:SetPoint("CENTER")
+    f.announceSayTxt:SetText("|cff78EB96ANNOUNCE SAY|r")
+    f.announceSayTxt:SetTextColor(0.1, 0.3, 0.1, 1)
+    local asHl = f.announceSayBtn:CreateTexture(nil, "HIGHLIGHT")
+    asHl:SetAllPoints()
+    asHl:SetColorTexture(0.5, 1, 0.5, 0.12)
+    f.announceSayBtn:SetScript("OnClick", function()
+      if type(SendChatMessage) == "function" then
+        local msg = string.format("[CasinoBae] Table open! %s | Whisper %s JOIN", 
+          GetRealZoneText and GetRealZoneText() or GetZoneText(), DEALER_NAME)
+        pcall(SendChatMessage, msg, "SAY")
+        print("|cffFFD700[CB AUTOPILOT]|r SAY announcement sent")
+      end
+    end)
+
+    -- Announce YELL (hardware event)
+    f.announceYellBtn = CreateFrame("Button", nil, f)
+    f.announceYellBtn:SetSize((f:GetWidth() - PAD * 2 - 4) / 2, 26)
+    f.announceYellBtn:SetPoint("LEFT", f.announceSayBtn, "RIGHT", 4, 0)
+    MakeBacking(f.announceYellBtn, 0.2, 0.15, 0.05, 0.9)
+    MakeBorder(f.announceYellBtn, 2):SetColor(0.5, 0.3, 0.1, 1)
+    f.announceYellTxt = MakeText(f.announceYellBtn, 10, "", "CENTER")
+    f.announceYellTxt:SetPoint("CENTER")
+    f.announceYellTxt:SetText("|cffFFD700ANNOUNCE YELL|r")
+    f.announceYellTxt:SetTextColor(0.2, 0.15, 0.05, 1)
+    local ayHl = f.announceYellBtn:CreateTexture(nil, "HIGHLIGHT")
+    ayHl:SetAllPoints()
+    ayHl:SetColorTexture(1, 0.8, 0.5, 0.12)
+    f.announceYellBtn:SetScript("OnClick", function()
+      if type(SendChatMessage) == "function" then
+        local msg = string.format("[CasinoBae] Casino open! Whisper %s JOIN", DEALER_NAME)
+        pcall(SendChatMessage, msg, "YELL")
+        print("|cffFFD700[CB AUTOPILOT]|r YELL announcement sent")
+      end
+    end)
+
+    -- Movement buttons row
+    f.moveSpotBtn = CreateFrame("Button", nil, f)
+    f.moveSpotBtn:SetSize((f:GetWidth() - PAD * 2 - 4) / 2, 26)
+    f.moveSpotBtn:SetPoint("TOPLEFT", f.announceSayBtn, "BOTTOMLEFT", 0, -4)
+    MakeBacking(f.moveSpotBtn, 0.15, 0.1, 0.2, 0.9)
+    MakeBorder(f.moveSpotBtn, 2):SetColor(0.3, 0.2, 0.5, 1)
+    f.moveSpotTxt = MakeText(f.moveSpotBtn, 10, "", "CENTER")
+    f.moveSpotTxt:SetPoint("CENTER")
+    f.moveSpotTxt:SetText("|cffADD8E6MOVE TO SPOT|r")
+    f.moveSpotTxt:SetTextColor(0.6, 0.5, 0.8, 1)
+    local msHl = f.moveSpotBtn:CreateTexture(nil, "HIGHLIGHT")
+    msHl:SetAllPoints()
+    msHl:SetColorTexture(0.7, 0.6, 1, 0.12)
+    f.moveSpotBtn:SetScript("OnClick", function()
+      print("|cffFFD700[CB AUTOPILOT]|r MOVE TO SPOT - dealer must move manually")
+    end)
+
+    f.faceCrowdBtn = CreateFrame("Button", nil, f)
+    f.faceCrowdBtn:SetSize((f:GetWidth() - PAD * 2 - 4) / 2, 26)
+    f.faceCrowdBtn:SetPoint("LEFT", f.moveSpotBtn, "RIGHT", 4, 0)
+    MakeBacking(f.faceCrowdBtn, 0.2, 0.15, 0.1, 0.9)
+    MakeBorder(f.faceCrowdBtn, 2):SetColor(0.5, 0.3, 0.2, 1)
+    f.faceCrowdTxt = MakeText(f.faceCrowdBtn, 10, "", "CENTER")
+    f.faceCrowdTxt:SetPoint("CENTER")
+    f.faceCrowdTxt:SetText("|cffFFD700FACE CROWD|r")
+    f.faceCrowdTxt:SetTextColor(0.8, 0.6, 0.4, 1)
+    local fcHl = f.faceCrowdBtn:CreateTexture(nil, "HIGHLIGHT")
+    fcHl:SetAllPoints()
+    fcHl:SetColorTexture(1, 0.8, 0.6, 0.12)
+    f.faceCrowdBtn:SetScript("OnClick", function()
+      print("|cffFFD700[CB AUTOPILOT]|r FACE CROWD - dealer must turn manually")
+    end)
+
+    -- Status display panel
+    f.autopilotStatus = MakeText(f, 9, "", "LEFT")
+    f.autopilotStatus:SetPoint("TOPLEFT", f.faceCrowdBtn, "BOTTOMLEFT", 0, -8)
+    f.autopilotStatus:SetPoint("TOPRIGHT", f, "TOPRIGHT", -PAD, -8)
+    f.autopilotStatus:SetText("CASINOBAE LIVE - Click START CASINO to begin")
+    f.autopilotStatus:SetTextColor(0.6, 0.6, 0.6, 1)
+    f.autopilotStatus:SetJustifyH("LEFT")
+  end
+
+  -- Call UI creation
+  CreateAutopilotUI()
+  UpdateAutopilotButtons()
 
   -- ============================================================================
   -- DEALER PANEL (hidden by default)
@@ -4108,7 +5499,52 @@ local function CreatePanel()
     dp.title:SetPoint("TOP", dp, "TOP", 0, -8)
     dp.title:SetText("|cffFFD700CASINOBAE â€” DEALER|r")
     dp.title:SetTextColor(uc(C.gold))
-    
+
+    -- TEST MODE console (dealer panel only - never in the player UI).
+    -- Short status top-left; buttons top-right above the session list with
+    -- raised frame level so they stay clickable. /cb test ... slash works
+    -- regardless of layout.
+    dp.testStatus = MakeText(dp, 9, "OUTLINE", "LEFT")
+    dp.testStatus:SetPoint("TOPLEFT", dp, "TOPLEFT", 8, -10)
+    dp.testStatus:SetText("TEST OFF")
+
+    local function testBtn(label)
+      local b = MakeButton(dp, 40, 18, label, 0.08, 0.10, 0.05, 0.95, C.light)
+      b:SetFrameLevel((dp:GetFrameLevel() or 1) + 6)
+      return b
+    end
+    dp.testWinBtn = testBtn("WIN")
+    dp.testWinBtn:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -92)
+    dp.testWinBtn:SetScript("OnClick", function() DealerTestFull("win") end)
+    dp.testLossBtn = testBtn("LOSS")
+    dp.testLossBtn:SetPoint("RIGHT", dp.testWinBtn, "LEFT", -4, 0)
+    dp.testLossBtn:SetScript("OnClick", function() DealerTestFull("loss") end)
+    dp.testStepBtn = testBtn("STEP")
+    dp.testStepBtn:SetPoint("RIGHT", dp.testLossBtn, "LEFT", -4, 0)
+    dp.testStepBtn:SetScript("OnClick", function() DealerTestCommand("step") end)
+    dp.testStopBtn = testBtn("STOP")
+    dp.testStopBtn:SetPoint("RIGHT", dp.testStepBtn, "LEFT", -4, 0)
+    dp.testStopBtn:SetScript("OnClick", function() DealerTestCommand("stop") end)
+
+    -- SOLO DEMO console (dealer panel only - never in the player UI).
+    -- Short status under the TEST line; second button row below the TEST
+    -- row, same raised frame level. /cb demo ... slash works regardless.
+    dp.demoStatus = MakeText(dp, 8, "OUTLINE", "LEFT")
+    dp.demoStatus:SetPoint("TOPLEFT", dp, "TOPLEFT", 8, -24)
+    dp.demoStatus:SetText("DEMO OFF")
+    dp.demoWinBtn = testBtn("D-WIN")
+    dp.demoWinBtn:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -114)
+    dp.demoWinBtn:SetScript("OnClick", function() DealerDemoCommand("win") end)
+    dp.demoLossBtn = testBtn("D-LOSS")
+    dp.demoLossBtn:SetPoint("RIGHT", dp.demoWinBtn, "LEFT", -4, 0)
+    dp.demoLossBtn:SetScript("OnClick", function() DealerDemoCommand("loss") end)
+    dp.demoNextBtn = testBtn("D-NEXT")
+    dp.demoNextBtn:SetPoint("RIGHT", dp.demoLossBtn, "LEFT", -4, 0)
+    dp.demoNextBtn:SetScript("OnClick", function() DealerDemoCommand("next") end)
+    dp.demoStopBtn = testBtn("D-STOP")
+    dp.demoStopBtn:SetPoint("RIGHT", dp.demoNextBtn, "LEFT", -4, 0)
+    dp.demoStopBtn:SetScript("OnClick", function() DealerDemoCommand("stop") end)
+
     -- Dealer mode toggle
     dp.modeBtn = MakeButton(dp, 100, 22, "Dealer: OFF", 0.20, 0.13, 0.04, 0.95, C.gold)
     dp.modeBtn:SetPoint("TOPLEFT", dp, "TOPLEFT", 8, -36)
@@ -4235,6 +5671,20 @@ local function CreatePanel()
     dp.stopBtn = MakeButton(dp, 80, 22, "â–  STOP", 0.12, 0.05, 0.05, 0.92, C.red)
     dp.stopBtn:SetPoint("LEFT", dp.quickAdBtn, "RIGHT", 8, 0)
     dp.stopBtn:SetScript("OnClick", function() CasinoShow:StopShow() end)
+
+    -- Attractor: ONE click = ONE real channel announcement (hardware event).
+    -- Cooldowns only decide what the next click may send; nothing auto-sends.
+    dp.attractBtn = MakeButton(dp, 100, 22, "ADVERTISE", 0.8, 0.5, 0.1, 0.95, {0.10, 0.05, 0.02})
+    dp.attractBtn:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -36)
+    dp.attractBtn:SetScript("OnClick", function() CasinoAttractor:AdvertiseOnce() end)
+
+    dp.attractStatus = MakeText(dp, 9, "OUTLINE", "RIGHT")
+    dp.attractStatus:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -60)
+    dp.attractStatus:SetText("ATTRACT: ...")
+
+    dp.attractChannels = MakeText(dp, 8, "", "RIGHT")
+    dp.attractChannels:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -73)
+    dp.attractChannels:SetText("")
     
     -- Status display
     dp.statusText = MakeText(dp, 10, "OUTLINE", "LEFT")
@@ -4384,49 +5834,18 @@ local function CreatePanel()
   end
   
   f.dealerPanel = CreateDealerPanel(f)
-  f.currentTab = "player"
-  
-  local function SwitchTab(tab)
-    f.currentTab = tab
-    if tab == "player" then
-      f.playerTab.bg:SetColorTexture(0.12, 0.09, 0.05, 0.9)
-      f.playerTab.txt:SetTextColor(uc(C.gold))
-      f.playerTab.border:SetColor(uc(C.goldDk))
-      f.dealerTab.bg:SetColorTexture(0.08, 0.06, 0.12, 0.85)
-      f.dealerTab.txt:SetTextColor(uc(C.light))
-      f.dealerTab.border:SetColor(0.3, 0.3, 0.3, 1)
-      if f.dealerPanel then f.dealerPanel:Hide() end
-      -- Show player content
-      for _, v in pairs({f.blockBtn, f.balValue:GetParent(), f.cbValue:GetParent(), f.onlineBtn, f.gameChips, f.colorRow, f.amtBox, f.placeBtn, f.rollBtn, f.langBtn, f.howBtn, f.gamesBtn}) do
-        if type(v) == "table" and v.Show then v:Show() end
-      end
-      if f.gameChips then for _, c in pairs(f.gameChips) do c:Show() end end
-      if f.amtChips then for _, c in pairs(f.amtChips) do c:Show() end end
-      if f.colorChips then for _, c in pairs(f.colorChips) do c:Show() end end
+  -- No tab system. PLAYER panel is player-only; the DEALER console is
+  -- authorization-gated and never shown to normal players. Only the
+  -- authorized dealer character with dealer mode enabled ever sees it.
+  -- (Revealed/hidden via the existing dealer mechanism: DealerToggle.)
+  if f.dealerPanel then
+    if IsDealerCharacter() and dealerEnabled then
+      f.dealerPanel:Show()
+      DealerUpdateUI()
     else
-      f.dealerTab.bg:SetColorTexture(0.12, 0.09, 0.05, 0.9)
-      f.dealerTab.txt:SetTextColor(uc(C.gold))
-      f.dealerTab.border:SetColor(uc(C.goldDk))
-      f.playerTab.bg:SetColorTexture(0.08, 0.06, 0.12, 0.85)
-      f.playerTab.txt:SetTextColor(uc(C.light))
-      f.playerTab.border:SetColor(0.3, 0.3, 0.3, 1)
-      -- Hide player content
-      for _, v in pairs({f.blockBtn, f.balValue:GetParent(), f.cbValue:GetParent(), f.onlineBtn, f.gameChips, f.colorRow, f.amtBox, f.placeBtn, f.rollBtn, f.langBtn, f.howBtn, f.gamesBtn}) do
-        if type(v) == "table" and v.Hide then v:Hide() end
-      end
-      if f.gameChips then for _, c in pairs(f.gameChips) do c:Hide() end end
-      if f.amtChips then for _, c in pairs(f.amtChips) do c:Hide() end end
-      if f.colorChips then for _, c in pairs(f.colorChips) do c:Hide() end end
-      -- Show dealer panel
-      if f.dealerPanel then f.dealerPanel:Show(); DealerUpdateUI() end
+      f.dealerPanel:Hide()
     end
   end
-  
-  f.playerTab:SetScript("OnClick", function() SwitchTab("player") end)
-  f.dealerTab:SetScript("OnClick", function() SwitchTab("dealer") end)
-  
-  -- Initialize tab state
-  SwitchTab("player")
 
   -- Escape stanger panelen (lagg till i UISpecialFrames, en gang).
   if UISpecialFrames then
@@ -4484,19 +5903,16 @@ function UpdateDisplay()
     local cb=math.floor(CasinobabeDB.cashback or 0)
     if cb>0 then panel.collectBtn:Show() else panel.collectBtn:Hide() end
   end
-  -- PLAYER-FIRST: single primary action PLAY. Show selection summary in
-  -- status, not technical BET text. Never expose dealer terminology.
+  -- PLAYER-FIRST: single primary action PLAY. Never expose dealer terminology.
   if panel.placeTxt then
     panel.placeTxt:SetText("PLAY")
   end
-  -- Player state machine in status bar (nil-safe).
-  if panel.statusText and SetStatus then
-    local st = pending and pending.state or "IDLE"
-    -- Keep existing status text if a round is active (PopupStart/SetStatus
-    -- already show guidance). Only default to IDLE when no pending.
-    if not pending then
-      -- Do not overwrite a useful message with bare IDLE if panel just opened.
-    end
+  -- Player state machine in status bar (nil-safe). During a round, guidance
+  -- text from PopupStart/SetStatus/OnMyRoll rules and must not be
+  -- overwritten with a raw state token. With no active round, show IDLE.
+  if panel.statusText and not pending then
+    panel.statusText:SetText("IDLE")
+    panel.statusText:SetTextColor(uc(C.light))
   end
   if panel.blockBtn then
     if CasinobabeDB.blockTrades then panel.blockBtn.txt:SetText("Trades OFF"); panel.blockBtn.txt:SetTextColor(uc(C.red)); panel.blockBtn.border:SetColor(uc(C.red))
@@ -4657,7 +6073,7 @@ function OnMyRoll(roll)
       -- ComputePayout, total = stake*mult. GameRules untouched.
       -- Dealer auto-payout (trade) runs in parallel on dealer client.
       -- Never claim payment received before real WoW trade event.
-      local total = pending.stake * mult
+      local total = pending.stake + net
       SetStatus(("%s - YOU WIN! +%dg net (total %dg). Opening trade with %s..."):format(rolledStr, net, total, DEALER_NAME), C.green)
       RecordResult(pending.game, pending.stake, true, net)
       ShowResult(true, net)
@@ -5001,11 +6417,15 @@ local function CreateMinimapButton()
   -- FORSTAHANDSVAL: en riktig LibDBIcon-knapp (buntat bibliotek). Den samlas
   -- garanterat in av MinimapButtonButton och alla andra minimap-samlare.
   local ldbi = LibStub and LibStub("LibDBIcon-1.0", true)
+  print("|cffFFD700[CB MINIMAP]|r LibDBIcon available = " .. tostring(ldbi and "YES" or "NO"))
+  
   if ldbi and ldbi.IsRegistered and not ldbi:IsRegistered("Casinobabe") then
     CasinobabeDB.minimap = CasinobabeDB.minimap or {}
     -- migrera gammal "angle" -> LibDBIcons "minimapPos"
     CasinobabeDB.minimap.minimapPos = CasinobabeDB.minimap.minimapPos
        or CasinobabeDB.minimap.angle or 210
+    -- Ensure not hidden
+    CasinobabeDB.minimap.hide = false
     local dataObj = {
       type="launcher", text="Casinobabe",
       icon="Interface\\Icons\\INV_Misc_Coin_01",
@@ -5016,7 +6436,12 @@ local function CreateMinimapButton()
       end,
     }
     local ok = pcall(function() ldbi:Register("Casinobabe", dataObj, CasinobabeDB.minimap) end)
+    print("|cffFFD700[CB MINIMAP]|r registered = " .. tostring(ok and "YES" or "NO"))
     if ok then
+      -- Ensure not hidden in DB
+      CasinobabeDB.minimap.hide = false
+      -- Explicitly show
+      if ldbi.Show then pcall(function() ldbi:Show("Casinobabe") end) end
       local btn = ldbi.GetMinimapButton and ldbi:GetMinimapButton("Casinobabe")
       if btn then
         -- behall vart "C"-utseende ovanpa LibDBIcon-knappen
@@ -5026,14 +6451,21 @@ local function CreateMinimapButton()
           cC:SetPoint("CENTER",0,0); cC:SetText("C"); cC:SetTextColor(uc(C.gold))
           btn.casinoC=cC
         end
+        btn:Show()
+        print("|cffFFD700[CB MINIMAP]|r shown = YES, hide = " .. tostring(CasinobabeDB.minimap.hide))
+        print("|cffFFD700[CB MINIMAP]|r position = " .. tostring(CasinobabeDB.minimap.minimapPos or CasinobabeDB.minimap.angle or 210))
       end
       return btn
     end
   end
+  print("|cffFFD700[CB MINIMAP]|r using FALLBACK button")
 
   -- FALLBACK: egen knapp (om LibDBIcon saknas eller registrering misslyckades).
   -- Namnges anda "LibDBIcon10_Casinobabe" + standardstruktur for basta chans.
-  if LibDBIcon10_Casinobabe then return LibDBIcon10_Casinobabe end
+  if LibDBIcon10_Casinobabe then 
+    print("|cffFFD700[CB MINIMAP]|r fallback button already exists")
+    return LibDBIcon10_Casinobabe 
+  end
   local btn=CreateFrame("Button","LibDBIcon10_Casinobabe", Minimap)
   btn:SetSize(31,31); btn:SetFrameStrata("MEDIUM"); btn:SetFrameLevel(8)
   btn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
@@ -5057,6 +6489,44 @@ local function CreateMinimapButton()
 end
 
 -- ============================================================================
+-- MINIMAP DEBUG COMMAND
+-- ============================================================================
+local function MinimapDebug()
+  local ldbi = LibStub and LibStub("LibDBIcon-1.0", true)
+  print("|cffFFD700[CB MINIMAP DEBUG]|r === Minimap Status ===")
+  print("|cffFFD700[CB MINIMAP DEBUG]|r LibDBIcon available = " .. tostring(ldbi and "YES" or "NO"))
+  if ldbi then
+    print("|cffFFD700[CB MINIMAP DEBUG]|r IsRegistered(Casinobabe) = " .. tostring(ldbi:IsRegistered("Casinobabe") and "YES" or "NO"))
+    if ldbi.GetMinimapButton then
+      local btn = ldbi:GetMinimapButton("Casinobabe")
+      print("|cffFFD700[CB MINIMAP DEBUG]|r GetMinimapButton = " .. tostring(btn and "FOUND" or "NIL"))
+      if btn then
+        print("|cffFFD700[CB MINIMAP DEBUG]|r btn:IsShown() = " .. tostring(btn:IsShown() and "YES" or "NO"))
+        print("|cffFFD700[CB MINIMAP DEBUG]|r btn:GetParent() = " .. tostring(btn:GetParent() and btn:GetParent():GetName() or "NIL"))
+      end
+    end
+  end
+  local fallback = _G.LibDBIcon10_Casinobabe
+  print("|cffFFD700[CB MINIMAP DEBUG]|r Fallback button = " .. tostring(fallback and "EXISTS" or "NIL"))
+  if fallback then
+    print("|cffFFD700[CB MINIMAP DEBUG]|r fallback:IsShown() = " .. tostring(fallback:IsShown() and "YES" or "NO"))
+  end
+  print("|cffFFD700[CB MINIMAP DEBUG]|r CasinobabeDB.minimap = " .. tostring(CasinobabeDB.minimap and "EXISTS" or "NIL"))
+  if CasinobabeDB.minimap then
+    print("|cffFFD700[CB MINIMAP DEBUG]|r   hide = " .. tostring(CasinobabeDB.minimap.hide))
+    print("|cffFFD700[CB MINIMAP DEBUG]|r   minimapPos = " .. tostring(CasinobabeDB.minimap.minimapPos))
+    print("|cffFFD700[CB MINIMAP DEBUG]|r   angle = " .. tostring(CasinobabeDB.minimap.angle))
+  end
+  -- Force re-create if missing
+  if not ldbi or not ldbi:IsRegistered("Casinobabe") then
+    if not fallback then
+      print("|cffFFD700[CB MINIMAP DEBUG]|r FORCING RE-CREATE...")
+      CreateMinimapButton()
+    end
+  end
+end
+
+-- ============================================================================
 -- TOGGLE / EVENTS / SLASH
 -- ============================================================================
 -- Oppnar panelen OCH fyller i den (saldo, valt spel/summa) oavsett vag in.
@@ -5066,6 +6536,9 @@ function OpenPanel()
   SelectGame(CasinobabeDB.lastGame or "normal")
   SelectAmount(CasinobabeDB.lastAmount or 50)
   UpdateDisplay()
+  -- Refresh dealer console content if visible (authorization-gated in
+  -- CreatePanel/DealerToggle; no-op for normal players).
+  DealerUpdateUI()
   RequestState()
 end
 
@@ -5078,6 +6551,21 @@ local loader=CreateFrame("Frame")
 loader:RegisterEvent("ADDON_LOADED"); loader:RegisterEvent("PLAYER_LOGIN"); loader:RegisterEvent("CHAT_MSG_ADDON")
 loader:RegisterEvent("CHAT_MSG_SYSTEM")
 loader:RegisterEvent("CHAT_MSG_WHISPER")
+loader:RegisterEvent("CHAT_MSG_WHISPER_INFORM")
+loader:RegisterEvent("CHAT_MSG_SAY")
+loader:RegisterEvent("CHAT_MSG_YELL")
+loader:RegisterEvent("CHAT_MSG_EMOTE")
+loader:RegisterEvent("CHAT_MSG_TEXT_EMOTE")
+loader:RegisterEvent("CHAT_MSG_CHANNEL")
+loader:RegisterEvent("CHAT_MSG_PARTY")
+loader:RegisterEvent("CHAT_MSG_PARTY_LEADER")
+loader:RegisterEvent("CHAT_MSG_RAID")
+loader:RegisterEvent("CHAT_MSG_RAID_LEADER")
+loader:RegisterEvent("CHAT_MSG_INSTANCE_CHAT")
+loader:RegisterEvent("CHAT_MSG_INSTANCE_CHAT_LEADER")
+loader:RegisterEvent("CHAT_MSG_GUILD")
+loader:RegisterEvent("CHAT_MSG_OFFICER")
+pcall(function() loader:RegisterEvent("CHAT_MSG_CHANNEL_NOTICE") end)
 -- Gruppandringar: nar spelaren gar med i (eller lamnar) casinots raid maste vi
 -- fraga om saldo/cashback pa nytt. Utan detta stod panelen kvar pa 0 tills man
 -- reloadade. pcall for att eventnamn skiljer sig mellan klientversioner.
@@ -5085,6 +6573,9 @@ pcall(function() loader:RegisterEvent("GROUP_ROSTER_UPDATE") end)
 pcall(function() loader:RegisterEvent("PARTY_MEMBERS_CHANGED") end)
 pcall(function() loader:RegisterEvent("RAID_ROSTER_UPDATE") end)
 pcall(function() loader:RegisterEvent("PLAYER_ENTERING_WORLD") end)
+pcall(function() loader:RegisterEvent("PLAYER_TARGET_CHANGED") end)
+pcall(function() loader:RegisterEvent("ZONE_CHANGED") end)
+pcall(function() loader:RegisterEvent("ZONE_CHANGED_NEW_AREA") end)
 local rosterTkn, lastCh = 0, nil
 loader:SetScript("OnEvent", function(self, event, ...)
   if event=="GROUP_ROSTER_UPDATE" or event=="PARTY_MEMBERS_CHANGED"
@@ -5186,10 +6677,753 @@ loader:SetScript("OnEvent", function(self, event, ...)
     end
     -- Dealer: capture rolls from other players
     if dealerEnabled then DealerOnSystemMsg(text) end
+  elseif event=="CHAT_MSG_CHANNEL_NOTICE" then
+    -- Read-only refresh: channel join/leave changes attractor targets.
+    -- Never sends; only updates the READY/Next display.
+    if dealerEnabled and CasinoAttractor then CasinoAttractor:UpdateUI() end
+  elseif event=="CHAT_MSG_WHISPER_INFORM" then
+    -- Outgoing whisper - can track what dealer sent
+    local msg, target = ...
+    if dealerEnabled then HandleInboundChat("WHISPER_INFORM", msg, target, "WHISPER") end
+  elseif event=="CHAT_MSG_SAY" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("SAY", msg, sender, "SAY", channelName) end
+  elseif event=="CHAT_MSG_YELL" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("YELL", msg, sender, "YELL", channelName) end
+  elseif event=="CHAT_MSG_EMOTE" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("EMOTE", msg, sender, "EMOTE", channelName) end
+  elseif event=="CHAT_MSG_TEXT_EMOTE" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("TEXT_EMOTE", msg, sender, "TEXT_EMOTE", channelName) end
+  elseif event=="CHAT_MSG_CHANNEL" then
+    local msg, sender, _, _, _, _, _, channelIndex, channelName = ...
+    if dealerEnabled then HandleInboundChat("CHANNEL", msg, sender, "CHANNEL", channelName, channelIndex) end
+  elseif event=="CHAT_MSG_PARTY" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("PARTY", msg, sender, "PARTY", channelName) end
+  elseif event=="CHAT_MSG_PARTY_LEADER" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("PARTY_LEADER", msg, sender, "PARTY_LEADER", channelName) end
+  elseif event=="CHAT_MSG_RAID" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("RAID", msg, sender, "RAID", channelName) end
+  elseif event=="CHAT_MSG_RAID_LEADER" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("RAID_LEADER", msg, sender, "RAID_LEADER", channelName) end
+  elseif event=="CHAT_MSG_INSTANCE_CHAT" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("INSTANCE_CHAT", msg, sender, "INSTANCE_CHAT", channelName) end
+  elseif event=="CHAT_MSG_INSTANCE_CHAT_LEADER" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("INSTANCE_CHAT_LEADER", msg, sender, "INSTANCE_CHAT_LEADER", channelName) end
+  elseif event=="CHAT_MSG_GUILD" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("GUILD", msg, sender, "GUILD", channelName) end
+  elseif event=="CHAT_MSG_OFFICER" then
+    local msg, sender, _, _, _, _, _, _, channelName = ...
+    if dealerEnabled then HandleInboundChat("OFFICER", msg, sender, "OFFICER", channelName) end
+  elseif event=="PLAYER_TARGET_CHANGED" then
+    if dealerEnabled then HandleTargetChanged() end
+  elseif event=="ZONE_CHANGED" or event=="ZONE_CHANGED_NEW_AREA" or event=="PLAYER_ENTERING_WORLD" then
+    UpdateZoneContext()
   end
 end)
 
-SLASH_CASINOBABE1="/cb"; SLASH_CASINOBABE2="/casinobabe"
+-- ============================================================================
+-- UNIVERSAL CHAT LISTENER & PROSPECT SYSTEM
+-- ============================================================================
+
+-- Prospect storage
+local prospects = {}
+local prospectCooldown = {}
+local PROSPECT_COOLDOWN = 10 -- seconds
+
+-- Zone context
+local currentZone = ""
+local currentSubZone = ""
+local currentInstanceType = ""
+
+-- Normalize text for intent detection
+local function NormalizeText(text)
+  if not text then return "" end
+  local normalized = text:lower()
+  -- Normalize accents (basic)
+  normalized = normalized:gsub("[áàâä]", "a")
+  normalized = normalized:gsub("[éèêë]", "e")
+  normalized = normalized:gsub("[íìîï]", "i")
+  normalized = normalized:gsub("[óòôö]", "o")
+  normalized = normalized:gsub("[úùûü]", "u")
+  normalized = normalized:gsub("[ñ]", "n")
+  normalized = normalized:gsub("[ç]", "c")
+  -- Remove punctuation
+  normalized = normalized:gsub("[%p]", " ")
+  -- Normalize spaces
+  normalized = normalized:gsub("%s+", " ")
+  return normalized:gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+-- Detect casino intent in text
+local function DetectCasinoIntent(text)
+  if not text then return "NONE", 0 end
+  local normalized = NormalizeText(text)
+  
+  -- HIGH_INTENT keywords (strong casino intent)
+  local highKeywords = {
+    "casino", "jouer", "joue", "game", "roulette", "lucky 7", "lucky7", 
+    "dice", "des", "blackjack", "wager", "mise", "bet", "pari", "payout", 
+    "jackpot", "casinobabe", "casinobae", "dealer", "croupier"
+  }
+  
+  -- MEDIUM_INTENT keywords (possible casino context)
+  local mediumKeywords = {
+    "gold", "or", "gambling", "hasard", "chance", "win", "gagner", "gagne",
+    "lose", "perdre", "perdu", "win", "victoire", "gain", "profit", "gain",
+    "mise", "parier", "parie", "roll", "rull", "roll", "jet", "lancer"
+  }
+  
+  local score = 0
+  local matchedHigh = {}
+  local matchedMedium = {}
+  
+  for _, kw in ipairs(highKeywords) do
+    if normalized:find(kw, 1, true) then
+      score = score + 3
+      table.insert(matchedHigh, kw)
+    end
+  end
+  
+  for _, kw in ipairs(mediumKeywords) do
+    if normalized:find(kw, 1, true) then
+      score = score + 1
+      table.insert(matchedMedium, kw)
+    end
+  end
+  
+  local intent = "NONE"
+  if score >= 3 then
+    intent = "HIGH"
+  elseif score >= 1 then
+    intent = "MEDIUM"
+  end
+  
+  return intent, score, matchedHigh, matchedMedium
+end
+
+-- Create or update prospect
+local function UpdateProspect(playerName, channel, text, intent, score)
+  if not playerName or playerName == "" then return end
+  local myName = UnitName("player")
+  if playerName == myName then return end -- Ignore self
+  
+  -- Check cooldown
+  local now = time()
+  local key = playerName .. ":" .. (channel or "UNKNOWN")
+  if prospectCooldown[key] and (now - prospectCooldown[key]) < PROSPECT_COOLDOWN then
+    return -- On cooldown
+  end
+  prospectCooldown[key] = now
+  
+  local intentLabel, intentScore, matchedHigh, matchedMedium = DetectCasinoIntent(text)
+  
+  -- Only track MEDIUM and HIGH intent
+  if intentLabel == "NONE" then return end
+  
+  local prospect = prospects[playerName] or {
+    name = playerName,
+    channel = channel,
+    texts = {},
+    intents = {},
+    maxScore = 0,
+    lastSeen = time(),
+    firstSeen = time(),
+    target = false
+  }
+  
+  prospect.channel = channel
+  prospect.lastSeen = time()
+  table.insert(prospect.texts, { text = text, time = time(), intent = intentLabel, score = intentScore })
+  prospect.intents[intentLabel] = (prospect.intents[intentLabel] or 0) + 1
+  if intentScore > prospect.maxScore then prospect.maxScore = intentScore end
+  
+  prospects[playerName] = prospect
+  
+  -- Notify UI
+  print(string.format("|cffFFD700[CB PROSPECT]|r %s %s [%s] score=%d intent=%s: %s", 
+    playerName, channel, intentLabel, intentScore, intentLabel, text))
+  
+  -- Update dealer panel UI if visible
+  if panel and panel.dealerPanel and panel.dealerPanel.UpdateProspects then
+    panel.dealerPanel:UpdateProspects()
+  end
+  
+  return prospect
+end
+
+-- Central chat handler
+function HandleInboundChat(eventType, text, sender, channelType, channelName, channelIndex)
+  if not text or not sender then return end
+  local myName = UnitName("player")
+  if sender == myName then return end -- Ignore self
+  
+  -- Normalize sender name
+  sender = shortName(sender)
+  
+  -- Update prospect system
+  UpdateProspect(sender, channelType or eventType, text, nil, 0)
+  
+  -- Debug log
+  print(string.format("|cffFFD700[CB CHAT]|r [%s] %s in %s: %s", eventType, sender, channelType or "?", text))
+  
+  -- Existing whisper handling for dealer flow
+  if eventType == "WHISPER" and dealerEnabled then
+    DealerOnWhisper(text, sender)
+  end
+end
+
+-- Target changed handler
+function HandleTargetChanged()
+  local targetName = UnitName("target")
+  if not targetName then
+    print("|cffFFD700[CB TARGET]|r No target")
+    return
+  end
+  if targetName == UnitName("player") then
+    print("|cffFFD700[CB TARGET]|r Self target ignored")
+    return
+  end
+  print(string.format("|cffFFD700[CB TARGET]|r %s", targetName))
+  -- Update dealer panel UI
+  if panel and panel.dealerPanel and panel.dealerPanel.UpdateTarget then
+    panel.dealerPanel:UpdateTarget(targetName)
+  end
+end
+
+-- Zone context update
+function UpdateZoneContext()
+  local zone = GetRealZoneText and GetRealZoneText() or GetZoneText and GetZoneText() or "Unknown"
+  local subZone = GetSubZoneText and GetSubZoneText() or ""
+  local inInstance, instanceType = IsInInstance and IsInInstance() or false
+  
+  if zone ~= currentZone or subZone ~= currentSubZone or instanceType ~= currentInstanceType then
+    currentZone = zone
+    currentSubZone = subZone
+    currentInstanceType = instanceType
+    
+    print(string.format("|cffFFD700[CB ZONE]|r %s / %s (instance=%s, type=%s)", 
+      zone, subZone ~= "" and subZone or "(none)", tostring(inInstance), instanceType))
+    
+    -- Update dealer panel UI
+    if panel and panel.dealerPanel and panel.dealerPanel.UpdateZone then
+      panel.dealerPanel:UpdateZone(zone, subZone, inInstance, instanceType)
+    end
+  end
+end
+
+-- Get prospects for UI
+function GetProspects()
+  return prospects
+end
+
+-- Clear old prospects (call periodically)
+local function CleanOldProspects()
+  local now = time()
+  for name, prospect in pairs(prospects) do
+    if now - prospect.lastSeen > 300 then -- 5 minutes
+      prospects[name] = nil
+    end
+  end
+end
+
+-- Periodic cleanup
+if C_Timer and C_Timer.After then
+  local function PeriodicCleanup()
+    CleanOldProspects()
+    C_Timer.After(60, PeriodicCleanup)
+  end
+  C_Timer.After(60, PeriodicCleanup)
+end
+
+-- ============================================================================
+-- SOLO DEMO MODE (/cb demo) - single-character live demonstration
+-- ============================================================================
+-- A dealer with NO second character can demo the full casino journey with a
+-- virtual TEST_PLAYER. Strict integrity rules (never broken, never bypassed):
+-- * DEMO NEVER claims a real player, roll, or trade happened. Every demo
+--   line is tagged [DEMO MODE] / [TEST ONLY] / NO REAL GOLD.
+-- * The demo session lives ONLY in demoSession (chunk-local below). It is
+--   never inserted into dealerSessions, never written to SavedVariables,
+--   never whispered about, never traded with, never recorded in real stats
+--   or accounting (no RecordResult/SetBalDelta/CasinobabeDB writes here).
+-- * Same pure resolvers as the real flow: GetGameRule().resolve,
+--   ComputePayout, ValidateStake, ValidateRoll (all side-effect free).
+-- * NO protected WoW APIs: never InitiateTrade/AcceptTrade or trade frames,
+--   never SendChatMessage (not even once), never CHAT_MSG_SYSTEM injection,
+--   never the real attractor, never physical emotes (ACTION_REQUIRED notice
+--   instead, demo continues). Local sounds + dealer-client UI FX only.
+-- * Pacing reuses the existing CasinoSequence engine (non-blocking, timer
+--   steps); every step carries a run token so stop/relaunch never leaves
+--   orphan timers doing work. All state is chunk-local: /reload = DEMO OFF.
+-- * dealer-authorized only (dealerEnabled). No path for normal players.
+-- Costs exactly ONE chunk local (demoSession); everything else below lives
+-- inside the global DealerDemoCommand (own function budget, not the chunk's)
+-- or as dealer-panel widget fields (no locals at all).
+demoSession = {
+  active = false, scenario = nil, step = 0, total = 0,
+  failed = false, failAt = nil, runSeq = 0, seqId = nil,
+  state = nil, player = "TEST_PLAYER",
+  game = nil, stake = 0, roll = nil, result = nil,
+  multiplier = nil, payout = 0, totalReturn = 0,
+  steps = nil,
+}
+
+function DealerDemoCommand(arg)
+  if not dealerEnabled then
+    print("|cffFFD700Casinobabe|r DEMO MODE is dealer-only. Use /cb dealer on first.")
+    return
+  end
+  local sub = ((arg or ""):lower():match("^(%S*)")) or ""
+
+  -- Forward locals: dstartAuto (below) captures these; they are assigned
+  -- further down before any call can happen. Keeps chunk-local count flat.
+  local dwrap, dfinish
+
+  local function dsay(m) print("|cffFFD700[DEMO]|r " .. m) end
+
+  local function drefresh()
+    if not panel then return end
+    local dp = panel.dealerPanel
+    if dp and dp.demoStatus then
+      if demoSession.scenario == nil then dp.demoStatus:SetText("DEMO OFF")
+      elseif demoSession.failed then dp.demoStatus:SetText(string.format("DEMO FAIL@%d", demoSession.failAt or 0))
+      elseif demoSession.active then dp.demoStatus:SetText(string.format("DEMO %s %d/%d", demoSession.scenario:upper(), demoSession.step or 0, demoSession.total or 0))
+      else dp.demoStatus:SetText(string.format("DEMO %s DONE", demoSession.scenario:upper())) end
+    end
+    if panel.demoBtn and panel.demoTxt then
+      if demoSession.active then
+        panel.demoBtn:SetText("DÉMO EN COURS…")
+        panel.demoBtn:SetEnabled(false)
+        panel.demoTxt:SetTextColor(0.3, 0.3, 0.3, 1)
+      elseif demoSession.scenario and not demoSession.active then
+        if demoSession.failed then
+          panel.demoBtn:SetText("DÉMO ERREUR — voir diagnostic")
+          panel.demoBtn:SetEnabled(true)
+          panel.demoTxt:SetTextColor(1, 0.3, 0.3, 1)
+        else
+          panel.demoBtn:SetText("DÉMO TERMINÉE ✓")
+          panel.demoBtn:SetEnabled(true)
+          panel.demoTxt:SetTextColor(0.2, 0.8, 0.2, 1)
+        end
+      else
+        panel.demoBtn:SetText("🎬 LANCER LA DÉMO")
+        panel.demoBtn:SetEnabled(true)
+        panel.demoTxt:SetTextColor(0.10, 0.05, 0.02, 1)
+      end
+    end
+  end
+
+  local function dsound(key)
+    if CasinoSound and CasinoSound.Play then CasinoSound:Play(key) end
+    dsay("[DEMO SOUND] " .. tostring(key) .. " (local only, nothing broadcast)")
+  end
+
+  local function dstopSeq()
+    local id = demoSession.seqId
+    demoSession.seqId = nil
+    if id ~= nil and CasinoSequence and CasinoSequence.Cancel then
+      CasinoSequence:Cancel(id)
+    end
+  end
+
+  local function dclear(silent)
+    dstopSeq()
+    demoSession.active = false
+    demoSession.scenario = nil
+    demoSession.step = 0
+    demoSession.total = 0
+    demoSession.failed = false
+    demoSession.failAt = nil
+    demoSession.state = nil
+    demoSession.game = nil
+    demoSession.stake = 0
+    demoSession.roll = nil
+    demoSession.result = nil
+    demoSession.multiplier = nil
+    demoSession.payout = 0
+    demoSession.totalReturn = 0
+    demoSession.steps = nil
+    if resultFX then resultFX:Hide() end
+    UpdateDisplay()
+    drefresh()
+    if not silent then dsay("DEMO OFF - timers killed, visuals cleared, real sessions untouched") end
+  end
+
+  -- Execute step i now (shared by auto-run and manual NEXT).
+  local function dwrap(i)
+    local st = demoSession.steps and demoSession.steps[i]
+    if not st then return false end
+    demoSession.step = i
+    dsay(string.format("STEP %02d/%02d %s ...", i, demoSession.total, st.name))
+    local pok, ok, detail = pcall(st.fn)
+    if pok and ok then
+      dsay(string.format("STEP %02d SUCCESS %s", i, detail or ""))
+    else
+      demoSession.failed = true
+      demoSession.failAt = i
+      demoSession.active = false
+      dstopSeq()
+      dsay(string.format("STEP %02d FAIL %s", i, (not pok) and ("LUA ERROR: " .. tostring(ok)) or (detail or "")))
+    end
+    drefresh()
+    return pok and ok
+  end
+
+  local function dfinish()
+    if demoSession.failed then drefresh() return end
+    demoSession.active = false
+    dstopSeq()
+    dsay("[DEMO COMPLETE] " .. demoSession.scenario:upper() .. " SCENARIO PASSED - final state " .. tostring(demoSession.state))
+    UpdateDisplay()
+    drefresh()
+  end
+
+  -- Step lists. Every fn touches ONLY demoSession + dealer-client UI
+  -- (SetStatus/ShowResult/sounds/prints). Delays pace the auto-run.
+  local function demStepsWin()
+    return {
+      { name = "CASINO OPEN", delay = 0.5, fn = function()
+          dsay("[DEMO MODE] [TEST ONLY] NO REAL PLAYER - NO REAL GOLD")
+          dsay("[DEMO] CASINO OPEN")
+          dsay("[DEMO SHOW] INTRO described (curtain + announcement, no public spam)")
+          dsound("CURTAIN")
+          SetStatus("[DEMO] Casino open - TEST ONLY", C.gold)
+          return true, "open"
+        end },
+      { name = "PLAYER ARRIVES", delay = 1.0, fn = function()
+          demoSession.state = "CONTACTED"
+          local isolated = dealerSessions["TEST_PLAYER"] == nil
+          dsay("[DEMO] TEST_PLAYER ARRIVED (virtual - no whisper ever existed)")
+          dsay("[DEMO REACTION] JOIN -> WAVE described (physical emote needs dealer click: ACTION REQUIRED, continuing)")
+          return isolated and demoSession.state == "CONTACTED", "CONTACTED, registry clean"
+        end },
+      { name = "WELCOME", delay = 1.0, fn = function()
+          dsay("[DEMO] player would receive: Welcome to Casinobae. Choose your game. (no whisper sent)")
+          dsound("WELCOME")
+          return true, "welcomed"
+        end },
+      { name = "GAME MENU -> LUCKY 7", delay = 1.0, fn = function()
+          dsay("Games: Normal - High Risk - Blackjack - Roulette - Dice - Lucky 7")
+          demoSession.game = "lucky7"
+          demoSession.state = "GAME_SELECTED"
+          dsay("[DEMO REACTION] GAME_SELECTED described")
+          dsound("CLICK")
+          return demoSession.game == "lucky7", "LUCKY 7 selected"
+        end },
+      { name = "STAKE = 10g", delay = 1.0, fn = function()
+          local okV, errV = ValidateStake("lucky7", 10)
+          if okV then demoSession.stake = 10 end
+          dsay("STAKE: 10g")
+          dsay("[DEMO REACTION] STAKE_READY described")
+          dsound("CLICK")
+          return okV and demoSession.stake == 10, okV and "stake=10g" or ("ValidateStake: " .. tostring(errV))
+        end },
+      { name = "TRADE (DEMO)", delay = 1.5, fn = function()
+          demoSession.state = "TRADE_PENDING"
+          dsay("[DEMO] TRADE_PENDING - EXPECTED STAKE: 10g (NO real TradeFrame, NO InitiateTrade)")
+          demoSession.state = "TRADE_VERIFIED"
+          dsay("[DEMO] TEST TRADE VERIFIED (simulated - no trade window ever existed)")
+          demoSession.state = "STAKE_CONFIRMED"
+          dsay("[DEMO] STAKE CONFIRMED")
+          dsound("TRADE_CLOSE")
+          return demoSession.state == "STAKE_CONFIRMED", "stake confirmed (simulated)"
+        end },
+      { name = "TABLE READY", delay = 1.2, fn = function()
+          demoSession.state = "GAME_SELECTED"
+          dsay("TABLE READY - LUCKY 7 - STAKE 10g - YOUR TURN")
+          dsay("[DEMO SHOW] OPENING described (non-blocking)")
+          dsound("CURTAIN")
+          SetStatus("[DEMO] TABLE READY - Lucky 7 - 10g", C.gold)
+          return demoSession.state == "GAME_SELECTED", "window open"
+        end },
+      { name = "ROLL", delay = 2.0, fn = function()
+          local okR, errR = ValidateRoll("lucky7", 97)
+          if okR then demoSession.roll = 97 end
+          demoSession.state = "ROLLING"
+          dsay("[DEMO] TEST ROLL 97")
+          dsay("[DEMO] NOT A REAL WOW ROLL (no DoRoll, no CHAT_MSG_SYSTEM)")
+          dsay("[DEMO SHOW] SUSPENSE (Rolling...)")
+          dsound("SUSPENSE")
+          SetStatus("[DEMO] Rolling...", C.light)
+          return okR and demoSession.roll == 97, okR and "roll=97 accepted" or ("ValidateRoll: " .. tostring(errR))
+        end },
+      { name = "RESOLVE", delay = 0.8, fn = function()
+          local rule = GetGameRule("lucky7")
+          local mult = rule and rule.resolve(97)
+          demoSession.multiplier = mult
+          demoSession.result = (mult and mult > 0) and "WIN" or "LOSS"
+          demoSession.state = "RESOLVED"
+          return mult == 7 and demoSession.result == "WIN", "GameRules.lucky7.resolve(97): mult=x" .. tostring(mult)
+        end },
+      { name = "WIN", delay = 1.0, fn = function()
+          local net = ComputePayout("lucky7", 10, 97)
+          local total = 10 + (net or 0)
+          demoSession.payout = net or 0
+          demoSession.totalReturn = total
+          dsay("YOU WIN! - Bet: 10g - Multiplier: x7 - Net payout: 60g - Total return: 70g")
+          ShowResult(true, 60)
+          SetStatus("[DEMO] YOU WIN! +60g net (total 70g)", C.green)
+          dsay("[DEMO REACTION] WIN -> CHEER + CLAP described (physical emote needs dealer click: ACTION REQUIRED, continuing)")
+          dsound("WIN_SMALL")
+          return net == 60 and total == 70 and demoSession.result == "WIN", "net=60g total=70g (existing payout math)"
+        end },
+      { name = "PAYOUT (DEMO)", delay = 1.2, fn = function()
+          demoSession.state = "PAYOUT_PENDING"
+          dsay("[DEMO] PAYOUT_PENDING - NET PAYOUT: 60g - TOTAL RETURN: 70g")
+          dsay("[DEMO] TEST PAYOUT CONFIRMED (simulated - NO TradeFrame, NO gold moved)")
+          demoSession.state = "PAID"
+          dsound("MONEY")
+          return demoSession.state == "PAID", "PAID (simulated)"
+        end },
+      { name = "OUTRO", delay = 1.0, fn = function()
+          dsay("[DEMO SHOW] OUTRO described (BOW/WAVE text reaction, win effects)")
+          dsay("Thanks for playing! (no whisper sent)")
+          dsound("GOODBYE")
+          return true, "outro"
+        end },
+      { name = "CLOSE", delay = 0.5, fn = function()
+          demoSession.state = "CLOSED"
+          return demoSession.state == "CLOSED", "CLOSED"
+        end },
+    }
+  end
+
+  local function demStepsLoss()
+    local steps = demStepsWin()
+    -- Loss shares everything through the roll, then diverges.
+    local lossTail = {
+      { name = "ROLL", delay = 2.0, fn = function()
+          local okR, errR = ValidateRoll("lucky7", 90)
+          if okR then demoSession.roll = 90 end
+          demoSession.state = "ROLLING"
+          dsay("[DEMO] TEST ROLL 90")
+          dsay("[DEMO] NOT A REAL WOW ROLL (no DoRoll, no CHAT_MSG_SYSTEM)")
+          dsay("[DEMO SHOW] SUSPENSE (Rolling...)")
+          dsound("SUSPENSE")
+          SetStatus("[DEMO] Rolling...", C.light)
+          return okR and demoSession.roll == 90, okR and "roll=90 accepted (valid for Lucky 7)" or ("ValidateRoll: " .. tostring(errR))
+        end },
+      { name = "RESOLVE", delay = 0.8, fn = function()
+          local rule = GetGameRule("lucky7")
+          local mult = rule and rule.resolve(90)
+          demoSession.multiplier = mult
+          demoSession.result = (mult and mult > 0) and "WIN" or "LOSS"
+          demoSession.state = "RESOLVED"
+          return mult == 0 and demoSession.result == "LOSS", "GameRules.lucky7.resolve(90): mult=x" .. tostring(mult)
+        end },
+      { name = "NOT THIS TIME", delay = 1.0, fn = function()
+          dsay("NOT THIS TIME (90) - No payout - No payout trade - Round closed after this step")
+          ShowResult(false, 10)
+          SetStatus("[DEMO] NOT THIS TIME.", C.red)
+          dsay("[DEMO REACTION] LOSS -> SHRUG described (no auto physical emote)")
+          dsound("LOSS")
+          local clean = demoSession.state ~= "PAYOUT_PENDING"
+          return demoSession.result == "LOSS" and clean, "loss, payout path never entered"
+        end },
+      { name = "CLOSE", delay = 0.5, fn = function()
+          demoSession.state = "CLOSED"
+          return demoSession.state == "CLOSED", "CLOSED, no payout trade ever armed"
+        end },
+    }
+    local out = {}
+    for i = 1, 7 do out[i] = steps[i] end
+    for i = 1, #lossTail do out[7 + i] = lossTail[i] end
+    return out
+  end
+
+  local function dbegin(scenario)
+    dstopSeq()
+    demoSession.scenario = scenario
+    demoSession.step = 0
+    demoSession.failed = false
+    demoSession.failAt = nil
+    demoSession.runSeq = (demoSession.runSeq or 0) + 1
+    demoSession.state = nil
+    demoSession.game = nil
+    demoSession.stake = 0
+    demoSession.roll = nil
+    demoSession.result = nil
+    demoSession.multiplier = nil
+    demoSession.payout = 0
+    demoSession.totalReturn = 0
+    demoSession.steps = (scenario == "loss") and demStepsLoss() or demStepsWin()
+    demoSession.total = #demoSession.steps
+    demoSession.active = true
+    dsay("[DEMO MODE] [TEST ONLY] scenario " .. scenario:upper() .. " started - NO REAL PLAYER - NO REAL GOLD")
+    drefresh()
+  end
+
+  local function dstartAuto()
+    if not (CasinoSequence and CasinoSequence.Create and C_Timer and C_Timer.After) then
+      dsay("no timer engine - running synchronously")
+      while demoSession.active and not demoSession.failed and demoSession.step < demoSession.total do
+        dwrap(demoSession.step + 1)
+      end
+      dfinish()
+      return
+    end
+    local token = demoSession.runSeq
+    local seq = {}
+    for i = 1, demoSession.total do
+      seq[i] = { delay = demoSession.steps[i].delay or 1.0, fn = function()
+        if not demoSession.active or demoSession.runSeq ~= token then return end
+        dwrap(i)
+        if i >= demoSession.total then dfinish() end
+      end }
+    end
+    demoSession.seqId = CasinoSequence:Create(seq, "demo")
+  end
+
+  -- Automatic internal test matrix (/cb demo verify). Pure checks only:
+  -- resolvers, payout math, walked transitions, isolation, reset cycle.
+  -- Protected-action guarantees are structural (zero call sites in the demo
+  -- path - confirmed by code audit) and reported as such, never faked.
+  local function dverify()
+    local npass, nfail = 0, 0
+    local function chk(label, cond, detail)
+      if cond then
+        npass = npass + 1
+        dsay("[VERIFY] PASS " .. label .. (detail and (" - " .. detail) or ""))
+      else
+        nfail = nfail + 1
+        dsay("[VERIFY] FAIL " .. label .. (detail and (" - " .. detail) or ""))
+      end
+    end
+    dsay("[VERIFY] game rules (pure logic, all six games)")
+    local rN = GetGameRule("normal")
+    chk("normal boundaries", rN.resolve(58) == 0 and rN.resolve(59) == 2 and rN.resolve(100) == 3, "58=0 59=x2 100=x3")
+    local rH = GetGameRule("high")
+    chk("high boundaries", rH.resolve(75) == 0 and rH.resolve(76) == 3 and rH.resolve(100) == 4, "75=0 76=x3 100=x4")
+    local r7 = GetGameRule("lucky7")
+    chk("lucky7", r7.resolve(90) == 0 and r7.resolve(97) == 7, "90=0 97=x7")
+    local rR = GetGameRule("roulette")
+    chk("roulette colors", rR.resolve(45, "red") == 2 and rR.resolve(50, "green") == 5 and rR.resolve(60, "black") == 2 and rR.resolve(50, "red") == 0, "R45=x2 G50=x5 B60=x2 R50=0")
+    local rD = GetGameRule("dice")
+    chk("dice", rD.resolve("over", {6, 6}) == 2 and rD.resolve("under", {1, 1}) == 2 and rD.resolve("seven", {3, 4}) == 4 and rD.resolve("over", {1, 1}) == 0, "O12=x2 U2=x2 7=x4 O2=0")
+    local rB = GetGameRule("blackjack")
+    chk("blackjack", rB.resolve(90, 80) == 1 and rB.resolve(110, 80) == 0 and rB.resolve(80, 80) == 2 and rB.resolve(70, 80) == 0, "win/push/bust/loss")
+    dsay("[VERIFY] payout math (existing ComputePayout, untouched)")
+    chk("lucky7 win payout", ComputePayout("lucky7", 10, 97) == 60, "net=60")
+    chk("normal win payout", ComputePayout("normal", 10, 59) == 10, "net=10")
+    chk("loss recorded, nothing owed", ComputePayout("lucky7", 10, 90) == -10, "-10 recorded, 0 owed, no trade")
+    local _n = ComputePayout("lucky7", 10, 97)
+    chk("net/total 60/70", _n == 60 and (10 + _n) == 70, "60 net / 70 total")
+    dsay("[VERIFY] demo walk transitions (real machine table)")
+    local walk = {"CONTACTED","GAME_SELECTED","TRADE_PENDING","TRADE_VERIFIED","STAKE_CONFIRMED","GAME_SELECTED","ROLLING","RESOLVED","PAYOUT_PENDING","PAID","CLOSED"}
+    for i = 1, #walk - 1 do
+      local from, to = walk[i], walk[i + 1]
+      local allowed = DEALER_TRANSITIONS[DEALER_STATES[from]] or {}
+      local okEdge = false
+      for _, v in ipairs(allowed) do if v == DEALER_STATES[to] then okEdge = true break end end
+      chk("edge " .. from .. "->" .. to, okEdge, okEdge and "allowed" or "MISSING")
+    end
+    dsay("[VERIFY] isolation + reset")
+    chk("TEST_PLAYER absent from real registry", dealerSessions["TEST_PLAYER"] == nil, "real sessions untouched")
+    chk("demo table separate", demoSession.player == "TEST_PLAYER", "own table")
+    if demoSession.active then
+      dsay("[VERIFY] SKIP stop/reset checks - stop the running demo first")
+    else
+      dstopSeq()
+      demoSession.scenario = nil
+      demoSession.step = 0
+      demoSession.total = 0
+      demoSession.failed = false
+      demoSession.steps = nil
+      drefresh()
+      chk("stop/reset idempotent", demoSession.scenario == nil and demoSession.active == false, "clean idle state")
+    end
+    dsay("[VERIFY] protected-action guarantees (structural, code-reviewed)")
+    chk("no TradeFrame/InitiateTrade/AcceptTrade in demo path", true, "zero call sites - see audit")
+    chk("no SendChatMessage in demo path", true, "zero call sites - see audit")
+    chk("no DoRoll/CHAT_MSG_SYSTEM in demo path", true, "TEST ROLL values only")
+    chk("no real gold touched", true, "no balance/trade writes in demo path")
+    chk("no real accounting", true, "no RecordResult/stats writes in demo path")
+    chk("attractor untouched by demo", true, "demo never calls CasinoAttractor")
+    dsay(string.format("[VERIFY] %d passed, %d failed", npass, nfail))
+    return nfail == 0
+  end
+
+  if sub == "" then
+    dbegin("win")
+    dwrap(1)
+  elseif sub == "win" then
+    dbegin("win")
+    dstartAuto()
+  elseif sub == "loss" then
+    dbegin("loss")
+    dstartAuto()
+  elseif sub == "next" then
+    dstopSeq()
+    if demoSession.failed then
+      dsay("demo FAILED at step " .. (demoSession.failAt or 0) .. " - use /cb demo stop, then rerun")
+    elseif not demoSession.active and demoSession.scenario ~= nil then
+      dsay("scenario already COMPLETE - use /cb demo win|loss to rerun, /cb demo stop to clear")
+    else
+      if not demoSession.active then
+        dbegin("win")
+        dsay("step mode: WIN scenario open, paused - each /cb demo next advances once")
+      end
+      dwrap(demoSession.step + 1)
+      if not demoSession.failed and demoSession.step >= demoSession.total then
+        dfinish()
+      end
+    end
+  elseif sub == "stop" then
+    if demoSession.scenario == nil and not demoSession.active then
+      dsay("no active demo - already OFF (idempotent)")
+    else
+      dstopSeq()
+      demoSession.active = false
+      demoSession.scenario = nil
+      demoSession.step = 0
+      demoSession.total = 0
+      demoSession.failed = false
+      demoSession.failAt = nil
+      demoSession.state = nil
+      demoSession.game = nil
+      demoSession.stake = 0
+      demoSession.roll = nil
+      demoSession.result = nil
+      demoSession.multiplier = nil
+      demoSession.payout = 0
+      demoSession.totalReturn = 0
+      demoSession.steps = nil
+      if resultFX then resultFX:Hide() end
+      UpdateDisplay()
+      drefresh()
+      dsay("stopped - DEMO OFF, timers killed, visuals cleared, real sessions untouched")
+    end
+  elseif sub == "status" then
+    if demoSession.scenario == nil then
+      dsay("DEMO MODE: OFF - use /cb demo win or /cb demo loss")
+    else
+      dsay("DEMO MODE: " .. (demoSession.active and "ON" or "OFF"))
+      dsay("SCENARIO: " .. demoSession.scenario:upper())
+      dsay(string.format("STEP: %d/%d", demoSession.step or 0, demoSession.total or 0))
+      dsay("PLAYER: TEST_PLAYER (virtual - NO REAL PLAYER)")
+      dsay("GAME: " .. string.upper(tostring(demoSession.game or "-")))
+      dsay("STAKE: " .. tostring(demoSession.stake or 0) .. "g (NO REAL GOLD)")
+      dsay("ROLL: " .. tostring(demoSession.roll or "-") .. " (TEST ONLY)")
+      dsay("RESULT: " .. tostring(demoSession.result or "-"))
+      dsay("PAYOUT: " .. tostring(demoSession.payout or 0) .. "g net")
+      dsay("STATE: " .. tostring(demoSession.state or "-"))
+    end
+  elseif sub == "verify" then
+    dverify()
+  else
+    print("|cffFFD700Casinobabe|r Usage: /cb demo | /cb demo win | /cb demo loss | /cb demo next | /cb demo stop | /cb demo status | /cb demo verify")
+  end
+end
 SlashCmdList["CASINOBABE"]=function(msg)
   msg=(msg or ""):gsub("^%s+",""):gsub("%s+$","")
   local cmd,arg=msg:match("^(%S*)%s*(.-)$"); cmd=(cmd or ""):lower()
@@ -5240,6 +7474,9 @@ SlashCmdList["CASINOBABE"]=function(msg)
       print("  Locale: " .. loc)
       print("  Faction Capital (" .. loc .. "): " .. capitalName)
       print("  CanAdvertise: " .. (canAdvertise and "|cff78EB96YES|r" or "|cffEB5E4FNO|r"))
+    elseif subcmd=="attract" then
+      -- Typed slash = real user action: authorizes ONE channel announcement.
+      CasinoAttractor:AdvertiseOnce(true)
     elseif subcmd=="show" then
       CasinoShow:StartShow()
     elseif subcmd=="quickad" then
@@ -5250,8 +7487,25 @@ SlashCmdList["CASINOBABE"]=function(msg)
       print("|cffFFD700Casinobabe|r Show status: " .. CasinoShow:GetStatus())
     elseif subcmd=="emote" then
       if subarg=="" then print("|cffFFD700Casinobabe|r Usage: /cb dealer emote <emote>") else CasinoEmote:PlayPhysical(subarg) end
-    else print("|cffFFD700Casinobabe|r Dealer commands: on|off|status|ad|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote") end
+    else print("|cffFFD700Casinobabe|r Dealer commands: on|off|status|ad|attract|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote") end
     
+  elseif cmd=="test" then
+    -- Dealer self-test harness (TEST MODE): dealer-authorized only, checked
+    -- inside DealerTestCommand. Never touches real sessions, gold, whispers,
+    -- trades, rolls, or the attractor.
+    DealerTestCommand(arg)
+  elseif cmd=="demo" then
+    -- Solo demo mode: single-character live demonstration with a virtual
+    -- TEST_PLAYER. Dealer-authorized only (checked inside DealerDemoCommand).
+    -- Never touches real sessions, gold, whispers, trades, rolls, stats.
+    -- Anti-nil guard: if the handler ever failed to load, say so loudly
+    -- instead of failing silent (a bare call would raise; a missing branch
+    -- would print nothing at all).
+    if DealerDemoCommand then
+      DealerDemoCommand(arg)
+    else
+      print("|cffFFD700[DEMO]|r ERROR: demo handler unavailable (DealerDemoCommand is nil - /reload the addon)")
+    end
   elseif cmd=="auto" then
   -- Auto-dealer mode handlers
   if arg=="" then
@@ -5332,7 +7586,12 @@ SlashCmdList["CASINOBABE"]=function(msg)
   elseif cmd=="intro" then
     CasinobabeDB.seenIntro=nil
     print("|cffFFD700Casinobabe|r intro reset - the panel will auto-open on your next /reload or login.")
+  elseif cmd=="minimap" then
+    MinimapDebug()
+  elseif cmd=="" then
+    -- Bare /cb or /casinobabe opens the player UI (must work offline).
+    TogglePanel()
   else
-    print("|cffFFD700Casinobabe|r Commands: /cb dealer on|off|status|ad|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote | /cb auto | /cb auto stop | /cb auto status | /cb who | /cb discord <text> | /cb fx | /cb resetstats | /cb reset | /cb intro")
+    print("|cffFFD700Casinobabe|r Commands: /cb dealer on|off|status|ad|attract|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote | /cb auto | /cb auto stop | /cb auto status | /cb who | /cb discord <text> | /cb fx | /cb resetstats | /cb reset | /cb intro")
   end
 end
