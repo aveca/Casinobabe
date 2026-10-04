@@ -6942,7 +6942,7 @@ function UpdateZoneContext()
     currentInstanceType = instanceType
     
     print(string.format("|cffFFD700[CB ZONE]|r %s / %s (instance=%s, type=%s)", 
-      zone, subZone ~= "" and subZone or "(none)", tostring(inInstance), instanceType))
+      zone, subZone ~= "" and subZone or "(none)", tostring(inInstance), instanceType or "(none)"))
     
     -- Update dealer panel UI
     if panel and panel.dealerPanel and panel.dealerPanel.UpdateZone then
