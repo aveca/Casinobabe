@@ -398,46 +398,47 @@ local CasinoEmote = {
   },
   
   -- Text emotes (automated via SendChatMessage "EMOTE" channel)
+  -- English only, clean UTF-8, no mojibake.
   TEXT = {
     -- Atmosphere
-    ADJUSTS_COAT    = "ajuste son manteau.",
-    LOOKS_CROWD     = "regarde la foule.",
-    FLIPS_COIN      = "fait tourner une piÃ¨ce entre ses doigts.",
-    WATCHES_DICE    = "observe les dÃ©s avec attention.",
-    PLACES_CHIP     = "pose un jeton sur la table.",
-    SMILES          = "sourrit mystÃ©rieusement.",
-    NODS            = "incline la tÃªte.",
-    APPLAUDS        = "applaudit lentement.",
-    STUDIES_RESULT  = "examine le rÃ©sultat avec attention.",
-    LEANS_BACK      = "se penche en arriÃ¨re, dÃ©tendu.",
-    TAPS_TABLE      = "tape doucement sur la table.",
-    CHECKS_WATCH    = "vÃ©rifie une montre imaginaire.",
-    SHUFFLES_CARDS  = "mÃ©lange des cartes invisibles.",
-    LIGHTS_CIGAR    = "allume un cigare imaginaire.",
-    POLISHES_GLASS  = "essuie un verre.",
-    
+    ADJUSTS_COAT    = "adjusts his coat.",
+    LOOKS_CROWD     = "looks over the crowd.",
+    FLIPS_COIN      = "flips a coin between his fingers.",
+    WATCHES_DICE    = "watches the dice carefully.",
+    PLACES_CHIP     = "places a chip on the table.",
+    SMILES          = "smiles mysteriously.",
+    NODS            = "nods his head.",
+    APPLAUDS        = "applauds slowly.",
+    STUDIES_RESULT  = "studies the result carefully.",
+    LEANS_BACK      = "leans back, relaxed.",
+    TAPS_TABLE      = "taps lightly on the table.",
+    CHECKS_WATCH    = "checks an imaginary watch.",
+    SHUFFLES_CARDS  = "shuffles invisible cards.",
+    LIGHTS_CIGAR    = "lights an imaginary cigar.",
+    POLISHES_GLASS  = "wipes a glass.",
+
     -- Welcome
-    WELCOMES_PLAYER = "accueille le nouveau venu.",
-    OPENS_DOORS     = "ouvre grand les portes du casino.",
-    
+    WELCOMES_PLAYER = "welcomes the new player.",
+    OPENS_DOORS     = "opens the doors of the casino.",
+
     -- Game moments
-    DEALS_CARDS     = "distribue les cartes.",
-    SPINS_WHEEL     = "fait tourner la roulette.",
-    ROLLS_DICE      = "lance les dÃ©s.",
-    REVEALS_CARD    = "retourne une carte.",
-    CALLS_NUMBER    = "annonce le numÃ©ro.",
-    
+    DEALS_CARDS     = "deals the cards.",
+    SPINS_WHEEL     = "spins the roulette.",
+    ROLLS_DICE      = "rolls the dice.",
+    REVEALS_CARD    = "reveals a card.",
+    CALLS_NUMBER    = "calls the number.",
+
     -- Reactions
-    IMPRESSED       = "semble impressionnÃ©.",
-    UNIMPRESSED     = "reste de marbre.",
-    SURPRISED       = "semble surpris.",
-    SYMPATHETIC     = "fait un geste de sympathie.",
-    RESPECTFUL      = "salue le joueur avec respect.",
-    
+    IMPRESSED       = "seems impressed.",
+    UNIMPRESSED     = "remains unimpressed.",
+    SURPRISED       = "seems surprised.",
+    SYMPATHETIC     = "makes a sympathetic gesture.",
+    RESPECTFUL      = "salutes the player with respect.",
+
     -- Outro
-    CLOSES_TABLE    = "ferme la table pour la nuit.",
-    TIPS_HAT        = "touche son chapeau en signe d'adieu.",
-    WALKS_AWAY      = "s'Ã©loigne dans la nuit.",
+    CLOSES_TABLE    = "closes the table for the night.",
+    TIPS_HAT        = "tips his hat in farewell.",
+    WALKS_AWAY      = "walks away into the night.",
   },
   
   -- Contextual emote suggestions for dealer buttons
@@ -1570,7 +1571,9 @@ local CasinoShow = {
 -- Helper: Get game rule by key
 -- ============================================================================
 local function GetGameRule(key)
-  return GameRules[key:lower()]
+  if not key then return nil end
+  local k = tostring(key):lower()
+  return GameRules[k]
 end
 
 -- Helper: Compute payout (stake * (multiplier - 1)) for wins, -stake for loss, 0 for push
@@ -2539,11 +2542,30 @@ function DealerRecord(playerName, rollStr)
   session.roll = roll
   session.rollTime = time()
   DealerSetState(session, DEALER_STATES.ROLLING, "Roll recorded: " .. roll)
-  DealerAuditLog(session.sessionId, playerName, "ROLL", "Roll: " .. roll)
-  
+  DealerAuditLog(session.sessionId, playerName, "ROLL", "Roll: " .. roll .. " game=" .. tostring(session.game))
+
   -- Trigger reaction for roll received
   CasinoReactionEngine:Trigger("ROLL_RECEIVED", { player = playerName, roll = roll, game = session.game })
-  
+
+  -- AUTO FLOW (same as DealerOnSystemMsg): single-roll games auto-resolve + auto-payout on WIN.
+  local g = session.game
+  if g == "normal" or g == "high" or g == "lucky7" or g == "roulette" then
+    local okRes, errRes = DealerResolve(playerName)
+    if okRes then
+      DealerAuditLog(session.sessionId, playerName, "AUTO_RESOLVE", "result=" .. tostring(session.result) .. " mult=x" .. tostring(session.multiplier) .. " payout=" .. tostring(session.payout) .. "g")
+      if session.result == "WIN" then
+        local okPay, errPay = DealerPayout(playerName)
+        if okPay then
+          DealerAuditLog(session.sessionId, playerName, "AUTO_PAYOUT", "payout armed " .. tostring(session.payout) .. "g - trade requested")
+        else
+          DealerAuditLog(session.sessionId, playerName, "AUTO_PAYOUT_FAILED", tostring(errPay))
+        end
+      end
+    else
+      DealerAuditLog(session.sessionId, playerName, "AUTO_RESOLVE_FAILED", tostring(errRes))
+    end
+  end
+
   return true
 end
 
@@ -3382,10 +3404,30 @@ function DealerOnSystemMsg(text)
   session.roll = roll
   session.rollTime = time()
   DealerSetState(session, DEALER_STATES.ROLLING, "Roll captured: " .. roll)
-  DealerAuditLog(session.sessionId, who, "ROLL_CAPTURED", "Roll: " .. roll)
-  
+  DealerAuditLog(session.sessionId, who, "ROLL_CAPTURED", "Roll: " .. roll .. " game=" .. tostring(session.game))
+
   -- Trigger reaction for roll start
   CasinoReactionEngine:Trigger("ROLL_START", { player = who, roll = roll, game = session.game })
+
+  -- AUTO FLOW: single-roll games resolve immediately, then auto-payout on WIN.
+  -- Dice/Blackjack excluded (different mechanics: house 2d6 / hit-stand).
+  local g = session.game
+  if g == "normal" or g == "high" or g == "lucky7" or g == "roulette" then
+    local okRes, errRes = DealerResolve(who)
+    if okRes then
+      DealerAuditLog(session.sessionId, who, "AUTO_RESOLVE", "result=" .. tostring(session.result) .. " mult=x" .. tostring(session.multiplier) .. " payout=" .. tostring(session.payout) .. "g")
+      if session.result == "WIN" then
+        local okPay, errPay = DealerPayout(who)
+        if okPay then
+          DealerAuditLog(session.sessionId, who, "AUTO_PAYOUT", "payout armed " .. tostring(session.payout) .. "g - trade requested")
+        else
+          DealerAuditLog(session.sessionId, who, "AUTO_PAYOUT_FAILED", tostring(errPay))
+        end
+      end
+    else
+      DealerAuditLog(session.sessionId, who, "AUTO_RESOLVE_FAILED", tostring(errRes))
+    end
+  end
 end
 
 -- ===== namn/kanaler =====
@@ -3950,84 +3992,17 @@ local function CreatePanel()
 
   BuildFX(f)
 
-  -- HEADER
-  f.blockBtn=MakeButton(f,90,19,"Block Trades",0.10,0.07,0.10,0.8)
-  f.blockBtn:SetPoint("TOPLEFT",f,"TOPLEFT",PAD,-8)
-  f.blockBtn:SetScript("OnClick", function() ToggleBlockTrades() end)
-  
-  -- TAB BUTTONS (Player / Dealer)
-  local tabW, tabH = 70, 20
-  f.playerTab = MakeButton(f, tabW, tabH, "PLAYER", 0.12,0.09,0.05,0.9, C.gold)
-  f.playerTab:SetPoint("TOPLEFT", f.blockBtn, "TOPRIGHT", 8, 0)
-  f.playerTab.txt:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
-  f.dealerTab = MakeButton(f, tabW, tabH, "DEALER", 0.08,0.06,0.12,0.9, C.light)
-  f.dealerTab:SetPoint("LEFT", f.playerTab, "RIGHT", 4, 0)
-  f.dealerTab.txt:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE")
-  
+  -- HEADER (compact, player-first)
   local title=MakeText(f,16,"OUTLINE","CENTER"); title:SetPoint("TOP",f,"TOP",0,-7); title:SetText("Casinobabe"); title:SetTextColor(uc(C.gold))
   local close=CreateFrame("Button", nil, f); close:SetSize(20,20); close:SetPoint("TOPRIGHT",f,"TOPRIGHT",-7,-7)
   local cx=MakeText(close,16,"OUTLINE","CENTER"); cx:SetText("X"); cx:SetPoint("CENTER"); cx:SetTextColor(uc(C.mute))
   close:SetScript("OnClick", function() f:Hide() end)
-  -- Stats + History (uppe till hoger, vanster om X)
-  f.histBtn=MakeButton(f,52,16,"History",0.08,0.06,0.12,0.9, C.light)
-  f.histBtn:SetPoint("TOPRIGHT",f,"TOPRIGHT",-30,-9); f.histBtn.txt:SetFont("Fonts\\FRIZQT__.TTF",9,"")
-  f.histBtn:SetScript("OnClick", function() ShowInfo("Recent games", BuildHistoryText(), "history") end)
-  f.statsBtn=MakeButton(f,44,16,"Stats",0.12,0.09,0.05,0.9, C.gold)
-  f.statsBtn:SetPoint("TOPRIGHT", f.histBtn, "TOPLEFT", -5, 0); f.statsBtn.txt:SetFont("Fonts\\FRIZQT__.TTF",9,"")
-  f.statsBtn:SetScript("OnClick", function() ShowInfo("Your statistics", BuildStatsText(), "stats") end)
 
-  -- DISCORD + Copy (precis efter "help")
-  f.discordText=MakeText(f,10,"","LEFT"); f.discordText:SetPoint("TOPLEFT",f,"TOPLEFT",PAD,-30)
-  f.discordText:SetText("Discord: |cff8ab4f8"..(CasinobabeDB.discord or "Casinobabetbc").."|r for help")
-  f.copyBtn=MakeButton(f,42,16,"Copy",0.07,0.10,0.14,0.9, C.light)
-  f.copyBtn:SetPoint("LEFT", f.discordText, "RIGHT", 6, 0)
-  f.copyBtn:SetScript("OnClick", function() ShowDiscord() end)
-
-  -- saldo + cashback
-  local cardW,cardH=(W-PAD*2-8)/2, 40
-  local balCard=CreateFrame("Frame", nil, f); balCard:SetSize(cardW,cardH); balCard:SetPoint("TOPLEFT",f,"TOPLEFT",PAD,-50)
-  MakeBacking(balCard,0.05,0.03,0.07,0.78); MakeBorder(balCard,2):SetColor(uc(C.goldDk))
-  local bl=MakeText(balCard,8,"","LEFT"); bl:SetPoint("TOPLEFT",7,-5); bl:SetText("YOUR BALANCE"); bl:SetTextColor(uc(C.mute))
-  f.balValue=MakeText(balCard,16,"OUTLINE","LEFT"); f.balValue:SetPoint("BOTTOMLEFT",7,5); f.balValue:SetTextColor(uc(C.gold))
-  f.balDelta=MakeText(balCard,11,"OUTLINE","LEFT"); f.balDelta:SetPoint("LEFT", f.balValue, "RIGHT", 6, 0); f.balDelta:SetText("")
-  local cbCard=CreateFrame("Frame", nil, f); cbCard:SetSize(cardW,cardH); cbCard:SetPoint("TOPRIGHT",f,"TOPRIGHT",-PAD,-50)
-  MakeBacking(cbCard,0.03,0.07,0.04,0.78); MakeBorder(cbCard,2):SetColor(0.22,0.5,0.3,1)
-  local cl2=MakeText(cbCard,8,"","LEFT"); cl2:SetPoint("TOPLEFT",7,-5); cl2:SetText("CASHBACK READY"); cl2:SetTextColor(0.55,0.82,0.62,1)
-  f.cbValue=MakeText(cbCard,16,"OUTLINE","LEFT"); f.cbValue:SetPoint("BOTTOMLEFT",7,5); f.cbValue:SetTextColor(uc(C.green))
-  f.cbDelta=MakeText(cbCard,11,"OUTLINE","LEFT"); f.cbDelta:SetPoint("LEFT", f.cbValue, "RIGHT", 6, 0); f.cbDelta:SetText("")
-  f.collectBtn=MakeButton(cbCard,50,17,"Collect", 0.83,0.69,0.22,1, {0.1,0.06,0.02}); f.collectBtn:SetPoint("BOTTOMRIGHT",-5,5)
-  f.collectBtn.txt:SetFont("Fonts\\FRIZQT__.TTF",10,"")   -- inte fet
-  f.collectBtn:SetScript("OnClick", function() CollectCashback() end)
-
-  -- GLOW-halo bakom korten + hornornament som sticker ut (pa fx-lagret -> syns)
-  if f.fxLayer then
-    local function cardGlow(card, r,g,b)
-      local t=f:CreateTexture(nil,"BACKGROUND")     -- bakom kortet: bara halon runtom syns
-      t:SetPoint("TOPLEFT", card, "TOPLEFT", -7,7); t:SetPoint("BOTTOMRIGHT", card, "BOTTOMRIGHT", 7,-7)
-      t:SetColorTexture(r,g,b,0.10); t:SetBlendMode("ADD")
-      fxGlows[#fxGlows+1]={tex=t,base=0.10,amp=0.13,speed=2.0,phase=math.random()*3}
-    end
-    cardGlow(balCard, 1.0,0.80,0.30)
-    cardGlow(cbCard,  0.35,0.95,0.50)
-    local function gem(point,dx,dy,sz)
-      local t=f.fxLayer:CreateTexture(nil,"OVERLAY"); t:SetTexture("Interface\\Cooldown\\star4")
-      t:SetBlendMode("ADD"); t:SetVertexColor(1.0,0.86,0.45); t:SetSize(sz,sz)
-      t:SetPoint("CENTER", f, point, dx, dy)
-      fxGlows[#fxGlows+1]={tex=t,base=0.5,amp=0.4,speed=1.7,phase=math.random()*3}
-    end
-    gem("TOPLEFT",5,-5,10); gem("TOPRIGHT",-5,-5,10)
-    gem("BOTTOMLEFT",5,5,10); gem("BOTTOMRIGHT",-5,5,10)
-    -- mjuk glod bakom titeln
-    local tg=f.fxLayer:CreateTexture(nil,"ARTWORK"); tg:SetBlendMode("ADD")
-    tg:SetColorTexture(1.0,0.82,0.35,0); tg:SetSize(150,26); tg:SetPoint("TOP",f,"TOP",0,-4)
-    fxGlows[#fxGlows+1]={tex=tg,base=0.06,amp=0.10,speed=1.8,phase=0.5}
-  end
-
-  -- ONLINE-koll: oppnar Blizzards /who-lista
-  f.onlineBtn=MakeButton(f, W-PAD*2, 18, "Click: is Casinobabe online?  (opens /who list)", 0.06,0.05,0.09,0.85, C.gold)
-  f.onlineBtn:SetPoint("TOPLEFT",f,"TOPLEFT",PAD,-94)
-  f.onlineBtn.txt:SetFont("Fonts\\FRIZQT__.TTF",9,"OUTLINE")
-  f.onlineBtn:SetScript("OnClick", function() CheckOnline() end)
+  -- STATUS (tunn rad langst ner) - uniquement état courant
+  local statBar=CreateFrame("Frame", nil, f); statBar:SetSize(f:GetWidth()-PAD*2,16); statBar:SetPoint("BOTTOMLEFT",f,"BOTTOMLEFT",PAD,10)
+  MakeBacking(statBar,0.04,0.03,0.05,0.85); MakeBorder(statBar,1):SetColor(0.25,0.2,0.15,1)
+  f.statusText=MakeText(statBar,8.5,"","LEFT"); f.statusText:SetPoint("LEFT",6,0); f.statusText:SetText("IDLE"); f.statusText:SetTextColor(uc(C.light))
+  f.connDot=MakeText(statBar,8.5,"OUTLINE","RIGHT"); f.connDot:SetPoint("RIGHT",-6,0); f.connDot:SetText(""); f.connDot:SetTextColor(uc(C.mute))
 
   -- popup (overlay i konst-bandet)
   f.actionBar=BuildActionBar(f, W, PAD)
@@ -4064,26 +4039,19 @@ local function CreatePanel()
   end
   f.colorRow:Hide()
 
-  -- CASINOBABE-ordmarke (mellan Pick a game och Bet amount)
-  local wm=MakeText(f,18,"","CENTER"); SetFontSafe(wm,"Fonts\\MORPHEUS.TTF",18,"")
-  wm:SetPoint("TOP",f,"TOP",0,-278); wm:SetText("Casinobabe"); wm:SetTextColor(uc(C.gold))
-  local wl=f:CreateTexture(nil,"OVERLAY"); wl:SetColorTexture(uc(C.goldDk,0.8)); wl:SetSize(64,1); wl:SetPoint("RIGHT",wm,"LEFT",-8,1)
-  local wr=f:CreateTexture(nil,"OVERLAY"); wr:SetColorTexture(uc(C.goldDk,0.8)); wr:SetSize(64,1); wr:SetPoint("LEFT",wm,"RIGHT",8,1)
-
-  -- BET AMOUNT
-  local bl3=MakeText(f,9,"OUTLINE"); bl3:SetPoint("TOPLEFT",f,"TOPLEFT",PAD,-302); bl3:SetText("BET AMOUNT"); bl3:SetTextColor(uc(C.light))
+  -- BET AMOUNT (compact)
+  local bl3=MakeText(f,9,"OUTLINE"); bl3:SetPoint("TOPLEFT",f,"TOPLEFT",PAD,-260); bl3:SetText("STAKE"); bl3:SetTextColor(uc(C.light))
   f.amtChips={}
   local items={}; for _,v in ipairs(QUICK) do items[#items+1]={label=v.."g",val=v} end; items[#items+1]={label="Max",val="max"}
-  local awTot=W-PAD*2; local aw=(awTot-7*4)/8
+  local awTot=f:GetWidth()-PAD*2; local aw=(awTot-7*4)/8
   for i,it in ipairs(items) do
     local chip=MakeChip(f,aw,24,it.label); chip.label:SetFont("Fonts\\FRIZQT__.TTF",9.5,"OUTLINE")
-    chip:SetPoint("TOPLEFT",f,"TOPLEFT",PAD+(i-1)*(aw+4),-316)
+    chip:SetPoint("TOPLEFT",f,"TOPLEFT",PAD+(i-1)*(aw+4),-298)
     chip:SetScript("OnClick", function() SelectAmount(it.val) end)
     f.amtChips[tostring(it.val)]=chip
   end
 
-  -- custom + PLACE BET
-  f.amtBox=CreateFrame("EditBox", nil, f); f.amtBox:SetSize(awTot*0.40,26); f.amtBox:SetPoint("TOPLEFT",f,"TOPLEFT",PAD,-344)
+  f.amtBox=CreateFrame("EditBox", nil, f); f.amtBox:SetSize(f:GetWidth()*0.40,26); f.amtBox:SetPoint("TOPLEFT",f,"TOPLEFT",PAD,-320)
   f.amtBox:SetAutoFocus(false); f.amtBox:SetFontObject("ChatFontNormal"); f.amtBox:SetTextInsets(8,8,0,0)
   MakeBacking(f.amtBox,0.07,0.05,0.08,0.85); MakeBorder(f.amtBox,2):SetColor(0.35,0.28,0.2,1)
   f.amtBox:SetScript("OnTextChanged", function(self) local v=tonumber((self:GetText() or ""):match("%d+%.?%d*")); if v and v>0 then SelectAmount(v,true) end end)
@@ -4093,32 +4061,31 @@ local function CreatePanel()
   f.amtBox:SetScript("OnEditFocusGained", function() phs:Hide() end)
   f.amtBox:SetScript("OnEditFocusLost", function(self) if (self:GetText() or "")=="" then phs:Show() end end)
 
-  f.placeBtn=CreateFrame("Button", nil, f); f.placeBtn:SetSize(awTot*0.56,26); f.placeBtn:SetPoint("TOPRIGHT",f,"TOPRIGHT",-PAD,-344)
+  f.placeBtn=CreateFrame("Button", nil, f); f.placeBtn:SetSize(f:GetWidth()*0.56,26); f.placeBtn:SetPoint("TOPRIGHT",f,"TOPRIGHT",-PAD,-320)
   MakeBacking(f.placeBtn, uc(C.gold,1)); MakeBorder(f.placeBtn,2):SetColor(uc(C.goldDk))
-  f.placeTxt=MakeText(f.placeBtn,12,"","CENTER"); f.placeTxt:SetText("PLACE BET"); f.placeTxt:SetPoint("CENTER"); f.placeTxt:SetTextColor(0.10,0.05,0.02,1)
+  f.placeTxt=MakeText(f.placeBtn,12,"","CENTER"); f.placeTxt:SetText("PLAY"); f.placeTxt:SetPoint("CENTER"); f.placeTxt:SetTextColor(0.10,0.05,0.02,1)
   local pHl=f.placeBtn:CreateTexture(nil,"HIGHLIGHT"); pHl:SetAllPoints(); pHl:SetColorTexture(1,1,1,0.12)
   f.placeBtn:SetScript("OnClick", function() PlaceBet() end)
 
-  -- UTILITY-rad: Roll | Language | How to play | Games guide
-  local ubw=(W-PAD*2-3*4)/4
-  f.rollBtn=MakeButton(f,ubw,20,"Roll",0.20,0.13,0.04,0.95, C.gold)
-  f.rollBtn:SetPoint("BOTTOMLEFT",f,"BOTTOMLEFT",PAD,30)
-  f.rollBtn:SetScript("OnClick", function() if DoRoll then DoRoll() end end)
-  f.langBtn=MakeButton(f,ubw,20,(CasinobabeDB.langLabel or "Language"),0.08,0.06,0.12,0.85, C.light)
-  f.langBtn:SetPoint("BOTTOMLEFT",f,"BOTTOMLEFT",PAD+ubw+4,30)
-  f.langBtn:SetScript("OnClick", function() OpenLanguageMenu() end)
-  f.howBtn=MakeButton(f,ubw,20,"How to play",0.08,0.06,0.12,0.85, C.light)
-  f.howBtn:SetPoint("BOTTOMLEFT",f,"BOTTOMLEFT",PAD+2*(ubw+4),30)
-  f.howBtn:SetScript("OnClick", function() ShowInfo(HowToTitle(), HowToText()) end)
-  f.gamesBtn=MakeButton(f,ubw,20,"Games guide",0.08,0.06,0.12,0.85, C.light)
-  f.gamesBtn:SetPoint("BOTTOMLEFT",f,"BOTTOMLEFT",PAD+3*(ubw+4),30)
-  f.gamesBtn:SetScript("OnClick", function() ShowInfo(GuideTitle(), GuideText()) end)
+  -- STATE DISPLAY (player state machine)
+  UpdateDisplay=function()
+    if not f or not f.statusText then return end
+    local states = {IDLE="IDLE", SELECT_GAME="SELECT GAME", SELECT_STAKE="STAKE", REQUESTING="REQUESTING", 
+      WAITING_FOR_DEALER="WAITING", ACCEPTED="ACCEPTED", STAKE_REQUIRED="STAKE", READY="READY", 
+      YOUR_TURN="YOUR TURN", WAITING_RESULT="ROLLING", RESULT="RESULT", WIN="WIN", LOSS="LOSS", 
+      JACKPOT="JACKPOT", PAYOUT_REQUIRED="PAYOUT", COMPLETE="COMPLETE", ERROR="ERROR", CANCELLED="CANCELLED"}
+    local st = pending and pending.state or "IDLE"
+    f.statusText:SetText(states[st] or st)
+    f.statusText:SetTextColor(uc(C.light))
+  end
 
-  -- STATUS (tunn rad langst ner)
-  local statBar=CreateFrame("Frame", nil, f); statBar:SetSize(W-PAD*2,16); statBar:SetPoint("BOTTOMLEFT",f,"BOTTOMLEFT",PAD,10)
-  MakeBacking(statBar,0.04,0.03,0.05,0.85); MakeBorder(statBar,1):SetColor(0.25,0.2,0.15,1)
-  f.statusText=MakeText(statBar,8.5,"","LEFT"); f.statusText:SetPoint("LEFT",6,0); f.statusText:SetText("Connecting..."); f.statusText:SetTextColor(uc(C.light))
-  f.connDot=MakeText(statBar,8.5,"OUTLINE","RIGHT"); f.connDot:SetPoint("RIGHT",-6,0); f.connDot:SetText("offline"); f.connDot:SetTextColor(uc(C.mute))
+  -- Game chips click scripts get state-aware updates
+  for _,chip in pairs(f.gameChips) do
+    chip:SetScript("OnClick", function(self)
+      SelectGame(self.gameKey)
+      UpdateDisplay()
+    end)
+  end
 
   -- ============================================================================
   -- DEALER PANEL (hidden by default)
@@ -4479,6 +4446,16 @@ function SelectGame(key)
   for k,chip in pairs(panel.gameChips) do chip:SetSelected(k==key) end
   if key=="roulette" then panel.colorRow:Show() else panel.colorRow:Hide(); selectedColor=nil end
   UpdateDisplay()
+
+  -- PLAYER source of truth: pending.game follows UI selection.
+  -- DEALER source of truth is session.game (set via DealerGame from whisper
+  -- protocol). Do NOT call DealerGame with local player name here: on the
+  -- dealer client that would target the wrong session (dealer's own name
+  -- instead of the remote player Savage). Sync happens via whisper in
+  -- PlaceBet (JOIN + game + stake to DEALER_NAME).
+  if pending then
+    pending.game = key
+  end
 end
 function SelectAmount(val,fromBox)
   if val=="max" then val=math.min(math.floor(CasinobabeDB.bal or 0), MAX_BET) end
@@ -4496,15 +4473,31 @@ function SelectAmount(val,fromBox)
 end
 function UpdateDisplay()
   if not panel then return end
-  panel.balValue:SetText(math.floor(CasinobabeDB.bal or 0).."g")
-  local cb=math.floor(CasinobabeDB.cashback or 0); panel.cbValue:SetText(cb.."g")
-  if cb>0 then panel.collectBtn:Show() else panel.collectBtn:Hide() end
-  local amt=selectedAmount or CasinobabeDB.lastAmount
-  local gname; for _,g in ipairs(GAMES) do if g.key==selectedGame then gname=g.name end end
-  if selectedGame and amt and amt~="max" then
-    local extra=(selectedGame=="roulette" and selectedColor) and (" "..selectedColor) or ""
-    panel.placeTxt:SetText("BET "..amt.."g  "..(gname or "")..extra)
-  else panel.placeTxt:SetText("PLACE BET") end
+  -- Balance/cashback cards removed in player-first rebuild: guard nils.
+  if panel.balValue then
+    panel.balValue:SetText(math.floor(CasinobabeDB.bal or 0).."g")
+  end
+  if panel.cbValue then
+    local cb=math.floor(CasinobabeDB.cashback or 0); panel.cbValue:SetText(cb.."g")
+  end
+  if panel.collectBtn then
+    local cb=math.floor(CasinobabeDB.cashback or 0)
+    if cb>0 then panel.collectBtn:Show() else panel.collectBtn:Hide() end
+  end
+  -- PLAYER-FIRST: single primary action PLAY. Show selection summary in
+  -- status, not technical BET text. Never expose dealer terminology.
+  if panel.placeTxt then
+    panel.placeTxt:SetText("PLAY")
+  end
+  -- Player state machine in status bar (nil-safe).
+  if panel.statusText and SetStatus then
+    local st = pending and pending.state or "IDLE"
+    -- Keep existing status text if a round is active (PopupStart/SetStatus
+    -- already show guidance). Only default to IDLE when no pending.
+    if not pending then
+      -- Do not overwrite a useful message with bare IDLE if panel just opened.
+    end
+  end
   if panel.blockBtn then
     if CasinobabeDB.blockTrades then panel.blockBtn.txt:SetText("Trades OFF"); panel.blockBtn.txt:SetTextColor(uc(C.red)); panel.blockBtn.border:SetColor(uc(C.red))
     else panel.blockBtn.txt:SetText("Block Trades"); panel.blockBtn.txt:SetTextColor(uc(C.light)); panel.blockBtn.border:SetColor(uc(C.goldDk)) end
@@ -4657,13 +4650,32 @@ function OnMyRoll(roll)
   end
   if mult>0 then
     local net=pending.stake*(mult-1)
-    SetBalDelta(net); SetStatus(("%s - WIN! +%dg on %s"):format(rolledStr, net, pending.game), C.green)
-    RecordResult(pending.game, pending.stake, true, net)
-    ShowResult(true, net)
+    local isManual = pending.manualTrade
+    if isManual then
+      -- MANUAL TRADE FLOW: real gold via trade window, balance untouched.
+      -- Show WIN with real payout (net per ComputePayout) + trade guidance.
+      -- Dealer auto-payout (trade) runs in parallel on dealer client.
+      -- Never claim payment received before real WoW trade event.
+      SetStatus(("%s - YOU WIN! +%dg. Opening trade with %s..."):format(rolledStr, net, DEALER_NAME), C.green)
+      RecordResult(pending.game, pending.stake, true, net)
+      ShowResult(true, net)
+    else
+      SetBalDelta(net); SetStatus(("%s - WIN! +%dg on %s"):format(rolledStr, net, pending.game), C.green)
+      RecordResult(pending.game, pending.stake, true, net)
+      ShowResult(true, net)
+    end
   else
-    SetBalDelta(-pending.stake); SetStatus(("%s - lost %dg on %s. GL next!"):format(rolledStr, pending.stake, pending.game), C.red)
-    RecordResult(pending.game, pending.stake, false, -pending.stake)
-    ShowResult(false, pending.stake)
+    local isManual = pending.manualTrade
+    if isManual then
+      -- MANUAL LOSS: no payout, no trade. Balance untouched.
+      SetStatus(("%s - NOT THIS TIME."):format(rolledStr), C.red)
+      RecordResult(pending.game, pending.stake, false, -pending.stake)
+      ShowResult(false, pending.stake)
+    else
+      SetBalDelta(-pending.stake); SetStatus(("%s - lost %dg on %s. GL next!"):format(rolledStr, pending.stake, pending.game), C.red)
+      RecordResult(pending.game, pending.stake, false, -pending.stake)
+      ShowResult(false, pending.stake)
+    end
   end
   pending=nil
   PopupHideLater(0.8)
@@ -4718,13 +4730,41 @@ function PlaceBet()
   amt=math.floor(tonumber(amt) or 0)
   if amt<MIN_BET then SetStatus("Pick an amount.", C.gold); return end
   if amt>MAX_BET then amt=MAX_BET end   -- aldrig over casinots tak
-  if amt>(CasinobabeDB.bal or 0) then SetStatus(("Not enough balance (%dg)."):format(math.floor(CasinobabeDB.bal or 0)), C.red); return end
+  local inRaid = groupChannel() ~= nil
+  -- Balance check only for RAID-bot flow (balance-based). Manual dealer
+  -- trade flow (no raid, real gold via trade window) skips balance check.
+  if inRaid and amt>(CasinobabeDB.bal or 0) then SetStatus(("Not enough balance (%dg)."):format(math.floor(CasinobabeDB.bal or 0)), C.red); return end
+  -- SYNC DEALER SESSION via whisper protocol (fixes stale session.game bug:
+  -- Lucky7 + roll 90 was rejected because session.game stayed "dice").
+  -- Sent ONLY in manual flow (no raid) to avoid double-payout across
+  -- systems (raid-bot balance + dealer trade). In raid, bot handles bet,
+  -- no dealer session needed. pcall-guarded, never blocks.
+  -- Skip self-whisper when local is dealer.
+  if not inRaid then
+    do
+      local me = shortName(UnitName("player"))
+      if me and me:lower() ~= DEALER_NAME:lower() and SendChatMessage then
+        local dealer = DEALER_NAME
+        local gkey = selectedGame
+        local samt = tostring(amt)
+        pcall(SendChatMessage, "JOIN", "WHISPER", nil, dealer)
+        if C_Timer and C_Timer.After then
+          C_Timer.After(0.6, function()
+            pcall(SendChatMessage, gkey, "WHISPER", nil, dealer)
+          end)
+          C_Timer.After(1.2, function()
+            pcall(SendChatMessage, samt .. "g", "WHISPER", nil, dealer)
+          end)
+        end
+      end
+    end
+  end
   local text=betCommand(selectedGame, amt, selectedColor)
   if PostPublic(text) then
     lastBetTime=now
     HideTopBanner()
     SetStatus(("Bet sent (%dg on %s) - waiting for the casino to confirm..."):format(amt, selectedGame))
-    pending={ stake=amt, game=selectedGame, color=selectedColor, balBefore=(CasinobabeDB.bal or 0), expectAfter=(CasinobabeDB.bal or 0)-amt, sawDeduction=false, started=false, actionTaken=false, bjTotal=0, lastRoll=nil }
+    pending={ stake=amt, game=selectedGame, color=selectedColor, balBefore=(CasinobabeDB.bal or 0), expectAfter=(CasinobabeDB.bal or 0)-amt, sawDeduction=false, started=false, actionTaken=false, bjTotal=0, lastRoll=nil, state="REQUESTING" }
     PopupStart(selectedGame, amt, selectedColor)
     local myGen=popupGen
     -- INGEN blind tvangsstart langre. ALLA spel kraver att casinot bekraftar betet
@@ -4758,6 +4798,19 @@ function PlaceBet()
         end
         pending=nil; PopupHideLater(0.6)
       end end) end
+  else
+    -- MANUAL DEALER FLOW (no raid): whispers already sent above to sync
+    -- dealer session. Create lightweight pending for UI state so player
+    -- sees REQUESTING -> YOUR_TURN -> ROLL -> RESULT without RAID.
+    -- Real gold moves via trade window, never simulated. Balance untouched.
+    lastBetTime=now
+    HideTopBanner()
+    SetStatus(("Finding dealer for %dg on %s..."):format(amt, selectedGame))
+    pending={ stake=amt, game=selectedGame, color=selectedColor, balBefore=(CasinobabeDB.bal or 0), expectAfter=(CasinobabeDB.bal or 0), sawDeduction=false, started=true, actionTaken=false, bjTotal=0, lastRoll=nil, state="WAITING_FOR_DEALER", manualTrade=true }
+    PopupStart(selectedGame, amt, selectedColor)
+    -- Manual flow: show ROLL immediately (dealer will validate via session).
+    -- Player does real /roll, dealer captures via SYSTEM, auto-resolves.
+    PopupActivate(selectedGame)
   end
 end
 function CollectCashback()
@@ -4859,6 +4912,8 @@ StaticPopupDialogs["CASINOBABE_RESET_ALL"]={
 -- SPRAK-MENY
 -- ============================================================================
 function OpenLanguageMenu()
+  -- Player-first rebuild removed langBtn; guard against nil anchor.
+  if not (panel and panel.langBtn) then return end
   if not langMenu then
     langMenu=CreateFrame("Frame","Casinobabe_LangMenu", panel); langMenu:SetSize(120, #LANGS*20+8)
     langMenu:SetPoint("BOTTOMLEFT", panel.langBtn, "TOPLEFT", 0, 2); langMenu:SetFrameStrata("DIALOG")
@@ -5266,7 +5321,7 @@ SlashCmdList["CASINOBABE"]=function(msg)
     end
   elseif cmd=="discord" and arg~="" then
     CasinobabeDB.discord=arg; print("|cffFFD700Casinobabe|r discord set to "..arg)
-    if panel then panel.discordText:SetText("Discord: |cff8ab4f8"..arg.."|r for help") end
+    if panel and panel.discordText then panel.discordText:SetText("Discord: |cff8ab4f8"..arg.."|r for help") end
   elseif cmd=="fx" then CasinobabeDB.fx=not CasinobabeDB.fx; print("|cffFFD700Casinobabe|r fire fx: "..(CasinobabeDB.fx and "on" or "off"))
   elseif cmd=="resetstats" then
     CasinobabeDB.stats={ games=0, wins=0, wagered=0, wonGold=0, lostGold=0, byGame={} }; CasinobabeDB.history={}
