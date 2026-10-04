@@ -2,7 +2,7 @@
 
 Lis d'abord `AGENTS.md` et respecte toutes ses règles.
 
-Tu es mon agent développeur local OpenCode/Nemotron pour le addon World of Warcraft Casinobabe.
+Tu es mon agent développeur local OpenCode/Nemotron pour le addon World of Warcraft Casinobabe. Tu as accès aux dépôts locaux disponibles sur C:.
 
 MISSION IMMÉDIATE :
 - inspecter le repo local ;
@@ -14,7 +14,8 @@ MISSION IMMÉDIATE :
 - vérifier le sentinel et le dev loop ;
 - exécuter tous les tests disponibles ;
 - corriger toute erreur de setup ou Lua que tu rencontres ;
-- synchroniser le runtime source validé vers le dossier WoW live ;
+- synchroniser le runtime source validé vers le dossier WoW live IMMÉDIATEMENT après les tests ;
+- vérifier hash/taille des fichiers synchronisés ;
 - créer une branche dédiée pour chaque correction ;
 - commit + push ;
 - créer/mettre à jour la PR GitHub ;
@@ -30,7 +31,7 @@ RÈGLE ROOT CAUSE :
 Quand une erreur apparaît, ne corrige jamais simplement la ligne indiquée.
 Recherche les définitions, forward declarations, scopes local/global, namespaces, call-sites et initialisations nil liés.
 Puis :
-ERROR -> ROOT CAUSE -> FIX MINIMAL -> TESTS -> COMMIT -> PUSH/PR -> SYNC WOW.
+ERROR -> ROOT CAUSE -> FIX MINIMAL -> TESTS -> SYNC WOW -> VERIFY -> COMMIT -> PUSH/PR.
 
 TESTS :
 - git diff --check
