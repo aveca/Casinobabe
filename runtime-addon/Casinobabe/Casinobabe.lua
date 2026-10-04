@@ -128,12 +128,12 @@ CB.state.DEALER_CONN_STATES = {
   ERROR = "ERROR",
 }
 local DEALER_CONN_STATES = CB.state.DEALER_CONN_STATES
-local dealerConnState = CB.state.dealerConnState
-local dealerConnReason = CB.state.dealerConnReason
-local dealerConnLastMsg = CB.state.dealerConnLastMsg
+local dealerConnState = CB.state.dealerConnState or DEALER_CONN_STATES.OFF
+local dealerConnReason = CB.state.dealerConnReason or ""
+local dealerConnLastMsg = CB.state.dealerConnLastMsg or 0
 CB.state.dealerConnState = dealerConnState
-CB.state.dealerConnReason = ""
-CB.state.dealerConnLastMsg = 0
+CB.state.dealerConnReason = dealerConnReason
+CB.state.dealerConnLastMsg = dealerConnLastMsg
 
 local function DealerSetConnState(state, reason)
   local old = dealerConnState
