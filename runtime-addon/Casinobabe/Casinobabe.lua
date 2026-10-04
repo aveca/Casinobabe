@@ -42,6 +42,7 @@ local DealerValidateTransition
 
 -- Utility forward declarations
 local shortName
+local CasinoSound
 
 -- Demo session forward declaration (must be before functions that reference it)
 local demoSession
@@ -383,6 +384,8 @@ CB.CasinoSound = {
   end,
 }
 
+
+CasinoSound = CB.CasinoSound
 -- ============================================================================
 -- CASINOEMOTE - Emote helpers (physical + text)
 -- ============================================================================
