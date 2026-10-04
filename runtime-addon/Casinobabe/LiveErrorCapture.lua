@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 -- CasinoBae live error capture bridge.
 CasinobabeErrorBus = CasinobabeErrorBus or {
   version = 1,
@@ -46,6 +47,8 @@ if type(geterrorhandler) == "function" and type(seterrorhandler) == "function" t
   end)
 end
 =======
+=======
+>>>>>>> c5bef037b56ff0823be55b38cc4598e348cb40ff
 --[[
 Live Error Capture for CasinoBae
 Captures runtime errors from WoW SavedVariables and forwards them
@@ -207,5 +210,9 @@ local oldGetErrorHandler = geterrorhandler or function() end
 -- Hook into Lua error capturing
 -- WoW errors during runtime will be captured via SavedVariables bridge
 
+<<<<<<< HEAD
 print("|cffFFD700Casinobabe|r LiveErrorCapture.lua loaded - error monitoring active.")
 >>>>>>> c5bef03 (FEAT: Add LiveErrorCapture.lua + update TOC for autonomous error monitoring)
+=======
+print("|cffFFD700Casinobabe|r LiveErrorCapture.lua loaded - error monitoring active.")
+>>>>>>> c5bef037b56ff0823be55b38cc4598e348cb40ff
