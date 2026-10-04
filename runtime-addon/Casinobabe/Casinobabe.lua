@@ -13,6 +13,14 @@ local MEDIA  = "Interface\\AddOns\\Casinobabe\\media\\background"
 -- Namespace for all addon state and data
 local CB = {}
 Casinobabe = CB
+CB.state = CB.state or {}
+CB.ui = CB.ui or {}
+CB.libs = CB.libs or {}
+CB.constants = CB.constants or {}
+CB.prospects = CB.prospects or {}
+CB.conversations = CB.conversations or {}
+CB.autopilot = CB.autopilot or {}
+CB.liveTest = CB.liveTest or {}
 
 -- ===== forward =====
 local panel, langMenu
@@ -32,7 +40,7 @@ local DealerGetSession, DealerCreateSession, DealerSetState
 local DealerValidateTransition
 
 -- Utility forward declarations
-local shortName
+-- shortName is exposed on CB below; keep the forward intentionally unused to avoid stale global calls.
 
 -- Demo session forward declaration (must be before functions that reference it)
 local demoSession
@@ -119,7 +127,11 @@ CB.state.DEALER_CONN_STATES = {
   COOLDOWN = "COOLDOWN",
   ERROR = "ERROR",
 }
-CB.state.dealerConnState = DEALER_CONN_STATES.OFF
+local DEALER_CONN_STATES = CB.state.DEALER_CONN_STATES
+local dealerConnState = CB.state.dealerConnState
+local dealerConnReason = CB.state.dealerConnReason
+local dealerConnLastMsg = CB.state.dealerConnLastMsg
+CB.state.dealerConnState = dealerConnState
 CB.state.dealerConnReason = ""
 CB.state.dealerConnLastMsg = 0
 
@@ -128,6 +140,9 @@ local function DealerSetConnState(state, reason)
   dealerConnState = state
   dealerConnReason = reason or ""
   dealerConnLastMsg = time()
+  CB.state.dealerConnState = dealerConnState
+  CB.state.dealerConnReason = dealerConnReason
+  CB.state.dealerConnLastMsg = dealerConnLastMsg
   -- Diagnostics
   print(string.format("|cffFFD700Casinobabe|r [DEALER] STATE %s -> %s%s", old, state, reason and (" (" .. reason .. ")") or ""))
   -- Update UI
@@ -2162,7 +2177,7 @@ end
 
 -- Check if current character is the dealer (Casinobae)
 local function IsDealerCharacter()
-  local name = shortName(UnitName("player"))
+  local name = CB.shortName(UnitName("player"))
   return name and name:lower() == DEALER_NAME:lower()
 end
 
@@ -2406,7 +2421,7 @@ end
 function DealerOnWhisper(msg, sender)
   if not dealerEnabled then return end
   if not sender then return end
-  sender = shortName(sender)
+  sender = CB.shortName(sender)
   if not sender then return end
   
   local lowerMsg = msg:lower()
@@ -3584,7 +3599,7 @@ end
 -- Trade event handlers
 function DealerOnTradeShow(targetName)
   if not dealerEnabled then return end
-  targetName = shortName(targetName)
+  targetName = CB.shortName(targetName)
   if not targetName then return end
   
   local session = DealerGetSession(targetName)
@@ -3602,7 +3617,7 @@ end
 
 function DealerOnTradeAccept(targetName)
   if not dealerEnabled then return end
-  targetName = shortName(targetName)
+  targetName = CB.shortName(targetName)
   if not targetName then return end
   
   local session = DealerGetSession(targetName)
@@ -3656,7 +3671,7 @@ end
 
 function DealerOnTradeClose(targetName, completed)
   if not dealerEnabled then return end
-  targetName = shortName(targetName)
+  targetName = CB.shortName(targetName)
   if not targetName then return end
   
   local session = DealerGetSession(targetName)
@@ -4125,7 +4140,7 @@ function DealerOnSystemMsg(text)
   end
   if not who or not roll then return end
   
-  who = shortName(who)
+  who = CB.shortName(who)
   roll = tonumber(roll)
   if not who or not roll then return end
   
@@ -4186,13 +4201,13 @@ local function groupLeaderName()
     local n=(GetNumGroupMembers and GetNumGroupMembers()) or (GetNumRaidMembers and GetNumRaidMembers()) or 0
     for i=1,n do
       local nm,rank=GetRaidRosterInfo(i)
-      if nm and rank==2 then return shortName(nm) end
+      if nm and rank==2 then return CB.shortName(nm) end
     end
   elseif groupChannel()=="PARTY" then
-    if UnitIsGroupLeader and UnitIsGroupLeader("player") then return shortName(UnitName("player")) end
+    if UnitIsGroupLeader and UnitIsGroupLeader("player") then return CB.shortName(UnitName("player")) end
     local n=(GetNumSubgroupMembers and GetNumSubgroupMembers()) or (GetNumPartyMembers and GetNumPartyMembers()) or 0
     for i=1,n do
-      if UnitIsGroupLeader and UnitIsGroupLeader("party"..i) then return shortName(UnitName("party"..i)) end
+      if UnitIsGroupLeader and UnitIsGroupLeader("party"..i) then return CB.shortName(UnitName("party"..i)) end
     end
   end
   return nil
@@ -4708,7 +4723,7 @@ end
 -- ============================================================================
 local function CreatePanel()
   InitDB()
-  myName=shortName(UnitName("player"))
+  myName=CB.shortName(UnitName("player"))
   local W,H,PAD = 380, 432, 12
 
   local f=CreateFrame("Frame","Casinobabe_Panel", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
@@ -6104,7 +6119,7 @@ end
 -- Nu forsoker vi flera ganger, och gruppandringar triggar ett nytt forsok.
 local connTkn=0
 function RequestState(tries)
-  myName=myName or shortName(UnitName("player"))
+  myName=myName or CB.shortName(UnitName("player"))
   connTkn=connTkn+1
   local tkn=connTkn
   tries=tries or 0
@@ -6160,7 +6175,7 @@ function PlaceBet()
   -- Skip self-whisper when local is dealer.
   if not inRaid then
     do
-      local me = shortName(UnitName("player"))
+      local me = CB.shortName(UnitName("player"))
       if me and me:lower() ~= DEALER_NAME:lower() and SendChatMessage then
         local dealer = DEALER_NAME
         local gkey = selectedGame
@@ -6258,7 +6273,7 @@ end
 function HandleMessage(msg, sender)
   if not msg then return end
   local to=msg:match("|to=([^|]+)$")
-  if to then if shortName(to)~=(myName or shortName(UnitName("player"))) then return end; msg=msg:gsub("|to=[^|]+$","") end
+  if to then if CB.shortName(to)~=(myName or CB.shortName(UnitName("player"))) then return end; msg=msg:gsub("|to=[^|]+$","") end
   SetConnected(true)
   if msg=="BUSY" then
     BlackjackBusy()
@@ -6623,7 +6638,7 @@ loader:SetScript("OnEvent", function(self, event, ...)
     -- knappen forst vid PLAYER_LOGIN kan samlaren hinna scanna fore oss och missa den.
     if not LibDBIcon10_Casinobabe then CreateMinimapButton() end
   elseif event=="PLAYER_LOGIN" then
-    myName=shortName(UnitName("player"))
+    myName=CB.shortName(UnitName("player"))
     CasinobabeDB.casino=nil   -- rensa gammalt felaktigt sparat namn; vi visar raid-ledaren
     if not LibDBIcon10_Casinobabe then CreateMinimapButton() end   -- fallback
     RequestState()
@@ -6649,14 +6664,14 @@ loader:SetScript("OnEvent", function(self, event, ...)
       -- Locale-robust: pa icke-engelska klienter ar verbet annorlunda
       -- ("wuerfelt", "obtient" osv.), men "<namn> ... <roll> (1-100)" galler
       -- overallt. Vi matchar siffran + (1-100) och kollar att namnet ar vart.
-      myName=myName or shortName(UnitName("player"))
+      myName=myName or CB.shortName(UnitName("player"))
       local who,roll=text:match("^(%S+) .-(%d+) %(1%-100%)")
-      if who and roll and shortName(who)==myName then
+      if who and roll and CB.shortName(who)==myName then
         OnMyRoll(tonumber(roll))
       else
         -- fallback: klassisk engelsk formattering
         local who2,roll2=text:match("^(.-) rolls (%d+) %(%d+%-%d+%)")
-        if who2 and roll2 and shortName(who2)==myName then OnMyRoll(tonumber(roll2)) end
+        if who2 and roll2 and CB.shortName(who2)==myName then OnMyRoll(tonumber(roll2)) end
       end
       -- DICE: huset rullar tva tarningar (1-6 var) synligt. Las dem och visa
       -- summan + over/under, sa spelaren ser vad huset slog. (Sjalva vinsten/
@@ -6664,7 +6679,7 @@ loader:SetScript("OnEvent", function(self, event, ...)
       if pending and pending.game=="dice" and pending.started and pending.actionTaken
          and pending.diceRolls and #pending.diceRolls<2 then
         local hwho,hroll=text:match("^(%S+) .-(%d+) %(1%-6%)")
-        if hwho and hroll and shortName(hwho)~=myName then
+        if hwho and hroll and CB.shortName(hwho)~=myName then
           table.insert(pending.diceRolls, tonumber(hroll))
           if #pending.diceRolls>=2 then
             local d1,d2=pending.diceRolls[1],pending.diceRolls[2]
@@ -6868,7 +6883,7 @@ function HandleInboundChat(eventType, text, sender, channelType, channelName, ch
   if sender == myName then return end -- Ignore self
   
   -- Normalize sender name
-  sender = shortName(sender)
+  sender = CB.shortName(sender)
   
   -- Update prospect system
   UpdateProspect(sender, channelType or eventType, text, nil, 0)
