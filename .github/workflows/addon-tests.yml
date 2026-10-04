@@ -12,8 +12,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Lua
         run: sudo apt-get update && sudo apt-get install -y lua5.4
-      - name: Compile-check every addon Lua file
+      - name: Compile-check legacy addon Lua files
         run: luac5.4 -p addon/CasinoBae/*.lua
+      - name: Compile-check live runtime Lua files
+        run: luac5.4 -p runtime-addon/Casinobabe/*.lua
+      - name: Node-check self-healing sentinel
+        run: node --check scripts/casinobae-live-sentinel.cjs
       - name: Syntax-check website JavaScript
         run: node --check site/app.js
       - name: Run offline WoW integration harness
