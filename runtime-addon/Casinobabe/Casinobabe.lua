@@ -33,6 +33,9 @@ local DealerValidateTransition
 
 -- Utility forward declarations
 local shortName
+local DEALER_NAME = "Casinobae"
+local DEALER_CONN_STATES
+local dealerConnState, dealerConnReason, dealerConnLastMsg
 
 -- Demo session forward declaration (must be before functions that reference it)
 local demoSession
@@ -42,6 +45,11 @@ local demoSession
 -- would resolve as a nil global inside early-called functions (Lua locals
 -- are only visible after their declaration). Initialized at "===== farger".
 local C
+local function shortName(full)
+  if not full then return nil end
+  return full:match("^([^%-]+)") or full
+end
+CB.shortName = shortName
 
 -- ===== spel =====
 local GAMES = {
@@ -62,6 +70,7 @@ CB.state.dealerEnabled = false  -- manual toggle via /cb dealer on
 CB.state.autoAttractRunning = false  -- auto-dealer attract state
 CB.state.isDealerMode = false
 CB.state.DEALER_NAME = "Casinobae"
+DEALER_NAME = CB.state.DEALER_NAME
 
 -- ============================================================================
 -- DEALER COOLDOWN MANAGER - Single canonical cooldown system
@@ -119,6 +128,7 @@ CB.state.DEALER_CONN_STATES = {
   COOLDOWN = "COOLDOWN",
   ERROR = "ERROR",
 }
+DEALER_CONN_STATES = CB.state.DEALER_CONN_STATES
 CB.state.dealerConnState = DEALER_CONN_STATES.OFF
 CB.state.dealerConnReason = ""
 CB.state.dealerConnLastMsg = 0
@@ -128,6 +138,9 @@ local function DealerSetConnState(state, reason)
   dealerConnState = state
   dealerConnReason = reason or ""
   dealerConnLastMsg = time()
+  CB.state.dealerConnState = dealerConnState
+  CB.state.dealerConnReason = dealerConnReason
+  CB.state.dealerConnLastMsg = dealerConnLastMsg
   -- Diagnostics
   print(string.format("|cffFFD700Casinobabe|r [DEALER] STATE %s -> %s%s", old, state, reason and (" (" .. reason .. ")") or ""))
   -- Update UI
