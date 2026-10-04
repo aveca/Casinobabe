@@ -6114,7 +6114,7 @@ end
 -- Nu forsoker vi flera ganger, och gruppandringar triggar ett nytt forsok.
 local connTkn=0
 function RequestState(tries)
-  myName=myName or shortName(UnitName("player"))
+  myName=myName or CB.shortName(UnitName("player"))
   connTkn=connTkn+1
   local tkn=connTkn
   tries=tries or 0
