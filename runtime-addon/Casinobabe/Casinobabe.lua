@@ -11,8 +11,17 @@ local PREFIX = "CBABE"
 local MEDIA  = "Interface\\AddOns\\Casinobabe\\media\\background"
 
 -- Namespace for all addon state and data
-local CB = {}
+local CB = Casinobabe or {}
 Casinobabe = CB
+
+CB.state = CB.state or {}
+CB.ui = CB.ui or {}
+CB.libs = CB.libs or {}
+CB.constants = CB.constants or {}
+CB.prospects = CB.prospects or {}
+CB.conversations = CB.conversations or {}
+CB.autopilot = CB.autopilot or {}
+CB.liveTest = CB.liveTest or {}
 
 -- ===== forward =====
 local panel, langMenu
@@ -119,6 +128,7 @@ CB.state.DEALER_CONN_STATES = {
   COOLDOWN = "COOLDOWN",
   ERROR = "ERROR",
 }
+local DEALER_CONN_STATES = CB.state.DEALER_CONN_STATES
 CB.state.dealerConnState = DEALER_CONN_STATES.OFF
 CB.state.dealerConnReason = ""
 CB.state.dealerConnLastMsg = 0
@@ -2162,7 +2172,7 @@ end
 
 -- Check if current character is the dealer (Casinobae)
 local function IsDealerCharacter()
-  local name = shortName(UnitName("player"))
+  local name = CB.shortName(UnitName("player"))
   return name and name:lower() == DEALER_NAME:lower()
 end
 
@@ -2406,7 +2416,7 @@ end
 function DealerOnWhisper(msg, sender)
   if not dealerEnabled then return end
   if not sender then return end
-  sender = shortName(sender)
+  sender = CB.shortName(sender)
   if not sender then return end
   
   local lowerMsg = msg:lower()
@@ -6160,7 +6170,7 @@ function PlaceBet()
   -- Skip self-whisper when local is dealer.
   if not inRaid then
     do
-      local me = shortName(UnitName("player"))
+      local me = CB.shortName(UnitName("player"))
       if me and me:lower() ~= DEALER_NAME:lower() and SendChatMessage then
         local dealer = DEALER_NAME
         local gkey = selectedGame
@@ -6258,7 +6268,7 @@ end
 function HandleMessage(msg, sender)
   if not msg then return end
   local to=msg:match("|to=([^|]+)$")
-  if to then if shortName(to)~=(myName or shortName(UnitName("player"))) then return end; msg=msg:gsub("|to=[^|]+$","") end
+  if to then if CB.shortName(to)~=(myName or CB.shortName(UnitName("player"))) then return end; msg=msg:gsub("|to=[^|]+$","") end
   SetConnected(true)
   if msg=="BUSY" then
     BlackjackBusy()
@@ -6623,7 +6633,7 @@ loader:SetScript("OnEvent", function(self, event, ...)
     -- knappen forst vid PLAYER_LOGIN kan samlaren hinna scanna fore oss och missa den.
     if not LibDBIcon10_Casinobabe then CreateMinimapButton() end
   elseif event=="PLAYER_LOGIN" then
-    myName=shortName(UnitName("player"))
+    myName=CB.shortName(UnitName("player"))
     CasinobabeDB.casino=nil   -- rensa gammalt felaktigt sparat namn; vi visar raid-ledaren
     if not LibDBIcon10_Casinobabe then CreateMinimapButton() end   -- fallback
     RequestState()
@@ -6649,7 +6659,7 @@ loader:SetScript("OnEvent", function(self, event, ...)
       -- Locale-robust: pa icke-engelska klienter ar verbet annorlunda
       -- ("wuerfelt", "obtient" osv.), men "<namn> ... <roll> (1-100)" galler
       -- overallt. Vi matchar siffran + (1-100) och kollar att namnet ar vart.
-      myName=myName or shortName(UnitName("player"))
+myName=myName or CB.shortName(UnitName("player"))
       local who,roll=text:match("^(%S+) .-(%d+) %(1%-100%)")
       if who and roll and shortName(who)==myName then
         OnMyRoll(tonumber(roll))
