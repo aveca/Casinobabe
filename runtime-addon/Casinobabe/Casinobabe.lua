@@ -133,10 +133,10 @@ CB.state.dealerConnReason = ""
 CB.state.dealerConnLastMsg = 0
 
 local function DealerSetConnState(state, reason)
-  local old = dealerConnState
-  dealerConnState = state
-  dealerConnReason = reason or ""
-  dealerConnLastMsg = time()
+  local old = CB.state.dealerConnState
+  CB.state.dealerConnState = state
+  CB.state.dealerConnReason = reason or ""
+  CB.state.dealerConnLastMsg = time()
   -- Diagnostics
   print(string.format("|cffFFD700Casinobabe|r [DEALER] STATE %s -> %s%s", old, state, reason and (" (" .. reason .. ")") or ""))
   -- Update UI
@@ -1180,7 +1180,7 @@ function CasinoReactionEngine:Execute(actions, ctx)
     elseif action.channel == "EMOTE" and action.msg then
       SendChatMessage(action.msg, "EMOTE")
     elseif action.sound then
-      CasinoSound:Play(action.sound)
+      CB.CasinoSound:Play(action.sound)
     elseif action.physical then
       -- Queue physical emote suggestion for dealer UI
       ctx.suggestedEmote = action.physical
@@ -1216,13 +1216,13 @@ local CasinoAnnouncer = {
       name = "Standard Show",
       weight = 40,
       steps = {
-        { delay = 0,   fn = function() CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
+        { delay = 0,   fn = function() CB.CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
         { delay = 1.5, fn = function() SendChatMessage(CasinoVariants:Get("SHOW_INTRO"), "EMOTE") end },
-        { delay = 3,   fn = function() CasinoSound:Play("DRAMA_PAUSE") end },
+        { delay = 3,   fn = function() CB.CasinoSound:Play("DRAMA_PAUSE") end },
         { delay = 3.5, fn = function() SendChatMessage("ðŸŽ° The table is OPEN.", "SAY") end },
         { delay = 5,   fn = function() CasinoEmote:PlayText("FLIPS_COIN") end },
         { delay = 6,   fn = function() SendChatMessage("Step right up...", "SAY") end },
-        { delay = 8,   fn = function() CasinoSound:Play("CTA"); SendChatMessage("ðŸŽ° CASINOBAE CASINO IS OPEN ðŸŽ°", "YELL") end },
+        { delay = 8,   fn = function() CB.CasinoSound:Play("CTA"); SendChatMessage("ðŸŽ° CASINOBAE CASINO IS OPEN ðŸŽ°", "YELL") end },
         { delay = 10,  fn = function() CasinoEmote:PlayText("POINTS_CROWD") end },
         -- Games reveal
         { delay = 12,  fn = function() SendChatMessage("ðŸŽ° NORMAL â€” 59+ x2, 100 x3", "SAY") end },
@@ -1231,16 +1231,16 @@ local CasinoAnnouncer = {
         { delay = 16.5, fn = function() SendChatMessage("ðŸ”´ ROULETTE â€” Red/Black x2, Green x5", "SAY") end },
         { delay = 18,  fn = function() SendChatMessage("ðŸŽ² DICE â€” Over/Under x2, 7 x4", "SAY") end },
         { delay = 19.5, fn = function() SendChatMessage("ðŸ€ LUCKY 7 â€” Ends in 7 = x7", "SAY") end },
-        { delay = 21,  fn = function() CasinoSound:Play("SUSPENSE") end },
+        { delay = 21,  fn = function() CB.CasinoSound:Play("SUSPENSE") end },
         { delay = 22,  fn = function() SendChatMessage(CasinoVariants:Get("SHOW_CTA"), "SAY") end },
-        { delay = 24,  fn = function() CasinoEmote:PlayText("SMILES"); CasinoSound:Play("CURTAIN") end },
+        { delay = 24,  fn = function() CasinoEmote:PlayText("SMILES"); CB.CasinoSound:Play("CURTAIN") end },
       },
     },
     ELEGANT = {
       name = "Elegant Dealer",
       weight = 20,
       steps = {
-        { delay = 0,   fn = function() CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
+        { delay = 0,   fn = function() CB.CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
         { delay = 2,   fn = function() SendChatMessage("/me incline la tÃªte avec Ã©lÃ©gance.", "EMOTE") end },
         { delay = 4,   fn = function() SendChatMessage("ðŸŽ° The house welcomes you.", "SAY") end },
         { delay = 6,   fn = function() CasinoEmote:PlayText("SMILES") end },
@@ -1250,7 +1250,7 @@ local CasinoAnnouncer = {
         { delay = 11.5, fn = function() SendChatMessage("ðŸ”´ ROULETTE â€” Red/Black x2, Green x5", "SAY") end },
         { delay = 13,  fn = function() SendChatMessage("ðŸŽ² DICE â€” Over/Under x2, 7 x4", "SAY") end },
         { delay = 14.5, fn = function() SendChatMessage("ðŸ€ LUCKY 7 â€” Ends in 7 = x7", "SAY") end },
-        { delay = 16,  fn = function() CasinoSound:Play("CTA"); SendChatMessage("The table is open. /w Casinobae JOIN", "SAY") end },
+        { delay = 16,  fn = function() CB.CasinoSound:Play("CTA"); SendChatMessage("The table is open. /w Casinobae JOIN", "SAY") end },
         { delay = 18,  fn = function() CasinoEmote:PlayText("BOW") end },
       },
     },
@@ -1258,7 +1258,7 @@ local CasinoAnnouncer = {
       name = "Crazy Casino",
       weight = 15,
       steps = {
-        { delay = 0,   fn = function() CasinoSound:Play("CTA"); CasinoEmote:PlayText("DANCE") end },
+        { delay = 0,   fn = function() CB.CasinoSound:Play("CTA"); CasinoEmote:PlayText("DANCE") end },
         { delay = 1,   fn = function() SendChatMessage("ðŸŽ°ðŸŽ°ðŸŽ° CASINOBAE IS OPEN! ðŸŽ°ðŸŽ°ðŸŽ°", "YELL") end },
         { delay = 2,   fn = function() CasinoEmote:PlayText("CHEER") end },
         { delay = 2.5, fn = function() SendChatMessage("ðŸŽ° NORMAL â€” 59+ x2, 100 x3!", "SAY") end },
@@ -1276,7 +1276,7 @@ local CasinoAnnouncer = {
       name = "Lucky Night",
       weight = 10,
       steps = {
-        { delay = 0,   fn = function() CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("FLIPS_COIN") end },
+        { delay = 0,   fn = function() CB.CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("FLIPS_COIN") end },
         { delay = 2,   fn = function() SendChatMessage("ðŸ€ Tonight... the stars align.", "SAY") end },
         { delay = 3,   fn = function() SendChatMessage("ðŸ€ LUCKY 7 â€” Ends in 7 = x7", "SAY") end },
         { delay = 4.5, fn = function() SendChatMessage("ðŸŽ² DICE â€” 7 pays quadruple!", "SAY") end },
@@ -1289,7 +1289,7 @@ local CasinoAnnouncer = {
       name = "High Risk",
       weight = 10,
       steps = {
-        { delay = 0,   fn = function() CasinoSound:Play("DRAMA_PAUSE"); CasinoEmote:PlayText("GASP") end },
+        { delay = 0,   fn = function() CB.CasinoSound:Play("DRAMA_PAUSE"); CasinoEmote:PlayText("GASP") end },
         { delay = 1,   fn = function() SendChatMessage("ðŸ”¥ HIGH RISK. 76+ x3. 100 x4.", "YELL") end },
         { delay = 2,   fn = function() SendChatMessage("1-75... the house keeps it ALL.", "SAY") end },
         { delay = 3.5, fn = function() SendChatMessage("Dare you? /w Casinobae JOIN", "SAY") end },
@@ -1300,7 +1300,7 @@ local CasinoAnnouncer = {
       name = "Mystery Dealer",
       weight = 5,
       steps = {
-        { delay = 0,   fn = function() CasinoSound:Play("SUSPENSE"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
+        { delay = 0,   fn = function() CB.CasinoSound:Play("SUSPENSE"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
         { delay = 2,   fn = function() SendChatMessage("...", "SAY") end },
         { delay = 3,   fn = function() SendChatMessage("The house has a surprise.", "SAY") end },
         { delay = 4,   fn = function() SendChatMessage("One game. One roll. Everything changes.", "SAY") end },
@@ -1311,7 +1311,7 @@ local CasinoAnnouncer = {
       name = "Quick Ad",
       weight = 0, -- Manual only
       steps = {
-        { delay = 0,   fn = function() CasinoSound:Play("CTA") end },
+        { delay = 0,   fn = function() CB.CasinoSound:Play("CTA") end },
         { delay = 0.5, fn = function() SendChatMessage("ðŸŽ° Casinobae Casino OPEN â€” /w Casinobae JOIN â€” Games + /roll", "SAY") end },
       },
     },
@@ -3192,8 +3192,8 @@ local function DealerTestWinSteps()
         s.multiplier = mult
         s.result = (mult and mult > 0) and "WIN" or "LOSS"
         DealerTestSay("[TEST REACTION] WIN -> CHEER + CLAP described (no auto physical emote)")
-        if CasinoSound and CasinoSound.Play then
-          CasinoSound:Play("WIN_SMALL")
+        if CB.CasinoSound and CB.CasinoSound.Play then
+          CB.CasinoSound:Play("WIN_SMALL")
           DealerTestSay("[TEST SOUND] WIN_SMALL (local only)")
         end
         return mult == 7 and s.result == "WIN", "mult=x" .. tostring(mult) .. " result=" .. tostring(s.result)
@@ -3271,8 +3271,8 @@ local function DealerTestLossSteps()
         s.multiplier = mult
         s.result = (mult and mult > 0) and "WIN" or "LOSS"
         DealerTestSay("[TEST REACTION] LOSS -> SHRUG described (no auto physical emote)")
-        if CasinoSound and CasinoSound.Play then
-          CasinoSound:Play("LOSS")
+        if CB.CasinoSound and CB.CasinoSound.Play then
+          CB.CasinoSound:Play("LOSS")
           DealerTestSay("[TEST SOUND] LOSS (local only)")
         end
         return mult == 0 and s.result == "LOSS", "mult=x" .. tostring(mult) .. " result=" .. tostring(s.result)
@@ -7037,7 +7037,7 @@ function DealerDemoCommand(arg)
   end
 
   local function dsound(key)
-    if CasinoSound and CasinoSound.Play then CasinoSound:Play(key) end
+    if CB.CasinoSound and CB.CasinoSound.Play then CB.CasinoSound:Play(key) end
     dsay("[DEMO SOUND] " .. tostring(key) .. " (local only, nothing broadcast)")
   end
 
