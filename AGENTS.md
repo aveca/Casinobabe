@@ -188,3 +188,29 @@ Après toute erreur :
 - commit/push/PR.
 
 Objectif : permettre au développeur de **jouer et développer en parallèle**, sans screenshots et sans copier-coller manuel des erreurs.
+## Synchronisation WoW LIVE — obligatoire
+
+Le développeur humain travaille depuis C: et l'agent OpenCode/Nemotron a accès aux dépôts locaux disponibles sur C:.
+
+Pour Casinobabe, après CHAQUE changement de code validé par les tests, synchronise immédiatement le runtime :
+
+SOURCE : C:\Users\user\Documents\GitHub\Casinobabe\runtime-addon\Casinobabe\
+DESTINATION : <WoWRoot>\Interface\AddOns\Casinobabe\
+
+Cycle attendu : CODE -> TEST -> SYNC WOW -> VERIFY -> COMMIT -> PUSH -> PR
+
+La copie doit toujours partir du source Git, jamais d'une ancienne copie du dossier live.
+
+Après synchronisation :
+- vérifier que les fichiers critiques existent dans le dossier WoW ;
+- comparer taille/hash du ou des fichiers modifiés avec le source ;
+- ne jamais laisser volontairement le runtime WoW sur une ancienne version après un fix validé ;
+- indiquer quels fichiers ont été synchronisés ;
+- rappeler que WoW doit exécuter /reload pour charger le nouveau code.
+
+Si WoW est ouvert, la copie des fichiers est autorisée. Ne prétends pas que le nouveau code est exécuté avant /reload.
+
+## Accès multi-repo
+
+Tu peux lire les autres dépôts locaux sur C: pour comprendre outils, scripts, tests ou conventions partagées.
+Par défaut, ne modifie que aveca/Casinobabe. Toute modification d'un autre repo doit être techniquement justifiée et séparée du travail Casinobabe.
