@@ -1,6 +1,5 @@
 ---
 description: Install and validate BugGrabber plus the CasinoBae live repair loop
-agent: build
 subagent: false
 ---
 
