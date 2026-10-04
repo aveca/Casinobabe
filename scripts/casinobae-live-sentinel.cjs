@@ -38,9 +38,14 @@ function readText(file) {
 
 function relevant(file, text) {
   const base = path.basename(file).toLowerCase();
-  return text.includes("CasinobabeErrorBus") ||
-    text.includes("Casinobabe.lua") ||
-    (base.includes("buggrabber") && text.includes("Casinobabe"));
+  // A normal Casinobabe SavedVariables file always contains the ErrorBus name.
+  // Only treat it as an incident when an actual Lua stack/message is present.
+  const hasLuaError = text.includes("Casinobabe.lua:") &&
+    /attempt to (call|index)|Lua Error|stack traceback|interface\/addons\/casinobabe/i.test(text);
+  const hasBugGrabberError = base.includes("buggrabber") &&
+    text.includes("Casinobabe.lua:") &&
+    /attempt to (call|index)|Lua Error|stack traceback/i.test(text);
+  return hasLuaError || hasBugGrabberError;
 }
 
 function makeIncident(file) {
