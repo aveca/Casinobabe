@@ -191,6 +191,7 @@ function CB.MakeBorder(f,t)
   function b:SetColor(r,g,bl,a) for _,x in pairs({self.top,self.bot,self.left,self.right}) do x:SetColorTexture(r,g,bl,a or 1) end end
   return b
 end
+MakeBorder = CB.MakeBorder
 
 -- CASINOEMOTE - Emote helpers (physical + text)
 -- ============================================================================
