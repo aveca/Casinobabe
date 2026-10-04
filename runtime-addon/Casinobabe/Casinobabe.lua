@@ -2173,7 +2173,7 @@ end
 -- Check if current character is the dealer (Casinobae)
 local function IsDealerCharacter()
   local name = CB.shortName(UnitName("player"))
-  return name and name:lower() == DEALER_NAME:lower()
+  return name and name:lower() == (CB.state.DEALER_NAME or "Casinobae"):lower()
 end
 
 -- Auto-enable dealer mode if character is Casinobae
@@ -2189,7 +2189,7 @@ end
 -- Generate unique session ID
 local function GenerateSessionId()
   dealerSessionCounter = dealerSessionCounter + 1
-  return string.format("%s-%d-%d", DEALER_NAME, time(), dealerSessionCounter)
+  return string.format("%s-%d-%d", CB.state.DEALER_NAME or "Casinobae", time(), dealerSessionCounter)
 end
 
 -- Dealer Audit Log
