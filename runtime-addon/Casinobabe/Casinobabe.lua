@@ -194,9 +194,10 @@ function CB.MakeBorder(f,t)
 end
 MakeBorder = CB.MakeBorder
 
--- CASINOEMOTE - Emote helpers (physical + text)
 -- ============================================================================
-CB.CasinoEmote = {
+-- CASINO GAME RULES - Single Source of Truth (GAME RULES, NOT EMOTES)
+-- ============================================================================
+CB.GameRules = {
   normal = {
     key = "normal",
     name = "Normal",
@@ -312,6 +313,7 @@ CB.CasinoEmote = {
     description = "House rolls 2d6. Over (8-12) = x2, Under (2-6) = x2, exactly 7 = x4.",
   },
 }
+GameRules = CB.GameRules
 
 --
 -- ============================================================================
