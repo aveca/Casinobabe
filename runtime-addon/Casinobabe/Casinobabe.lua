@@ -10,10 +10,6 @@ local ADDON  = "Casinobabe"
 local PREFIX = "CBABE"
 local MEDIA  = "Interface\\AddOns\\Casinobabe\\media\\background"
 
--- Stable diagnostic printer used by LIVE test and error reporting. Keep local
--- so missing globals can never crash the test harness itself.
-local AddonPrint = print
-
 -- Namespace for all addon state and data
 local CB = Casinobabe or {}
 Casinobabe = CB
@@ -43,7 +39,6 @@ local DealerOnWhisper, DealerOnTradeShow, DealerOnTradeAccept, DealerOnTradeClos
 local DealerOnSystemMsg, DealerUpdateUI, DealerAuditLog
 local DealerGetSession, DealerCreateSession, DealerSetState
 local DealerValidateTransition
-local GameRules
 
 -- Utility forward declarations
 local shortName
@@ -318,7 +313,7 @@ CB.GameRules = {
     description = "House rolls 2d6. Over (8-12) = x2, Under (2-6) = x2, exactly 7 = x4.",
   },
 }
-GameRules = CB.GameRules -- local binding; do not export as a global
+GameRules = CB.GameRules
 
 --
 -- ============================================================================
