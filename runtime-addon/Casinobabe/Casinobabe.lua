@@ -13,6 +13,14 @@ local MEDIA  = "Interface\\AddOns\\Casinobabe\\media\\background"
 -- Namespace for all addon state and data
 local CB = {}
 Casinobabe = CB
+CB.state = CB.state or {}
+CB.ui = CB.ui or {}
+CB.libs = CB.libs or {}
+CB.constants = CB.constants or {}
+CB.prospects = CB.prospects or {}
+CB.conversations = CB.conversations or {}
+CB.autopilot = CB.autopilot or {}
+CB.liveTest = CB.liveTest or {}
 
 -- ===== forward =====
 local panel, langMenu
@@ -119,6 +127,7 @@ CB.state.DEALER_CONN_STATES = {
   COOLDOWN = "COOLDOWN",
   ERROR = "ERROR",
 }
+local DEALER_CONN_STATES = CB.state.DEALER_CONN_STATES
 CB.state.dealerConnState = DEALER_CONN_STATES.OFF
 CB.state.dealerConnReason = ""
 CB.state.dealerConnLastMsg = 0
@@ -168,7 +177,11 @@ end
 -- positionally, so dealer code further down (IsDealerCharacter, whisper and
 -- trade/roll handlers, dealer panel) must see them. They were previously
 -- declared near the file end, which made every earlier call hit a nil global.
-function CB.shortName(full) if not full then return nil end return full:match("^([^%-]+)") or full end
+local function shortName(full)
+  if not full then return nil end
+  return full:match("^([^%-]+)") or full
+end
+CB.shortName = shortName
 function CB.MakeBorder(f,t)
   t=t or 2
   local function line() local x=f:CreateTexture(nil,"OVERLAY"); x:SetColorTexture(0,0,0,0); return x end
