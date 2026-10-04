@@ -6,12 +6,13 @@ const path=require("node:path");
 const {spawn,execFileSync}=require("node:child_process");
 
 const svPath=process.env.CASINOBAE_SV_PATH||"";
+const bugPath=process.env.BUGGRABBER_SV_PATH||"";
 const repo=process.env.CASINOBAE_REPO||process.cwd();
 const wowAddon=process.env.CASINOBAE_WOW_ADDON||"";
 const pollMs=Math.max(500,Number(process.env.CASINOBAE_POLL_MS||1500));
 const opencode=process.env.OPENCODE_CMD||"opencode";
 
-if(!svPath){console.error("CASINOBAE_SV_PATH is required.");process.exit(2)}
+if(!svPath&&!bugPath){console.error("Set CASINOBAE_SV_PATH or BUGGRABBER_SV_PATH.");process.exit(2)}
 if(!fs.existsSync(repo)){console.error("CASINOBAE_REPO does not exist:",repo);process.exit(2)}
 
 const inbox=path.join(repo,".casino-errors","inbox");
@@ -82,24 +83,37 @@ function runAgent(incident,incidentPath){
     busy=false;
   });
 }
-let state=loadState(),busy=false;
+let state=loadState(),busy=false,lastBugMtime=state.lastBugMtime||0;
+function startIncident(incident,file){console.log("\n[ERROR] NEW:",incident.message||"BugGrabber changed");busy=true;runAgent(incident,file)}
+function checkBugGrabber(){
+  if(!bugPath||!fs.existsSync(bugPath))return false;
+  let stat;try{stat=fs.statSync(bugPath)}catch{return false}
+  if(stat.mtimeMs<=lastBugMtime)return false;
+  lastBugMtime=stat.mtimeMs;state.lastBugMtime=lastBugMtime;saveState(state);
+  let text;try{text=fs.readFileSync(bugPath,"utf8")}catch{return false}
+  if(!text.includes("Casinobabe"))return false;
+  const stamp=String(Math.floor(stat.mtimeMs));
+  const file=path.join(inbox,"buggrabber-"+stamp+".txt");
+  fs.writeFileSync(file,text);
+  startIncident({type:"BUGGRABBER_UPDATE",message:"BugGrabber SavedVariables changed; Casinobabe appears in report",buggrabberPath:bugPath},file);
+  return true;
+}
 function tick(){
   if(busy)return;
-  let lua;
-  try{lua=fs.readFileSync(svPath,"utf8")}catch{return}
+  if(checkBugGrabber())return;
+  if(!svPath)return;
+  let lua;try{lua=fs.readFileSync(svPath,"utf8")}catch{return}
   for(const incident of extract(lua)){
     if(state.seen.includes(incident.id))continue;
     state.seen.push(incident.id);saveState(state);
     const file=path.join(inbox,incident.id.replace(/[^\w.-]/g,"_")+".json");
     fs.writeFileSync(file,JSON.stringify({source:"Casinobabe SavedVariables",addon:"Casinobabe",repository:"aveca/Casinobabe",capturedAt:new Date().toISOString(),...incident},null,2)+"\n");
-    console.log("\n[ERROR] NEW:",incident.message);
-    busy=true;
-    runAgent(incident,file);
-    break;
+    startIncident(incident,file);break;
   }
 }
 console.log("CasinoBae LIVE DEV LOOP");
-console.log("SavedVariables:",svPath);
+console.log("Casinobabe SV:",svPath||"(disabled)");
+console.log("BugGrabber SV:",bugPath||"(disabled)");
 console.log("Repo:",repo);
 console.log("WoW addon:",wowAddon||"(runtime sync disabled)");
 console.log("Poll:",pollMs+"ms");
