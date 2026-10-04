@@ -164,6 +164,7 @@ end
 function CB.DealerGetConnState()
   return CB.state.dealerConnState, CB.state.dealerConnReason
 end
+DealerGetConnState = CB.DealerGetConnState
 
 -- ============================================================================
 -- DEALER DIAGNOSTICS
