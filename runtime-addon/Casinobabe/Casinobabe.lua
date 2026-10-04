@@ -33,6 +33,7 @@ local DealerValidateTransition
 
 -- Utility forward declarations
 local shortName
+local DEALER_NAME
 
 -- Demo session forward declaration (must be before functions that reference it)
 local demoSession
@@ -119,15 +120,23 @@ CB.state.DEALER_CONN_STATES = {
   COOLDOWN = "COOLDOWN",
   ERROR = "ERROR",
 }
-CB.state.dealerConnState = DEALER_CONN_STATES.OFF
-CB.state.dealerConnReason = ""
-CB.state.dealerConnLastMsg = 0
+local DEALER_CONN_STATES = CB.state.DEALER_CONN_STATES
+local dealerConnState = CB.state.dealerConnState
+local dealerConnReason = CB.state.dealerConnReason
+local dealerConnLastMsg = CB.state.dealerConnLastMsg
+DEALER_NAME = CB.state.DEALER_NAME
+CB.state.dealerConnState = dealerConnState
+CB.state.dealerConnReason = dealerConnReason
+CB.state.dealerConnLastMsg = dealerConnLastMsg
 
 local function DealerSetConnState(state, reason)
   local old = dealerConnState
   dealerConnState = state
   dealerConnReason = reason or ""
   dealerConnLastMsg = time()
+  CB.state.dealerConnState = dealerConnState
+  CB.state.dealerConnReason = dealerConnReason
+  CB.state.dealerConnLastMsg = dealerConnLastMsg
   -- Diagnostics
   print(string.format("|cffFFD700Casinobabe|r [DEALER] STATE %s -> %s%s", old, state, reason and (" (" .. reason .. ")") or ""))
   -- Update UI
@@ -168,7 +177,8 @@ end
 -- positionally, so dealer code further down (IsDealerCharacter, whisper and
 -- trade/roll handlers, dealer panel) must see them. They were previously
 -- declared near the file end, which made every earlier call hit a nil global.
-function CB.shortName(full) if not full then return nil end return full:match("^([^%-]+)") or full end
+local function shortName(full) if not full then return nil end return full:match("^([^%-]+)") or full end
+CB.shortName = shortName
 function CB.MakeBorder(f,t)
   t=t or 2
   local function line() local x=f:CreateTexture(nil,"OVERLAY"); x:SetColorTexture(0,0,0,0); return x end
