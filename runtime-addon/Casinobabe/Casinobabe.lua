@@ -13,6 +13,14 @@ local MEDIA  = "Interface\\AddOns\\Casinobabe\\media\\background"
 -- Namespace for all addon state and data
 local CB = {}
 Casinobabe = CB
+CB.state = CB.state or {}
+CB.ui = CB.ui or {}
+CB.libs = CB.libs or {}
+CB.constants = CB.constants or {}
+CB.prospects = CB.prospects or {}
+CB.conversations = CB.conversations or {}
+CB.autopilot = CB.autopilot or {}
+CB.liveTest = CB.liveTest or {}
 
 -- ===== forward =====
 local panel, langMenu
@@ -119,7 +127,11 @@ CB.state.DEALER_CONN_STATES = {
   COOLDOWN = "COOLDOWN",
   ERROR = "ERROR",
 }
-CB.state.dealerConnState = DEALER_CONN_STATES.OFF
+local DEALER_CONN_STATES = CB.state.DEALER_CONN_STATES
+local dealerConnState = CB.state.dealerConnState or DEALER_CONN_STATES.OFF
+local dealerConnReason = CB.state.dealerConnReason or ""
+local dealerConnLastMsg = CB.state.dealerConnLastMsg or 0
+CB.state.dealerConnState = dealerConnState
 CB.state.dealerConnReason = ""
 CB.state.dealerConnLastMsg = 0
 
@@ -128,6 +140,9 @@ local function DealerSetConnState(state, reason)
   dealerConnState = state
   dealerConnReason = reason or ""
   dealerConnLastMsg = time()
+  CB.state.dealerConnState = dealerConnState
+  CB.state.dealerConnReason = dealerConnReason
+  CB.state.dealerConnLastMsg = dealerConnLastMsg
   -- Diagnostics
   print(string.format("|cffFFD700Casinobabe|r [DEALER] STATE %s -> %s%s", old, state, reason and (" (" .. reason .. ")") or ""))
   -- Update UI
@@ -168,7 +183,11 @@ end
 -- positionally, so dealer code further down (IsDealerCharacter, whisper and
 -- trade/roll handlers, dealer panel) must see them. They were previously
 -- declared near the file end, which made every earlier call hit a nil global.
-function CB.shortName(full) if not full then return nil end return full:match("^([^%-]+)") or full end
+local function shortName(full)
+  if not full then return nil end
+  return full:match("^([^%-]+)") or full
+end
+CB.shortName = shortName
 function CB.MakeBorder(f,t)
   t=t or 2
   local function line() local x=f:CreateTexture(nil,"OVERLAY"); x:SetColorTexture(0,0,0,0); return x end
