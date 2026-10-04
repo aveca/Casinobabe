@@ -7,3 +7,5 @@ build/
 .DS_Store
 
 bridge/config.json
+
+.casino-errors/
