@@ -140,8 +140,11 @@ local strictGlobalMt = {
     end,
     __newindex = function(t, k, v)
         if not declaredGlobals[k] and not isKnownWoWGlobal(k) then
-            createError("UNDEFINED_GLOBAL_WRITE", "global_write", "runtime", 0,
-                string.format("Attempt to write undefined global: %s = %s", k, type(v)), debug.traceback())
+            -- Global WRITES are legal Lua/WoW (lint-level only). Reads of
+            -- undefined globals are the real crash predictors and stay errors.
+            WoWMock.warnings = WoWMock.warnings or {}
+            table.insert(WoWMock.warnings, string.format("GLOBAL_WRITE %s = %s", k, type(v)))
+            logApiCall("GlobalWrite", { name = k, kind = type(v) })
         end
         rawset(t, k, v)
         declaredGlobals[k] = true
@@ -724,7 +727,12 @@ function CreateFrame(frameType, name, parent, template)
         table.insert(parent.children, frame)
     end
 
-    WoWMock.config.uiFrames[name] = frame
+    -- Real WoW allows anonymous frames (name == nil); only named frames are
+    -- registered globally. Indexing with nil is a mock-only crash, not an addon bug.
+    if name ~= nil then
+        WoWMock.config.uiFrames = WoWMock.config.uiFrames or {}
+        WoWMock.config.uiFrames[name] = frame
+    end
     return frame
 end
 
@@ -970,6 +978,28 @@ CB = CB or {}
 -- Mock UIParent and Minimap
 UIParent = CreateFrame("Frame", "UIParent")
 Minimap = CreateFrame("Frame", "Minimap")
+
+-- StaticPopup globals always exist in real WoW (mock-only gap otherwise).
+-- rawset + declaredGlobals: define without logging our own init as errors.
+rawset(_G, "StaticPopupDialogs", {})
+declaredGlobals["StaticPopupDialogs"] = true
+function StaticPopup_Show(which) logApiCall("StaticPopup_Show", { which = which }) return nil end
+-- Slash command registry always exists in real WoW.
+rawset(_G, "SlashCmdList", {})
+declaredGlobals["SlashCmdList"] = true
+-- Raid/group API exists in real WoW (addon guards with `IsInRaid and ...`).
+-- Config-driven like GetNumGroupMembers above (mock default groupMembers = 5).
+function IsInRaid() return (WoWMock.config.groupMembers or 0) > 0 end
+function IsInGroup() return (WoWMock.config.groupMembers or 0) > 0 end
+function GetNumPartyMembers() return WoWMock.config.groupMembers end
+function GetNumSubgroupMembers() return WoWMock.config.groupMembers end
+-- Localized UI globals always exist in real WoW (addon falls back with `or`).
+rawset(_G, "CLOSE", "Close")
+declaredGlobals["CLOSE"] = true
+rawset(_G, "YES", "Yes")
+declaredGlobals["YES"] = true
+rawset(_G, "NO", "No")
+declaredGlobals["NO"] = true
 
 -- Expose WoWMock globally for test control
 _G.WoWMock = WoWMock

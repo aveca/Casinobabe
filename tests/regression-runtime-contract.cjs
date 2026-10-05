@@ -17,10 +17,19 @@ function section(start, end) {
   return lines.slice(start - 1, end).join("\n");
 }
 
+function around(anchor, radius) {
+  const i = lines.findIndex((l) => l.includes(anchor));
+  assert(i >= 0, "anchor missing: " + anchor);
+  return lines.slice(Math.max(0, i - radius), i + radius).join("\n");
+}
+
 assert(source.includes("CB.state.DEALER_CONN_STATES"), "dealer state namespace missing");
 assert(source.includes("local DEALER_CONN_STATES = CB.state.DEALER_CONN_STATES"), "dealer state local binding missing");
-assert(section(100, 180).includes("if panel and panel.dealerPanel then"), "CONNECTING UI path lacks panel guard");
-assert(section(100, 180).includes("if dp.connStatus then"), "CONNECTING UI path lacks connStatus guard");
+// Guards must live in the CONNECTING UI update path (DealerSetConnState body),
+// wherever line numbers moved after merges — proximity, not hardcoded lines.
+const connPath = around("local function DealerSetConnState", 60);
+assert(connPath.includes("if panel and panel.dealerPanel then"), "CONNECTING UI path lacks panel guard");
+assert(connPath.includes("if dp.connStatus then"), "CONNECTING UI path lacks connStatus guard");
 assert(source.includes("CB.CasinoSound"), "CasinoSound canonical namespace missing");
 assert(/ROLL_REJECTED/.test(source), "ROLL_REJECTED handling missing");
 assert(/session\.game/.test(source), "session.game synchronization path missing");

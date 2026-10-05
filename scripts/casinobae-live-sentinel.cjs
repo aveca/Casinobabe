@@ -90,11 +90,15 @@ function classifySeverity(event) {
     return "P1";
   }
 
+  if (/(cosmetic|visual)/i.test(text)) {
+    return "P3";
+  }
+
   if (/(timer|ticker|ui|frame|render|performance|update|warning|telemetry|non[- ]?blocking)/i.test(text)) {
     return "P2";
   }
 
-  if (/(cosmetic|visual|style|documentation|comment|todo)/i.test(text)) {
+  if (/(style|documentation|comment|todo)/i.test(text)) {
     return "P3";
   }
 
