@@ -22,6 +22,82 @@ CB.conversations = CB.conversations or {}
 CB.autopilot = CB.autopilot or {}
 CB.liveTest = CB.liveTest or {}
 
+-- ============================================================================
+-- LIVE ERROR BUS
+-- ============================================================================
+-- WoW addons cannot write arbitrary files or open sockets. The addon therefore
+-- persists a compact error journal in SavedVariables. A Windows sentinel can
+-- consume that journal after WoW flushes SavedVariables.
+local LIVE_ERROR_MAX = 50
+local function LiveErrorBusEscape(value)
+  return tostring(value or "")
+    :gsub("\\", "\\\\")
+    :gsub("|", "\\p")
+    :gsub("\r", "\\r")
+    :gsub("\n", "\\n")
+end
+
+local function LiveErrorBusAppend(message, stack)
+  CasinobabeDB = CasinobabeDB or {}
+  CasinobabeDB.liveErrorBusVersion = 1
+  local timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  local file = tostring(message or ""):match("([%w_]+%.lua)")
+  local line = tonumber(tostring(message or ""):match("%.lua:(%d+)")) or 0
+  local phase = "WOW_ERROR"
+  local dealerState = CB.state and CB.state.dealerConnState or ""
+  local game = CB.state and CB.state.activeGame or ""
+  local record = table.concat({
+    "CBERR",
+    timestamp,
+    "Casinobabe",
+    file or "Casinobabe.lua",
+    tostring(line),
+    LiveErrorBusEscape(message),
+    LiveErrorBusEscape(stack),
+    phase,
+    LiveErrorBusEscape(dealerState),
+    LiveErrorBusEscape(game),
+  }, "|")
+
+  local journal = tostring(CasinobabeDB.liveErrorJournal or "")
+  journal = journal == "" and record or (journal .. "\n" .. record)
+
+  local count = 0
+  for _ in journal:gmatch("\n") do count = count + 1 end
+  count = count + 1
+  while count > LIVE_ERROR_MAX do
+    local firstNewline = journal:find("\n", 1, true)
+    if not firstNewline then break end
+    journal = journal:sub(firstNewline + 1)
+    count = count - 1
+  end
+
+  CasinobabeDB.liveErrorJournal = journal
+  CasinobabeDB.liveErrorLastSeen = timestamp
+end
+
+local function InstallLiveErrorBus()
+  if type(geterrorhandler) ~= "function" or type(seterrorhandler) ~= "function" then
+    return false
+  end
+
+  local previous
+  local ok = pcall(function()
+    previous = geterrorhandler()
+  end)
+
+  if not ok or type(previous) ~= "function" then
+    return false
+  end
+
+  seterrorhandler(function(message, stack)
+    pcall(LiveErrorBusAppend, tostring(message), tostring(stack))
+    return previous(message, stack)
+  end)
+
+  return true
+end
+
 -- ===== forward =====
 local panel, langMenu
 local UpdateDisplay, SetStatus, SetConnected, RequestState, PlaceBet
@@ -7608,3 +7684,8 @@ SlashCmdList["CASINOBABE"]=function(msg)
     print("|cffFFD700Casinobabe|r Commands: /cb dealer on|off|status|ad|attract|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote | /cb auto | /cb auto stop | /cb auto status | /cb who | /cb discord <text> | /cb fx | /cb resetstats | /cb reset | /cb intro")
   end
 end
+
+
+-- Install the LIVE ErrorBus after all addon definitions are loaded.
+-- Real LIVE verification remains external: SavedVariables must be flushed by WoW.
+pcall(InstallLiveErrorBus)
