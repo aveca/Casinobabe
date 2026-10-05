@@ -1,20 +1,52 @@
 name: CasinoBae Addon Tests
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+
 jobs:
-  addon:
+  factory:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Lua
-        run: sudo apt-get update && sudo apt-get install -y lua5.4
-      - name: Compile-check every addon Lua file
-        run: luac5.4 -p addon/CasinoBae/*.lua
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install factory dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run authoritative offline Lua 5.1 harness
+        run: node tests/run-offline-harness.mjs
+
+      - name: Run synthetic LIVE error pipeline
+        run: node tests/live_pipeline_synthetic.cjs
+
+      - name: Run runtime regression contracts
+        run: node tests/regression-runtime-contract.cjs
+
+      - name: Compile legacy addon sources
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+          luac5.4 -p addon/CasinoBae/*.lua
+
       - name: Syntax-check website JavaScript
         run: node --check site/app.js
-      - name: Run offline WoW integration harness
+
+      - name: Run legacy addon harness
         run: lua5.4 tests/casinobae_harness.lua
+
+      - name: Upload factory reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: casinobae-test-reports
+          path: |
+            reports/
+            logs/
