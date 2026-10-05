@@ -1,179 +1,145 @@
-// REAL OFFLINE HARNESS RUNNER WITH wasmoon-lua5.1
-// Execute le VRAI Casinobabe.lua dans une VM Lua 5.1 via wasmoon-lua5.1
-// utilisation d await pour les doString Promises
+// REAL OFFLINE HARNESS — Lua 5.1 via wasmoon-lua5.1
+"use strict";
 
-import fs from 'fs';
-import path from 'path';
-import { Lua } from 'wasmoon-lua5.1';  // ESM import
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const { Lua } = require("wasmoon-lua5.1");
 
-// === 1. CHARGEMENT DU VRAI RUNTIME ===
-// Création de la VM Lua 5.1 (async - top level await en ESM)
-const lua = await Lua.create();
+const ROOT = path.resolve(__dirname, "..");
+const RUNTIME = path.join(ROOT, "runtime-addon", "Casinobabe", "Casinobabe.lua");
+const MOCK = path.join(ROOT, "tests", "wow_mock.lua");
+const REPORT = path.join(ROOT, "reports", "offline-harness-report.json");
+const EXIT_REPORT = path.join(ROOT, "reports", "offline-harness-exitcode.json");
+const LOG = path.join(ROOT, "logs", "offline-harness-last.log");
 
-// Chemin vers le vrai fichier runtime
-const REAL_RUNTIME = path.resolve('runtime-addon/Casinobabe/Casinobabe.lua');
-const REAL_RUNTIME_SHA = '60f7fd28871dcaddec39e6b8e551e38768a38c1cda5af24ce4e3de369ff5d665';
-
-// Vérifier que le fichier existe
-if (!fs.existsSync(REAL_RUNTIME)) {
-  console.error(`ERREUR: Fichier introuvable: ${REAL_RUNTIME}`);
-  process.exit(1);
+function sha256File(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
-console.log(`REAL SOURCE: ${REAL_RUNTIME}`);
-console.log(`SHA256: ${REAL_RUNTIME_SHA}`);
-
-// Helper async pour exécuter du code Lua et retourner la valeur
-async function runLua(code) {
-  return await lua.doString(code);
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
 }
 
-// === 2. CHARGEMENT DU MOCK WoW ===
-// Charger le mock WoW
-const mockCode = fs.readFileSync(path.resolve('tests/wow_mock.lua'), 'utf-8');
-
-// Exécuter le mock dans la VM Lua en utilisant doString
-try {
-  await runLua(`_G = {}; ${mockCode}`);
-  console.log('WoW Mock chargé avec succès');
-} catch (e) {
-  console.error('Erreur chargement mock WoW:', e.message);
-  process.exit(1);
+function record(report, name, ok, detail) {
+  report.checks.push({ name, status: ok ? "PASS" : "FAIL", detail: detail || null });
+  return ok;
 }
 
-// === 3. INTERCEPTION D'ERREURS ===
-const errors = [];
+async function main() {
+  const startedAt = new Date().toISOString();
+  const report = {
+    schema: 2,
+    vm: "wasmoon-lua5.1",
+    source: path.relative(ROOT, RUNTIME),
+    sourceSha256: null,
+    checks: [],
+    runtimeErrors: [],
+    infrastructureError: null,
+    startedAt,
+    finishedAt: null,
+    exitCode: 2
+  };
 
-function createError(phase, fn, file, line, message) {
-  const fingerprint = `Casinobabe|${file}|${line}|${message}`;
-  errors.push({
-    phase,
-    function: fn,
-    file,
-    line,
-    message,
-    fingerprint,
-    timestamp: new Date().toISOString()
-  });
-}
-
-// === 4. CHARGEMENT DU VRAI CASINOBAE.LUA ===
-console.log('Chargement du vrai Casinobabe.lua...');
-
-try {
-  // Lire et exécuter le fichier directement avec doString
-  const runtimeCode = fs.readFileSync(REAL_RUNTIME, 'utf-8');
-  await runLua(runtimeCode);
-  console.log('Casinobabe.lua chargé avec succès');
-} catch (e) {
-  console.error('Erreur lors du chargement de Casinobabe.lua:', e.message);
-  // Continuer malgré les erreurs de chargement
-}
-
-// === 4. EXÉCUTION DES TESTS ===
-console.log('\n=== EXÉCUTION DES TESTS ===\n');
-
-const results = {};
-
-// Test 1: Vérifier que CB existe
-try {
-  results.cbExists = await runLua('return CB ~= nil');
-  console.log(`Test CB existant: ${results.cbExists ? 'PASS' : 'FAIL'}`);
-} catch(e) {
-  results.cbExists = `FAIL (${e.message})`;
-  console.log(`Test CB existant: FAIL (${e.message})`);
-}
-
-// Test 2: Vérifier GameRules
-try {
-  results.grExists = await runLua('return GameRules ~= nil');
-  console.log(`Test GameRules existant: ${results.grExists ? 'PASS' : 'FAIL'}`);
-} catch(e) {
-  results.grExists = `FAIL (${e.message})`;
-  console.log(`Test GameRules existant: FAIL (${e.message})`);
-}
-
-// Test 3: Vérifier les fonctions clés
-const keyFunctions = ['GetGameRule', 'ValidateStake', 'ValidateRoll', 'ComputePayout', 'shortName'];
-for (const fn of keyFunctions) {
   try {
-    results[fn] = await runLua(`return ${fn} ~= nil`);
-    console.log(`Test ${fn}: ${results[fn] ? 'PASS' : 'FAIL'}`);
-  } catch(e) {
-    results[fn] = `FAIL (${e.message})`;
-    console.log(`Test ${fn}: FAIL (${e.message})`);
+    if (!fs.existsSync(RUNTIME)) throw new Error("runtime missing: " + RUNTIME);
+    if (!fs.existsSync(MOCK)) throw new Error("mock missing: " + MOCK);
+
+    report.sourceSha256 = sha256File(RUNTIME);
+    const lua = await Lua.create();
+
+    try {
+      await lua.doString(fs.readFileSync(MOCK, "utf8"));
+      record(report, "load_wow_mock", true);
+    } catch (error) {
+      record(report, "load_wow_mock", false, String(error));
+      throw new Error("WoW mock failed: " + String(error));
+    }
+
+    try {
+      await lua.doString(fs.readFileSync(RUNTIME, "utf8"));
+      record(report, "load_real_runtime", true);
+    } catch (error) {
+      record(report, "load_real_runtime", false, String(error));
+      report.runtimeErrors.push(String(error));
+    }
+
+    async function checkLua(name, expression, expected) {
+      try {
+        const value = await lua.doString(expression);
+        const ok = expected(value);
+        record(report, name, ok, ok ? String(value) : "unexpected=" + String(value));
+        if (!ok) report.runtimeErrors.push(name + ": unexpected=" + String(value));
+        return ok;
+      } catch (error) {
+        record(report, name, false, String(error));
+        report.runtimeErrors.push(name + ": " + String(error));
+        return false;
+      }
+    }
+
+    let criticalOk = true;
+    criticalOk = (await checkLua("CB_namespace", "return type(CB)", v => v === "table")) && criticalOk;
+    criticalOk = (await checkLua("CB_state", "return type(CB.state)", v => v === "table")) && criticalOk;
+    criticalOk = (await checkLua("dealer_conn_states", "return type(CB.state.DEALER_CONN_STATES)", v => v === "table")) && criticalOk;
+    criticalOk = (await checkLua("CasinoSound_namespace", "return type(CB.CasinoSound)", v => v === "table")) && criticalOk;
+    criticalOk = (await checkLua("slash_command", "return type(SlashCmdList and SlashCmdList.CASINOBABE)", v => v === "function")) && criticalOk;
+
+    for (const [name, expr] of [
+      ["dealer_status_smoke", "SlashCmdList.CASINOBABE('dealer status')"],
+      ["dealer_on_smoke", "SlashCmdList.CASINOBABE('dealer on')"],
+      ["dealer_off_smoke", "SlashCmdList.CASINOBABE('dealer off')"],
+      ["connecting_without_group", "WoWMock.config.groupMembers=0; SlashCmdList.CASINOBABE('dealer on'); SlashCmdList.CASINOBABE('dealer off')"],
+      ["roll_rejected_symbol", "return string.find((debug and debug.getinfo and 'ROLL_REJECTED') or '', 'ROLL_REJECTED') ~= nil"],
+      ["trade_callbacks", "return type(DealerOnTradeShow)=='function' and type(DealerOnTradeAccept)=='function' and type(DealerOnTradeClose)=='function'"]
+    ]) {
+      try {
+        const value = await lua.doString(expr);
+        const ok = value === undefined ? true : value === true;
+        record(report, name, ok, ok ? null : "result=" + String(value));
+        if (!ok) criticalOk = false;
+      } catch (error) {
+        record(report, name, false, String(error));
+        report.runtimeErrors.push(name + ": " + String(error));
+        criticalOk = false;
+      }
+    }
+
+    const mockErrors = await lua.doString("return #(WoWMock.errors or {})");
+    const noMockErrors = Number(mockErrors) === 0;
+    record(report, "mock_runtime_errors", noMockErrors, "count=" + String(mockErrors));
+    if (!noMockErrors) criticalOk = false;
+
+    report.exitCode = criticalOk && report.runtimeErrors.length === 0 ? 0 : 1;
+  } catch (error) {
+    report.infrastructureError = String(error && error.stack || error);
+    report.exitCode = report.infrastructureError.includes("wasmoon") ? 2 : 1;
   }
+
+  report.finishedAt = new Date().toISOString();
+  report.durationMs = Date.now() - Date.parse(report.startedAt);
+  writeJson(REPORT, report);
+  writeJson(EXIT_REPORT, {
+    exitCode: report.exitCode,
+    timestamp: report.finishedAt,
+    sourceSha256: report.sourceSha256,
+    runtimeErrors: report.runtimeErrors,
+    infrastructureError: report.infrastructureError
+  });
+  fs.mkdirSync(path.dirname(LOG), { recursive: true });
+  fs.writeFileSync(LOG, JSON.stringify(report, null, 2), "utf8");
+
+  console.log("LUA_VM=" + report.vm);
+  console.log("SOURCE_SHA256=" + report.sourceSha256);
+  console.log("CHECKS=" + report.checks.filter(x => x.status === "PASS").length + "/" + report.checks.length);
+  console.log("ERRORS=" + report.runtimeErrors.length);
+  console.log("INFRA_ERROR=" + (report.infrastructureError ? "YES" : "NO"));
+  console.log("EXIT_CODE=" + report.exitCode);
+  process.exit(report.exitCode);
 }
 
-// === 4. TEST MINIMAL ===
-console.log('\n=== TEST MINIMAL ===');
-
-// Vérifier _VERSION
-try {
-  const version = await runLua('return _VERSION');
-  console.log(`_VERSION: ${version}`);
-} catch(e) {
-  console.log(`_VERSION ERROR: ${e.message}`);
-}
-
-// Vérifier WOW_MOCK_LOADED
-try {
-  const loaded = await runLua('return _G.WOW_MOCK_LOADED');
-  console.log(`WOW_MOCK_LOADED: ${loaded}`);
-} catch(e) {
-  console.log(`WOW_MOCK_LOADED ERROR: ${e.message}`);
-}
-
-// Vérifier CASINOBAE_SOURCE_LOADED
-try {
-  const loaded = await runLua('return _G.CASINOBAE_SOURCE_LOADED');
-  console.log(`CASINOBAE_SOURCE_LOADED: ${loaded}`);
-} catch(e) {
-  console.log(`CASINOBAE_SOURCE_LOADED ERROR: ${e.message}`);
-}
-
-// === 5. RAPPORT FINAL ===
-console.log('\n=== RAPPORT D\'EXÉCUTION ===');
-console.log(`Lua VM: wasmoon-lua5.1`);
-console.log(`Source: REAL (runtime-addon/Casinobabe/Casinobabe.lua)`);
-console.log(`SHA256: ${REAL_RUNTIME_SHA}`);
-console.log(`Erreurs capturées: ${errors.length}`);
-
-// Écrire les erreurs dans un fichier
-const logDir = path.resolve('logs');
-if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir);
-}
-fs.writeFileSync(path.join(logDir, 'offline-harness-last.log'), JSON.stringify({errors, results, luaVersion: 'wasmoon-lua5.1'}, {compact:false}));
-
-// Déterminer le code de sortie Windows definitif
-// 0 = tous les tests critiques PASS
-// 1 = au moins un test critique ECHEC
-// 2 = erreur d'infrastructure harness
-let exitCode = 0;
-
-// Critères d'échec critique :
-// - CB absent
-// - GameRules absent
-// - Échec chargement runtime
-const criticalFailed = 
-  (results.cbExists !== true && results.cbExists !== 'PASS') ||
-  (results.grExists !== true && results.grExists !== 'PASS') ||
-  errors.some(e => e.includes('chargement') || e.includes('Chargement'));
-
-if (criticalFailed) {
-  exitCode = 1;
-} else if (errors.length > 0) {
-  // Des erreurs ont été capturées mais ce ne sont pas des criticals bloquants
-  exitCode = 1;
-} else {
-  exitCode = 0;  // Tous les tests critiques passent
-}
-
-// Écrire le code de sortie dans un fichier pour CI
-const exitCodePath = path.resolve('reports/offline-harness-exitcode.json');
-fs.mkdirSync(path.dirname(exitCodePath), { recursive: true });
-fs.writeFileSync(exitCodePath, JSON.stringify({ exitCode, timestamp: new Date().toISOString() }));
-
-console.log(`EXIT CODE: ${exitCode}`);
-process.exit(exitCode);
+main().catch(error => {
+  console.error("HARNESS_INFRA_ERROR=" + (error.stack || error));
+  process.exit(2);
+});
