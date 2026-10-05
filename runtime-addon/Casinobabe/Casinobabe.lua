@@ -98,6 +98,10 @@ local function InstallLiveErrorBus()
   return true
 end
 
+-- Install immediately so load-time/runtime callback errors are captured.
+pcall(InstallLiveErrorBus)
+
+
 -- ===== forward =====
 local panel, langMenu
 local UpdateDisplay, SetStatus, SetConnected, RequestState, PlaceBet
@@ -7685,7 +7689,3 @@ SlashCmdList["CASINOBABE"]=function(msg)
   end
 end
 
-
--- Install the LIVE ErrorBus after all addon definitions are loaded.
--- Real LIVE verification remains external: SavedVariables must be flushed by WoW.
-pcall(InstallLiveErrorBus)
