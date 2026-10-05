@@ -121,6 +121,8 @@ local DealerValidateTransition
 
 -- Utility forward declarations
 local shortName
+-- SendControl is defined later but called earlier (dealer-on path); forward it.
+local SendControl
 
 -- Demo session forward declaration (must be before functions that reference it)
 local demoSession
@@ -150,6 +152,13 @@ CB.state.dealerEnabled = false  -- manual toggle via /cb dealer on
 CB.state.autoAttractRunning = false  -- auto-dealer attract state
 CB.state.isDealerMode = false
 CB.state.DEALER_NAME = "Casinobae"
+-- Runtime flags also mirrored as bare globals by legacy handlers below.
+-- Initialize explicitly (nil and false behave identically, but explicit
+-- avoids undefined-global reads under strict checking).
+dealerEnabled = false
+isDealerMode = false
+-- Bare DEALER_NAME is used across handlers; alias it once (nil-global crash otherwise).
+local DEALER_NAME = CB.state.DEALER_NAME
 
 -- ============================================================================
 -- DEALER COOLDOWN MANAGER - Single canonical cooldown system
@@ -252,6 +261,9 @@ function CB.DealerDiag(event, details)
   if details then msg = msg .. " " .. details end
   print(msg)
 end
+-- Bare DealerDiag(...) is used across handlers; alias the namespaced
+-- definition once (nil-global crash otherwise).
+local DealerDiag = CB.DealerDiag
 
 -- NOTE: shortName/MakeBorder are defined early on purpose. Lua binds locals
 -- positionally, so dealer code further down (IsDealerCharacter, whisper and
@@ -2739,6 +2751,9 @@ function DealerToggle(onOff)
   if onOff == "on" then
     dealerEnabled = true
     isDealerMode = true
+    -- Fresh profiles have no SavedVariables yet: fail-closed tables, never nil-index.
+    CasinobabeDB = CasinobabeDB or {}
+    CasinobabeDB.dealer = CasinobabeDB.dealer or {}
     CasinobabeDB.dealer.enabled = true
     print("|cffFFD700Casinobabe|r Dealer mode ENABLED")
     DealerAuditLog(nil, nil, "DEALER_ON", "Dealer mode enabled")
@@ -4290,7 +4305,7 @@ local function groupLeaderName()
   end
   return nil
 end
-local function SendControl(msg)
+SendControl = function(msg)
   local ch=groupChannel(); if not ch then return false end
   if C_ChatInfo and C_ChatInfo.SendAddonMessage then C_ChatInfo.SendAddonMessage(PREFIX,msg,ch)
   elseif SendAddonMessage then SendAddonMessage(PREFIX,msg,ch) else return false end
