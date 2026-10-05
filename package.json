@@ -1,0 +1,17 @@
+{
+  "name": "casinobae-error-factory",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Deterministic offline and synthetic-live validation plus Windows live error capture for CasinoBae.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node tests/run-offline-harness.mjs && node tests/live_pipeline_synthetic.cjs && node tests/regression-runtime-contract.cjs",
+    "test:offline": "node tests/run-offline-harness.mjs",
+    "test:synthetic": "node tests/live_pipeline_synthetic.cjs",
+    "test:regression": "node tests/regression-runtime-contract.cjs",
+    "sentinel": "node scripts/casinobae-live-sentinel.cjs --once"
+  },
+  "dependencies": {
+    "wasmoon-lua5.1": "1.18.10"
+  }
+}
