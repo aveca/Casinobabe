@@ -70,7 +70,7 @@ try {
   // Continuer malgré les erreurs de chargement
 }
 
-// === 5. EXÉCUTION DES TESTS ===
+// === 4. EXÉCUTION DES TESTS ===
 console.log('\n=== EXÉCUTION DES TESTS ===\n');
 
 const results = {};
@@ -105,7 +105,7 @@ for (const fn of keyFunctions) {
   }
 }
 
-// === 6. TEST MINIMAL ===
+// === 4. TEST MINIMAL ===
 console.log('\n=== TEST MINIMAL ===');
 
 // Vérifier _VERSION
@@ -132,7 +132,7 @@ try {
   console.log(`CASINOBAE_SOURCE_LOADED ERROR: ${e.message}`);
 }
 
-// === 7. RAPPORT FINAL ===
+// === 5. RAPPORT FINAL ===
 console.log('\n=== RAPPORT D\'EXÉCUTION ===');
 console.log(`Lua VM: wasmoon-lua5.1`);
 console.log(`Source: REAL (runtime-addon/Casinobabe/Casinobabe.lua)`);
@@ -146,25 +146,34 @@ if (!fs.existsSync(logDir)) {
 }
 fs.writeFileSync(path.join(logDir, 'offline-harness-last.log'), JSON.stringify({errors, results, luaVersion: 'wasmoon-lua5.1'}, {compact:false}));
 
-// Déterminer le code de sortie
-// 0 = tests exécutés (même avec erreurs)
-// 1 = critical errors found
+// Déterminer le code de sortie Windows definitif
+// 0 = tous les tests critiques PASS
+// 1 = au moins un test critique ECHEC
+// 2 = erreur d'infrastructure harness
 let exitCode = 0;
-if (errors.length > 0) {
-  exitCode = 1;  // 1 = tests exécutés + des erreurs
-} else {
-  exitCode = 0;  // 0 = tests exécutés + aucune erreur critique
-}
 
-// Vérifier si tous les tests critiques passent
-const criticalTests = ['cbExists', 'grExists'];
-const criticalPassed = criticalTests.every(t => {
-  return results[t] === true || results[t] === 'PASS';
-});
+// Critères d'échec critique :
+// - CB absent
+// - GameRules absent
+// - Échec chargement runtime
+const criticalFailed = 
+  (results.cbExists !== true && results.cbExists !== 'PASS') ||
+  (results.grExists !== true && results.grExists !== 'PASS') ||
+  errors.some(e => e.includes('chargement') || e.includes('Chargement'));
 
-if (!criticalPassed) {
+if (criticalFailed) {
   exitCode = 1;
+} else if (errors.length > 0) {
+  // Des erreurs ont été capturées mais ce ne sont pas des criticals bloquants
+  exitCode = 1;
+} else {
+  exitCode = 0;  // Tous les tests critiques passent
 }
+
+// Écrire le code de sortie dans un fichier pour CI
+const exitCodePath = path.resolve('reports/offline-harness-exitcode.json');
+fs.mkdirSync(path.dirname(exitCodePath), { recursive: true });
+fs.writeFileSync(exitCodePath, JSON.stringify({ exitCode, timestamp: new Date().toISOString() }));
 
 console.log(`EXIT CODE: ${exitCode}`);
 process.exit(exitCode);
