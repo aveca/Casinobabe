@@ -111,7 +111,7 @@ function decodeLuaString(raw) {
 }
 
 function extractSavedVariableJournal(content) {
-  const match = String(content).match(/\bliveErrorJournal\s*=\s*"((?:\\.|[^"])*)"/s);
+  const match = String(content).match(/(?:\[\s*["']?liveErrorJournal["']?\s*\]|\bliveErrorJournal\b)\s*=\s*"((?:\\.|[^"])*)"/s);
   return match ? decodeLuaString(match[1]) : "";
 }
 
