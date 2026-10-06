@@ -41,6 +41,7 @@ WoWMock.config = {
     tradeTarget = nil,
     chatLog = {},
     uiFrames = {},
+        allFrames = {},
     timers = {},
     tickers = {},
     addonMessages = {},
@@ -62,7 +63,8 @@ local function logApiCall(api, args)
 end
 
 local function createError(phase, fn, file, line, message, traceback)
-    local fingerprint = string.format("%s|%s|%d|%s", "Casinobabe", file or "unknown", line or 0, message)
+    local fingerprint = string.format("%s|%s|%s|%d|%s", "Casinobabe",
+        "AddonPrint", file or "unknown", line or 0, message or "")
     local err = {
         phase = phase,
         ["function"] = fn,
@@ -76,6 +78,31 @@ local function createError(phase, fn, file, line, message, traceback)
     table.insert(WoWMock.errors, err)
     return err
 end
+
+-- Handler d'erreur par defaut (comme WoW : affiche en rouge + stocke).
+-- Les tests peuvent lire l'erreur via WoWMock.config.lastError.
+local function defaultErrorHandler(msg)
+    msg = tostring(msg)
+    print("|cffFF0000Lua Error|r: " .. msg)
+    WoWMock.config.lastError = msg
+end
+
+-- Handler stable : geterrorhandler() renvoie toujours la meme table, sinon
+-- `seterrorhandler(old)` ne chaine rien (old change a chaque appel).
+local currentErrorHandler = defaultErrorHandler
+
+function geterrorhandler()
+    return function(msg) return currentErrorHandler(msg) end
+end
+
+function seterrorhandler(handler)
+    currentErrorHandler = handler
+end
+
+function notifyErrorHandler(msg)
+    pcall(currentErrorHandler, tostring(msg))
+end
+WoWMock.notifyErrorHandler = notifyErrorHandler
 
 local function warn(msg)
     table.insert(WoWMock.warnings, { message = msg, time = WoWMock.config.time })
@@ -104,7 +131,7 @@ local function isKnownWoWGlobal(name)
         "UIParent", "Minimap", "BackdropTemplateMixin", "UISpecialFrames",
         "C_Timer", "LibStub", "LibDBIcon10_Casinobabe",
         -- CasinoBae internal
-        "CasinobabeDB", "CasinobabeErrorBus", "CB", "CasinoBae",
+        "CasinobabeDB", "CasinobabeErrorBus", "CB", "CasinoBae", "Casinobabe", "AddonPrint",
         -- Event names
         "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "ADDON_LOADED", "CHAT_MSG_ADDON",
         "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER_INFORM",
@@ -611,6 +638,16 @@ function FramePrototype:CreateTexture(name, layer)
         color = { 1, 1, 1, 1 },
         texture = nil,
         points = {},
+        SetSize = function(self, w, h) self.width = w; self.height = h end,
+        SetWidth = function(self, w) self.width = w end,
+        SetHeight = function(self, h) self.height = h end,
+        SetTexCoord = function(self, l, r, t, b) self.texCoord = { l, r, t, b } end,
+        SetVertexColor = function(self, r, g, b, a) self.vertexColor = { r, g, b, a or 1 } end,
+        SetBlendMode = function(self, mode) self.blendMode = mode end,
+        SetDrawLayer = function(self, layer) self.layer = layer end,
+        SetDesaturated = function(self, flag) self.desaturated = flag end,
+        SetRotation = function(self, rad) self.rotation = rad end,
+        SetAtlas = function(self, atlas) self.atlas = atlas end,
         SetColorTexture = function(self, r, g, b, a) self.color = { r, g, b, a } end,
         SetTexture = function(self, tex) self.texture = tex end,
         SetPoint = function(self, point, relativeTo, relativePoint, x, y)
@@ -641,6 +678,18 @@ function FramePrototype:CreateFontString(name, layer, inherits)
         justifyH = "LEFT",
         justifyV = "TOP",
         points = {},
+        SetSize = function(self, w, h) self.width = w; self.height = h end,
+        SetFontObject = function(self, obj) self.fontObject = obj end,
+        SetTextInsets = function(self, l, r, t, b) self.textInsets = { l, r, t, b } end,
+        SetShadowOffset = function(self, x, y) self.shadowOffset = { x, y } end,
+        SetShadowColor = function(self, r, g, b, a) self.shadowColor = { r, g, b, a } end,
+        SetNonSpaceWrap = function(self, v) self.nonSpaceWrap = v end,
+        SetWordWrap = function(self, v) self.wordWrap = v end,
+        SetIndentedWordWrap = function(self, v) self.indentedWordWrap = v end,
+        SetMaxLines = function(self, n) self.maxLines = n end,
+        SetDrawLayer = function(self, layer) self.layer = layer end,
+        GetStringHeight = function(self) return (self.fontSize or 12) * 1.2 end,
+        GetStringWidth = function(self) return #(self.text or "") * ((self.fontSize or 12) * 0.6) end,
         SetText = function(self, text) self.text = tostring(text) end,
         GetText = function(self) return self.text end,
         SetFont = function(self, font, size, flags) self.font = font; self.fontSize = size; self.fontFlags = flags end,
@@ -695,12 +744,373 @@ function FramePrototype:CreateButton(name, inherits)
             self.fontStrings[name] = fs
             return fs
         end
-    }, FramePrototype)
+    }, frameMetatable(frameType))
     return btn
 end
 
 function FramePrototype:CreateFrame(frameType, name, parent, template)
     return CreateFrame(frameType, name, parent, template)
+end
+
+function FramePrototype:GetName() return self.name end
+function FramePrototype:GetParent() return self.parent end
+function FramePrototype:SetParent(parent) self.parent = parent end
+function FramePrototype:SetScale(s) self.scale = s end
+function FramePrototype:GetScale() return self.scale or 1 end
+function FramePrototype:SetAlpha(a) self.alpha = a end
+function FramePrototype:GetAlpha() return self.alpha or 1 end
+function FramePrototype:SetShown(shown)
+    if shown then self:Show() else self:Hide() end
+end
+
+function FramePrototype:GetParent() return self.parent end
+function FramePrototype:SetParent(parent) self.parent = parent end
+function FramePrototype:SetScale(s) self.scale = s end
+function FramePrototype:GetScale() return self.scale or 1 end
+function FramePrototype:SetAlpha(a) self.alpha = a end
+function FramePrototype:GetAlpha() return self.alpha or 1 end
+function FramePrototype:SetShown(shown)
+    if shown then self:Show() else self:Hide() end
+end
+
+function FramePrototype:SetParent(parent) self.parent = parent end
+function FramePrototype:SetScale(s) self.scale = s end
+function FramePrototype:GetScale() return self.scale or 1 end
+function FramePrototype:SetAlpha(a) self.alpha = a end
+function FramePrototype:GetAlpha() return self.alpha or 1 end
+function FramePrototype:SetShown(shown)
+    if shown then self:Show() else self:Hide() end
+end
+
+function FramePrototype:SetScale(s) self.scale = s end
+function FramePrototype:GetScale() return self.scale or 1 end
+function FramePrototype:SetAlpha(a) self.alpha = a end
+function FramePrototype:GetAlpha() return self.alpha or 1 end
+function FramePrototype:SetShown(shown)
+    if shown then self:Show() else self:Hide() end
+end
+
+function FramePrototype:GetScale() return self.scale or 1 end
+function FramePrototype:SetAlpha(a) self.alpha = a end
+function FramePrototype:GetAlpha() return self.alpha or 1 end
+function FramePrototype:SetShown(shown)
+    if shown then self:Show() else self:Hide() end
+end
+
+function FramePrototype:SetAlpha(a) self.alpha = a end
+function FramePrototype:GetAlpha() return self.alpha or 1 end
+function FramePrototype:SetShown(shown)
+    if shown then self:Show() else self:Hide() end
+end
+
+function FramePrototype:GetAlpha() return self.alpha or 1 end
+function FramePrototype:SetShown(shown)
+    if shown then self:Show() else self:Hide() end
+end
+
+function FramePrototype:SetShown(shown)
+    if shown then self:Show() else self:Hide() end
+end
+
+function FramePrototype:GetCenter()
+    local w, h = self.width or 0, self.height or 0
+    return (self.centerX or w / 2), (self.centerY or h / 2)
+end
+
+function FramePrototype:ClearAllPoints() self.points = {} end
+function FramePrototype:SetAllPoints(other) self.allPoints = other or self.parent or true end
+function FramePrototype:GetChildren() return unpack(self.children or {}) end
+function FramePrototype:IsVisible() return self.visible ~= false end
+function FramePrototype:IsShowing() return self.visible ~= false end
+function FramePrototype:SetEnabled(enabled) self.enabled = enabled ~= false end
+function FramePrototype:IsEnabled() return self.enabled ~= false end
+function FramePrototype:SetUserPlaced(v) self.userPlaced = v end
+function FramePrototype:SetID(id) self.id = id end
+function FramePrototype:GetID() return self.id or 0 end
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:SetAllPoints(other) self.allPoints = other or self.parent or true end
+function FramePrototype:GetChildren() return unpack(self.children or {}) end
+function FramePrototype:IsVisible() return self.visible ~= false end
+function FramePrototype:IsShowing() return self.visible ~= false end
+function FramePrototype:SetEnabled(enabled) self.enabled = enabled ~= false end
+function FramePrototype:IsEnabled() return self.enabled ~= false end
+function FramePrototype:SetUserPlaced(v) self.userPlaced = v end
+function FramePrototype:SetID(id) self.id = id end
+function FramePrototype:GetID() return self.id or 0 end
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:GetChildren() return unpack(self.children or {}) end
+function FramePrototype:IsVisible() return self.visible ~= false end
+function FramePrototype:IsShowing() return self.visible ~= false end
+function FramePrototype:SetEnabled(enabled) self.enabled = enabled ~= false end
+function FramePrototype:IsEnabled() return self.enabled ~= false end
+function FramePrototype:SetUserPlaced(v) self.userPlaced = v end
+function FramePrototype:SetID(id) self.id = id end
+function FramePrototype:GetID() return self.id or 0 end
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:IsVisible() return self.visible ~= false end
+function FramePrototype:IsShowing() return self.visible ~= false end
+function FramePrototype:SetEnabled(enabled) self.enabled = enabled ~= false end
+function FramePrototype:IsEnabled() return self.enabled ~= false end
+function FramePrototype:SetUserPlaced(v) self.userPlaced = v end
+function FramePrototype:SetID(id) self.id = id end
+function FramePrototype:GetID() return self.id or 0 end
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:IsShowing() return self.visible ~= false end
+function FramePrototype:SetEnabled(enabled) self.enabled = enabled ~= false end
+function FramePrototype:IsEnabled() return self.enabled ~= false end
+function FramePrototype:SetUserPlaced(v) self.userPlaced = v end
+function FramePrototype:SetID(id) self.id = id end
+function FramePrototype:GetID() return self.id or 0 end
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:SetEnabled(enabled) self.enabled = enabled ~= false end
+function FramePrototype:IsEnabled() return self.enabled ~= false end
+function FramePrototype:SetUserPlaced(v) self.userPlaced = v end
+function FramePrototype:SetID(id) self.id = id end
+function FramePrototype:GetID() return self.id or 0 end
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:IsEnabled() return self.enabled ~= false end
+function FramePrototype:SetUserPlaced(v) self.userPlaced = v end
+function FramePrototype:SetID(id) self.id = id end
+function FramePrototype:GetID() return self.id or 0 end
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:SetUserPlaced(v) self.userPlaced = v end
+function FramePrototype:SetID(id) self.id = id end
+function FramePrototype:GetID() return self.id or 0 end
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:SetID(id) self.id = id end
+function FramePrototype:GetID() return self.id or 0 end
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:GetID() return self.id or 0 end
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:EnableMouseWheel(v) self.mouseWheel = v end
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:StopMovingOrSizing() self.moving = false end
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:SetDrawLayer(layer) self.layer = layer end
+-- Cooldown : l'addon appelle SetCooldown sur des frames de type Cooldown.
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:SetCooldown(start, duration) self.cooldown = { start = start, duration = duration } end
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:GetCooldown() return self.cooldown and self.cooldown.start, self.cooldown and self.cooldown.duration end
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:SetCooldownFinished() self.cooldown = nil end
+
+function FramePrototype:RegisterEvent(event)
+    logApiCall("Frame:RegisterEvent", { event = event })
+    eventHandlers[event] = eventHandlers[event] or {}
+    table.insert(eventHandlers[event], self)
+end
+
+function FramePrototype:SetWidth(w) self.width = w end
+function FramePrototype:SetHeight(h) self.height = h end
+
+function FramePrototype:GetWidth()
+    return self.width or 0
+end
+
+function FramePrototype:SetHeight(h) self.height = h end
+
+function FramePrototype:GetWidth()
+    return self.width or 0
+end
+
+-- Prototypes par type de widget. Declare AVANT frameMetatable : Lua lie les
+-- locaux de maniere positionnelle, une declaration plus bas serait inexistante
+-- au moment de la lecture.
+local UIObjectPrototypes = {}
+
+-- Chaque frameType recupere ses methodes propres (Button:SetText,
+-- EditBox:GetText, ...), puis FramePrototype. Sans cela, CreateFrame("Button")
+-- ne sait pas SetHighlightTexture alors que WoW si.
+local function frameMetatable(frameType)
+    local proto = UIObjectPrototypes and UIObjectPrototypes[frameType]
+    if not proto then
+        return FramePrototype
+    end
+    return {
+        __index = function(_, key)
+            local v = proto[key]
+            if v ~= nil then return v end
+            return FramePrototype[key]
+        end
+    }
 end
 
 -- Global CreateFrame
@@ -721,6 +1131,10 @@ function CreateFrame(frameType, name, parent, template)
         buttons = {},
         children = {}
     }, FramePrototype)
+
+    -- Registre complet (y compris frames anonymes) : c'est lui qui fait
+    -- tourner les OnUpdate (demoWatcher, drag du minimap, watchdog...).
+    table.insert(WoWMock.config.allFrames, frame)
 
     if parent then
         parent.children = parent.children or {}
@@ -746,6 +1160,7 @@ function WoWMock.fireEvent(event, ...)
                 if not ok then
                     createError("EVENT_HANDLER", "OnEvent", "event", 0,
                         string.format("Error in %s handler: %s", event, tostring(err)), debug.traceback())
+                WoWMock.notifyErrorHandler(tostring(err))
                 end
             end
         end
@@ -756,7 +1171,7 @@ end
 -- UI OBJECTS (Texture, FontString, StatusBar, ScrollFrame, etc.)
 -- ============================================================================
 
-local UIObjectPrototypes = {}
+-- (deplace plus haut) local UIObjectPrototypes = {} -- voir frameMetatable
 
 -- Texture
 UIObjectPrototypes.Texture = {
@@ -854,6 +1269,8 @@ UIObjectPrototypes.EditBox = {
     SetNumeric = function(self, numeric) self.numeric = numeric end,
     SetAutoFocus = function(self, focus) self.autoFocus = focus end,
     ClearFocus = function(self) self.hasFocus = false end,
+    SetFontObject = function(self, obj) self.fontObject = obj end,
+    SetTextInsets = function(self, l, r, t, b) self.textInsets = { l, r, t, b } end,
     SetFont = function(self, font, size, flags) self.font = font; self.fontSize = size; self.fontFlags = flags end,
     SetTextColor = function(self, r, g, b, a) self.color = { r, g, b, a or 1 } end,
     SetPoint = function(self, point, relativeTo, relativePoint, x, y)
@@ -880,7 +1297,10 @@ BackdropTemplateMixin = {
 
 LibStub = {
     libs = {},
-    minors = {}
+    minors = {},
+    -- minor interne requis : la vraie LibStub (Libs/LibStub) compare
+    -- `LibStub.minor < LIBSTUB_MINOR` pour decider de se reinstaller.
+    minor = 0
 }
 
 function LibStub:GetLibrary(major, silent)
@@ -965,6 +1385,40 @@ end
 math.randomseed(os.time())
 
 -- ============================================================================
+
+-- ============================================================================
+-- WoW string aliases (le client expose ces globaux)
+-- ============================================================================
+strmatch = string.match
+strfind = string.find
+strsub = string.sub
+strlen = string.len
+strlower = string.lower
+strupper = string.upper
+strrep = string.rep
+format = string.format
+strsplit = function(delim, str) return str end
+strjoin = function(delim, ...) return table.concat({...}, delim) end
+tinsert = table.insert
+tremove = table.remove
+wipe = function(t) for k in pairs(t) do t[k] = nil end end
+
+
+-- ============================================================================
+-- Globales WoW de base (ajoutees pour que les bibliotheques du dossier Libs
+-- et le runtime se chargent comme dans le client)
+-- ============================================================================
+function GetLocale() return "enUS" end
+function UnitFactionGroup() return "Horde" end
+function UnitLevel() return 60 end
+function UnitClass() return "Warrior", "WARRIOR" end
+function UnitRace() return "Orc", "Orc" end
+function GetRealmName() return WoWMock.config.playerRealm end
+function GetMoney() return WoWMock.config.money.player end
+function InCombatLockdown() return false end
+function StaticPopup_Hide() end
+function debugstack() return "" end
+
 -- INITIALIZATION
 -- ============================================================================
 

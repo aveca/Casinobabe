@@ -126,6 +126,13 @@ local shortName
 -- Demo session forward declaration (must be before functions that reference it)
 local demoSession
 
+-- Prospect storage. Must be declared BEFORE CreatePanel(): that function reads
+-- prospects/prospectCooldown (status text + autopilot init). Lua resolves a
+-- name to a local only if the declaration comes first, otherwise it silently
+-- reads a GLOBAL nil and prospect counts stay at 0. Real tables live here.
+local prospects = {}
+local prospectCooldown = {}
+
 -- Palette forward declaration: DealerSetConnState() (defined below) runs
 -- before the palette assignment further down this chunk. Without this, C
 -- would resolve as a nil global inside early-called functions (Lua locals
@@ -2303,7 +2310,9 @@ function DealerAuditLog(sessionId, player, event, details)
   if details then entry = entry .. " " .. details end
   table.insert(dealerLog, 1, entry)
   while #dealerLog > DEALER_MAX_LOG do table.remove(dealerLog) end
-  -- Persist to SavedVariables
+  -- Persist to SavedVariables (fail-closed: InitDB may not have run yet)
+  CasinobabeDB = CasinobabeDB or {}
+  CasinobabeDB.dealer = CasinobabeDB.dealer or {}
   CasinobabeDB.dealer.log = dealerLog
   -- Also print to chat for visibility
   print("|cffFFD700Casinobabe|r " .. entry)
@@ -2322,6 +2331,8 @@ end
 
 -- Persist sessions to SavedVariables
 local function DealerSaveSessions()
+  CasinobabeDB = CasinobabeDB or {}
+  CasinobabeDB.dealer = CasinobabeDB.dealer or {}
   CasinobabeDB.dealer.sessions = {}
   for playerName, session in pairs(dealerSessions) do
     if session.state ~= DEALER_STATES.CLOSED and session.state ~= DEALER_STATES.CANCELLED then
@@ -2761,6 +2772,9 @@ function DealerToggle(onOff)
   if onOff == "on" then
     dealerEnabled = true
     isDealerMode = true
+    -- Fresh profiles have no SavedVariables yet: fail-closed tables, never nil-index.
+    CasinobabeDB = CasinobabeDB or {}
+    CasinobabeDB.dealer = CasinobabeDB.dealer or {}
     CasinobabeDB.dealer.enabled = true
     print("|cffFFD700Casinobabe|r Dealer mode ENABLED")
     DealerAuditLog(nil, nil, "DEALER_ON", "Dealer mode enabled")
@@ -2788,6 +2802,8 @@ function DealerToggle(onOff)
   elseif onOff == "off" then
     dealerEnabled = false
     isDealerMode = false
+    CasinobabeDB = CasinobabeDB or {}
+    CasinobabeDB.dealer = CasinobabeDB.dealer or {}
     CasinobabeDB.dealer.enabled = false
     print("|cffFFD700Casinobabe|r Dealer mode DISABLED")
     DealerAuditLog(nil, nil, "DEALER_OFF", "Dealer mode disabled")
@@ -6866,9 +6882,7 @@ end)
 -- UNIVERSAL CHAT LISTENER & PROSPECT SYSTEM
 -- ============================================================================
 
--- Prospect storage
-local prospects = {}
-local prospectCooldown = {}
+-- Prospect storage (tables declared near the top, before their first use)
 local PROSPECT_COOLDOWN = 10 -- seconds
 
 -- Zone context
