@@ -172,8 +172,9 @@ _Sent = {}
 _MockTime = 5000
 St._queue = {}
 St._window = {}
--- commenté : retrait dépendance frame mock
+-- commentï¿½ : retrait dï¿½pendance frame mock
 CasinoBae:SetState("READY")
+CasinoBae:CreateLobby()
 ok(CasinoBae.STATE == "LOBBY_OPEN", "game_lobby_state")
 CasinoBae:AddPlayer("Alice")
 CasinoBae:AddPlayer("Bob")
