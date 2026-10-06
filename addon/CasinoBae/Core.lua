@@ -1,5 +1,6 @@
 CasinoBae=CasinoBae or {}
 CasinoBae.VERSION="0.5.0"
+-- Factory V2 debug logging
 CasinoBae.STATE="IDLE"
 CasinoBae.players={}
 CasinoBae.lobby={host=nil,players={},game=nil,round=0}
