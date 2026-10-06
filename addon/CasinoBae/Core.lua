@@ -1,5 +1,5 @@
 CasinoBae=CasinoBae or {}
-CasinoBae.VERSION="0.5.0"
+CasinoBae.VERSION="0.6.0"
 CasinoBae.STATE="IDLE"
 CasinoBae.players={}
 CasinoBae.lobby={host=nil,players={},game=nil,round=0}
@@ -88,10 +88,13 @@ function CasinoBae:CreateLobby()
  self.lobby={host=host,players={},game=nil,round=0}
  self.rolls={}
  self.pendingAction=nil
- self:SetState("LOBBY_OPEN",{host=host})
- self:Emit("LOBBY_CREATED",{host=host})
- self:Announce("LOBBY OPEN — whisper « join » pour rejoindre.")
- self:Emote("POINT")
+  self:SetState("LOBBY_OPEN",{host=host})
+  self:Emit("LOBBY_CREATED",{host=host})
+  if self.Style and self.Style.enabled then self.Style.Play(self.Style.Lobby(host))
+  else
+    self:Announce("LOBBY OPEN — whisper « join » pour rejoindre.")
+    self:Emote("POINT")
+  end
 end
 
 function CasinoBae:RequireAction(message,action,extra)

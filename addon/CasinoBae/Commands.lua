@@ -19,10 +19,18 @@ SlashCmdList.CASINOBAE=function(message)
  if command=="whisper" then local name,text=(args or ""):match("^(%S+)%s+(.+)$"); if name and text then SendChatMessage(text,"WHISPER",nil,name) else CasinoBae:Announce("Usage: /cb whisper NAME MESSAGE") end; return end
  if command=="invite" and args~="" then CasinoBae:RequireAction("Invite manuellement "..args.." dans WoW. CasinoBae attend un changement réel du groupe; vérifie que "..args.." est bien présent.","INVITE_PLAYER",args); return end
  if command=="action" and args~="" then CasinoBae:RequireAction(args,"MANUAL"); return end
- if command=="demo" then CasinoBae:CreateLobby(); CasinoBae:AddPlayer("DemoPlayer"); CasinoBae:Announce("DEMO: lobby prêt. Lance /cb start pour utiliser le vrai /rand."); return end
- print("|cffff4f9aCasinoBae|r commandes:")
- print("/cb ui | hide | status | lobby | close | start | rules")
- print("/cb join NAME | remove NAME | invite NAME")
- print("/cb whisper NAME MESSAGE | say MESSAGE | yell MESSAGE")
- print("/cb emote TOKEN | announce MESSAGE | action MESSAGE | demo")
+  if command=="demo" then CasinoBae:CreateLobby(); CasinoBae:AddPlayer("DemoPlayer"); CasinoBae:Announce("DEMO: lobby prêt. Lance /cb start pour utiliser le vrai /rand."); return end
+  if CasinoBae.Style and (command=="roll" or command=="dice" or command=="deal" or command=="draw" or command=="win" or command=="lose" or command=="bluff" or command=="challenge" or command=="bow" or command=="toast" or command=="entrance" or command=="exit" or command=="lobby" or command=="compact" or command=="style" or command=="casino") then
+    if command=="casino" then local sub,rest=(args or ""):match("^%s*(%S*)%s*(.*)$"); CasinoBae.Style.Command(sub,rest)
+    else CasinoBae.Style.Command(command,args) end
+    return
+  end
+  print("|cffff4f9aCasinoBae|r commandes:")
+  print("/cb ui | hide | status | lobby | close | start | rules")
+  print("/cb join NAME | remove NAME | invite NAME")
+  print("/cb whisper NAME MESSAGE | say MESSAGE | yell MESSAGE")
+  print("/cb emote TOKEN | announce MESSAGE | action MESSAGE | demo")
+  print("/cb roll [NOM SCORE] | dice | deal | draw [NOM] | win NOM [SCORE] | lose NOM")
+  print("/cb bluff | challenge A B | bow | toast | entrance | exit | compact | style")
+  print("/casino ... : meme scenes en direct (voir /casino help)")
 end

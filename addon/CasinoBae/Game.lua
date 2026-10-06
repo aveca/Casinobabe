@@ -3,8 +3,14 @@ local function normalizeName(name) name=(name or ""):gsub("|c%x%x%x%x%x%x%x%x","
 function CasinoBae.Game:StartRand()
  if CasinoBae.STATE~="LOBBY_OPEN" and CasinoBae.STATE~="ROUND_COMPLETE" and CasinoBae.STATE~="TIE" then return false,"Lobby not open" end
  local count=0; for _ in pairs(CasinoBae.lobby.players) do count=count+1 end; if count<2 then return false,"At least 2 players required" end
- CasinoBae.lobby.game="RAND"; CasinoBae.lobby.round=CasinoBae.lobby.round+1; CasinoBae.rolls={}; CasinoBae:SetState("GAME_WAITING_FOR_ROLLS",{round=CasinoBae.lobby.round})
- CasinoBae:Emit("GAME_STARTED",{game="RAND",round=CasinoBae.lobby.round,players=count}); CasinoBae:Announce("ROUND "..CasinoBae.lobby.round.." — chaque joueur fait /rand maintenant."); CasinoBae:Emote("ROAR"); return true
+  CasinoBae.lobby.game="RAND"; CasinoBae.lobby.round=CasinoBae.lobby.round+1; CasinoBae.rolls={}; CasinoBae:SetState("GAME_WAITING_FOR_ROLLS",{round=CasinoBae.lobby.round})
+  CasinoBae:Emit("GAME_STARTED",{game="RAND",round=CasinoBae.lobby.round,players=count});
+  if CasinoBae.Style and CasinoBae.Style.enabled then CasinoBae.Style.Play(CasinoBae.Style.DiceInvite(CasinoBae.lobby.round))
+  else
+    CasinoBae:Announce("ROUND "..CasinoBae.lobby.round.." — chaque joueur fait /rand maintenant.")
+    CasinoBae:Emote("ROAR")
+  end
+  return true
 end
 function CasinoBae.Game:RecordRoll(player,value)
  player=normalizeName(player); if CasinoBae.STATE~="GAME_WAITING_FOR_ROLLS" or not CasinoBae.lobby.players[player] then return false end
@@ -13,8 +19,13 @@ function CasinoBae.Game:RecordRoll(player,value)
 end
 function CasinoBae.Game:FinishRound()
  local winner,best,tie=nil,nil,false; for player,value in pairs(CasinoBae.rolls or {}) do if not best or value>best then winner,best,tie=player,value,false elseif value==best then tie=true end end; if not winner then return end
- if tie then CasinoBae:SetState("TIE",{value=best}); CasinoBae:Emit("ROUND_TIE",{value=best,round=CasinoBae.lobby.round}); CasinoBae:Announce("ÉGALITÉ à "..best.." — relancez /cb start."); CasinoBae:Emote("SHRUG"); return end
- CasinoBae:SetState("ROUND_COMPLETE",{winner=winner,value=best}); CasinoBae:Emit("ROUND_COMPLETE",{winner=winner,value=best,round=CasinoBae.lobby.round}); CasinoBae:Announce("WINNER — "..winner.." avec "..best.."."); CasinoBae:Emote("CHEER")
+  if tie then CasinoBae:SetState("TIE",{value=best}); CasinoBae:Emit("ROUND_TIE",{value=best,round=CasinoBae.lobby.round});
+  if CasinoBae.Style and CasinoBae.Style.enabled then CasinoBae.Style.Play(CasinoBae.Style.Tie(best))
+  else CasinoBae:Announce("ÉGALITÉ à "..best.." — relancez /cb start."); CasinoBae:Emote("SHRUG") end
+  return end
+  CasinoBae:SetState("ROUND_COMPLETE",{winner=winner,value=best}); CasinoBae:Emit("ROUND_COMPLETE",{winner=winner,value=best,round=CasinoBae.lobby.round});
+  if CasinoBae.Style and CasinoBae.Style.enabled then CasinoBae.Style.Play(CasinoBae.Style.Win(winner,best))
+  else CasinoBae:Announce("WINNER — "..winner.." avec "..best.."."); CasinoBae:Emote("CHEER") end
 end
 function CasinoBae.Game:ParseRollMessage(message)
  if type(message)~="string" then return false end; local m=normalizeName(message); local value
