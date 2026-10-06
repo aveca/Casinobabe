@@ -11,8 +11,9 @@ local PREFIX = "CBABE"
 local MEDIA  = "Interface\\AddOns\\Casinobabe\\media\\background"
 
 -- Namespace for all addon state and data
-local CB = {}
+local CB = Casinobabe or {}
 Casinobabe = CB
+
 CB.state = CB.state or {}
 CB.ui = CB.ui or {}
 CB.libs = CB.libs or {}
@@ -121,8 +122,6 @@ local DealerValidateTransition
 
 -- Utility forward declarations
 local shortName
--- SendControl is defined later but called earlier (dealer-on path); forward it.
-local SendControl
 
 -- Demo session forward declaration (must be before functions that reference it)
 local demoSession
@@ -151,14 +150,10 @@ local MAX_BET, MIN_BET = 1000, 1   -- casinots insatsgranser (1g - 1000g)
 CB.state.dealerEnabled = false  -- manual toggle via /cb dealer on
 CB.state.autoAttractRunning = false  -- auto-dealer attract state
 CB.state.isDealerMode = false
-CB.state.DEALER_NAME = "Casinobae"
 -- Runtime flags also mirrored as bare globals by legacy handlers below.
--- Initialize explicitly (nil and false behave identically, but explicit
--- avoids undefined-global reads under strict checking).
 dealerEnabled = false
 isDealerMode = false
--- Bare DEALER_NAME is used across handlers; alias it once (nil-global crash otherwise).
-local DEALER_NAME = CB.state.DEALER_NAME
+-- Dealer identity is dynamic: the active dealer is the currently logged-in character when dealer mode is enabled.
 
 -- ============================================================================
 -- DEALER COOLDOWN MANAGER - Single canonical cooldown system
@@ -222,7 +217,7 @@ CB.state.dealerConnReason = ""
 CB.state.dealerConnLastMsg = 0
 
 local function DealerSetConnState(state, reason)
-  local old = CB.state.dealerConnState
+  local old = CB.state.dealerConnState or state
   CB.state.dealerConnState = state
   CB.state.dealerConnReason = reason or ""
   CB.state.dealerConnLastMsg = time()
@@ -252,6 +247,7 @@ end
 function CB.DealerGetConnState()
   return CB.state.dealerConnState, CB.state.dealerConnReason
 end
+DealerGetConnState = CB.DealerGetConnState
 
 -- ============================================================================
 -- DEALER DIAGNOSTICS
@@ -261,19 +257,15 @@ function CB.DealerDiag(event, details)
   if details then msg = msg .. " " .. details end
   print(msg)
 end
--- Bare DealerDiag(...) is used across handlers; alias the namespaced
--- definition once (nil-global crash otherwise).
-local DealerDiag = CB.DealerDiag
+DealerDiag = CB.DealerDiag
+AddonPrint = AddonPrint or print
 
 -- NOTE: shortName/MakeBorder are defined early on purpose. Lua binds locals
 -- positionally, so dealer code further down (IsDealerCharacter, whisper and
 -- trade/roll handlers, dealer panel) must see them. They were previously
 -- declared near the file end, which made every earlier call hit a nil global.
-local function shortName(full)
-  if not full then return nil end
-  return full:match("^([^%-]+)") or full
-end
-CB.shortName = shortName
+function CB.shortName(full) if not full then return nil end return full:match("^([^%-]+)") or full end
+shortName = CB.shortName
 function CB.MakeBorder(f,t)
   t=t or 2
   local function line() local x=f:CreateTexture(nil,"OVERLAY"); x:SetColorTexture(0,0,0,0); return x end
@@ -285,10 +277,12 @@ function CB.MakeBorder(f,t)
   function b:SetColor(r,g,bl,a) for _,x in pairs({self.top,self.bot,self.left,self.right}) do x:SetColorTexture(r,g,bl,a or 1) end end
   return b
 end
+MakeBorder = CB.MakeBorder
 
--- CASINOEMOTE - Emote helpers (physical + text)
 -- ============================================================================
-CB.CasinoEmote = {
+-- CASINO GAME RULES - Single Source of Truth (GAME RULES, NOT EMOTES)
+-- ============================================================================
+CB.GameRules = {
   normal = {
     key = "normal",
     name = "Normal",
@@ -404,6 +398,7 @@ CB.CasinoEmote = {
     description = "House rolls 2d6. Over (8-12) = x2, Under (2-6) = x2, exactly 7 = x4.",
   },
 }
+GameRules = CB.GameRules
 
 --
 -- ============================================================================
@@ -472,6 +467,7 @@ CB.CasinoSound = {
     end
   end,
 }
+CasinoSound = CB.CasinoSound
 
 -- ============================================================================
 -- CASINOEMOTE - Emote helpers (physical + text)
@@ -689,6 +685,7 @@ CB.CasinoSequence = {
     return self.active[id] and not self.active[id].cancelled
   end,
 }
+CasinoSequence = CB.CasinoSequence
 
 -- ============================================================================
 -- CASINOVARIANTS - Variant system for messages/emotes/reactions
@@ -864,8 +861,8 @@ local CasinoVariants = {
   SHOW_INTRO = {
     "/me se tourne lentement vers la foule.",
     "/me ajuste son manteau et regarde l'horizon.",
-    "/me fait tourner une piÃ¨ce entre ses doigts.",
-    "/me pose une main sur la table, prÃªt Ã  commencer.",
+    "/me fait tourner une pièce entre ses doigts.",
+    "/me pose une main sur la table, prêt à commencer.",
   },
   SHOW_GAMES = {
     "ðŸŽ° NORMAL â€” 59+ x2, 100 x3",
@@ -882,9 +879,9 @@ local CasinoVariants = {
     "Your move. /w Casinobae JOIN",
   },
   SHOW_OUTRO = {
-    "/me incline la tÃªte avec respect.",
+    "/me incline la tête avec respect.",
     "/me range les jetons lentement.",
-    "/me Ã©teint les lanternes de la table.",
+    "/me éteint les lanternes de la table.",
   },
   
   -- Reactions
@@ -1272,7 +1269,7 @@ function CasinoReactionEngine:Execute(actions, ctx)
     elseif action.channel == "EMOTE" and action.msg then
       SendChatMessage(action.msg, "EMOTE")
     elseif action.sound then
-      CB.CasinoSound:Play(action.sound)
+      CasinoSound:Play(action.sound)
     elseif action.physical then
       -- Queue physical emote suggestion for dealer UI
       ctx.suggestedEmote = action.physical
@@ -1308,13 +1305,13 @@ local CasinoAnnouncer = {
       name = "Standard Show",
       weight = 40,
       steps = {
-        { delay = 0,   fn = function() CB.CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
+        { delay = 0,   fn = function() CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
         { delay = 1.5, fn = function() SendChatMessage(CasinoVariants:Get("SHOW_INTRO"), "EMOTE") end },
-        { delay = 3,   fn = function() CB.CasinoSound:Play("DRAMA_PAUSE") end },
+        { delay = 3,   fn = function() CasinoSound:Play("DRAMA_PAUSE") end },
         { delay = 3.5, fn = function() SendChatMessage("ðŸŽ° The table is OPEN.", "SAY") end },
         { delay = 5,   fn = function() CasinoEmote:PlayText("FLIPS_COIN") end },
         { delay = 6,   fn = function() SendChatMessage("Step right up...", "SAY") end },
-        { delay = 8,   fn = function() CB.CasinoSound:Play("CTA"); SendChatMessage("ðŸŽ° CASINOBAE CASINO IS OPEN ðŸŽ°", "YELL") end },
+        { delay = 8,   fn = function() CasinoSound:Play("CTA"); SendChatMessage("ðŸŽ° CASINOBAE CASINO IS OPEN ðŸŽ°", "YELL") end },
         { delay = 10,  fn = function() CasinoEmote:PlayText("POINTS_CROWD") end },
         -- Games reveal
         { delay = 12,  fn = function() SendChatMessage("ðŸŽ° NORMAL â€” 59+ x2, 100 x3", "SAY") end },
@@ -1323,17 +1320,17 @@ local CasinoAnnouncer = {
         { delay = 16.5, fn = function() SendChatMessage("ðŸ”´ ROULETTE â€” Red/Black x2, Green x5", "SAY") end },
         { delay = 18,  fn = function() SendChatMessage("ðŸŽ² DICE â€” Over/Under x2, 7 x4", "SAY") end },
         { delay = 19.5, fn = function() SendChatMessage("ðŸ€ LUCKY 7 â€” Ends in 7 = x7", "SAY") end },
-        { delay = 21,  fn = function() CB.CasinoSound:Play("SUSPENSE") end },
+        { delay = 21,  fn = function() CasinoSound:Play("SUSPENSE") end },
         { delay = 22,  fn = function() SendChatMessage(CasinoVariants:Get("SHOW_CTA"), "SAY") end },
-        { delay = 24,  fn = function() CasinoEmote:PlayText("SMILES"); CB.CasinoSound:Play("CURTAIN") end },
+        { delay = 24,  fn = function() CasinoEmote:PlayText("SMILES"); CasinoSound:Play("CURTAIN") end },
       },
     },
     ELEGANT = {
       name = "Elegant Dealer",
       weight = 20,
       steps = {
-        { delay = 0,   fn = function() CB.CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
-        { delay = 2,   fn = function() SendChatMessage("/me incline la tÃªte avec Ã©lÃ©gance.", "EMOTE") end },
+        { delay = 0,   fn = function() CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
+        { delay = 2,   fn = function() SendChatMessage("/me incline la tête avec élégance.", "EMOTE") end },
         { delay = 4,   fn = function() SendChatMessage("ðŸŽ° The house welcomes you.", "SAY") end },
         { delay = 6,   fn = function() CasinoEmote:PlayText("SMILES") end },
         { delay = 7,   fn = function() SendChatMessage("ðŸŽ° NORMAL â€” 59+ x2, 100 x3", "SAY") end },
@@ -1342,7 +1339,7 @@ local CasinoAnnouncer = {
         { delay = 11.5, fn = function() SendChatMessage("ðŸ”´ ROULETTE â€” Red/Black x2, Green x5", "SAY") end },
         { delay = 13,  fn = function() SendChatMessage("ðŸŽ² DICE â€” Over/Under x2, 7 x4", "SAY") end },
         { delay = 14.5, fn = function() SendChatMessage("ðŸ€ LUCKY 7 â€” Ends in 7 = x7", "SAY") end },
-        { delay = 16,  fn = function() CB.CasinoSound:Play("CTA"); SendChatMessage("The table is open. /w Casinobae JOIN", "SAY") end },
+        { delay = 16,  fn = function() CasinoSound:Play("CTA"); SendChatMessage("The table is open. /w Casinobae JOIN", "SAY") end },
         { delay = 18,  fn = function() CasinoEmote:PlayText("BOW") end },
       },
     },
@@ -1350,7 +1347,7 @@ local CasinoAnnouncer = {
       name = "Crazy Casino",
       weight = 15,
       steps = {
-        { delay = 0,   fn = function() CB.CasinoSound:Play("CTA"); CasinoEmote:PlayText("DANCE") end },
+        { delay = 0,   fn = function() CasinoSound:Play("CTA"); CasinoEmote:PlayText("DANCE") end },
         { delay = 1,   fn = function() SendChatMessage("ðŸŽ°ðŸŽ°ðŸŽ° CASINOBAE IS OPEN! ðŸŽ°ðŸŽ°ðŸŽ°", "YELL") end },
         { delay = 2,   fn = function() CasinoEmote:PlayText("CHEER") end },
         { delay = 2.5, fn = function() SendChatMessage("ðŸŽ° NORMAL â€” 59+ x2, 100 x3!", "SAY") end },
@@ -1368,7 +1365,7 @@ local CasinoAnnouncer = {
       name = "Lucky Night",
       weight = 10,
       steps = {
-        { delay = 0,   fn = function() CB.CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("FLIPS_COIN") end },
+        { delay = 0,   fn = function() CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("FLIPS_COIN") end },
         { delay = 2,   fn = function() SendChatMessage("ðŸ€ Tonight... the stars align.", "SAY") end },
         { delay = 3,   fn = function() SendChatMessage("ðŸ€ LUCKY 7 â€” Ends in 7 = x7", "SAY") end },
         { delay = 4.5, fn = function() SendChatMessage("ðŸŽ² DICE â€” 7 pays quadruple!", "SAY") end },
@@ -1381,7 +1378,7 @@ local CasinoAnnouncer = {
       name = "High Risk",
       weight = 10,
       steps = {
-        { delay = 0,   fn = function() CB.CasinoSound:Play("DRAMA_PAUSE"); CasinoEmote:PlayText("GASP") end },
+        { delay = 0,   fn = function() CasinoSound:Play("DRAMA_PAUSE"); CasinoEmote:PlayText("GASP") end },
         { delay = 1,   fn = function() SendChatMessage("ðŸ”¥ HIGH RISK. 76+ x3. 100 x4.", "YELL") end },
         { delay = 2,   fn = function() SendChatMessage("1-75... the house keeps it ALL.", "SAY") end },
         { delay = 3.5, fn = function() SendChatMessage("Dare you? /w Casinobae JOIN", "SAY") end },
@@ -1392,7 +1389,7 @@ local CasinoAnnouncer = {
       name = "Mystery Dealer",
       weight = 5,
       steps = {
-        { delay = 0,   fn = function() CB.CasinoSound:Play("SUSPENSE"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
+        { delay = 0,   fn = function() CasinoSound:Play("SUSPENSE"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
         { delay = 2,   fn = function() SendChatMessage("...", "SAY") end },
         { delay = 3,   fn = function() SendChatMessage("The house has a surprise.", "SAY") end },
         { delay = 4,   fn = function() SendChatMessage("One game. One roll. Everything changes.", "SAY") end },
@@ -1403,7 +1400,7 @@ local CasinoAnnouncer = {
       name = "Quick Ad",
       weight = 0, -- Manual only
       steps = {
-        { delay = 0,   fn = function() CB.CasinoSound:Play("CTA") end },
+        { delay = 0,   fn = function() CasinoSound:Play("CTA") end },
         { delay = 0.5, fn = function() SendChatMessage("ðŸŽ° Casinobae Casino OPEN â€” /w Casinobae JOIN â€” Games + /roll", "SAY") end },
       },
     },
@@ -1987,6 +1984,16 @@ local function ValidateDiceChoice(choice)
   return false
 end
 
+-- Public surface of the rules engine: pure functions over GameRules. Exposed
+-- on CB so tests can assert the betting maths without reaching into file
+-- locals (they are locals on purpose - no global namespace pollution).
+CB.GetGameRule = GetGameRule
+CB.ComputePayout = ComputePayout
+CB.ValidateStake = ValidateStake
+CB.ValidateRoll = ValidateRoll
+CB.ValidateRouletteColor = ValidateRouletteColor
+CB.ValidateDiceChoice = ValidateDiceChoice
+
 local LANGS = {
   { "English","english" }, { "Svenska","swedish" }, { "Deutsch","deutsch" },
   { "Francais","francais" }, { "Espanol","espanol" }, { "Italiano","italiano" },
@@ -2267,24 +2274,27 @@ end
 
 -- Check if current character is the dealer (Casinobae)
 local function IsDealerCharacter()
-  local name = shortName(UnitName("player"))
-  return name and name:lower() == DEALER_NAME:lower()
+  -- Dealer identity is role/state based, not a hard-coded character name.
+  -- When dealer mode is enabled, the currently logged-in character is the dealer.
+  return dealerEnabled == true or isDealerMode == true
 end
 
--- Auto-enable dealer mode if character is Casinobae
+-- Reconcile persisted dealer mode without assuming a fixed character name.
 local function AutoDetectDealerMode()
-  if IsDealerCharacter() and not dealerEnabled then
-    dealerEnabled = true
+  if dealerEnabled then
     isDealerMode = true
-    CasinobabeDB.dealer.enabled = true
-    print("|cffFFD700Casinobabe|r Dealer mode AUTO-ENABLED for Casinobae.")
+    if CasinobabeDB and CasinobabeDB.dealer then
+      CasinobabeDB.dealer.enabled = true
+    end
+    local dealer = CB.shortName(UnitName("player")) or "Unknown"
+    print("|cffFFD700Casinobabe|r Dealer mode active for " .. dealer .. ".")
   end
 end
 
 -- Generate unique session ID
 local function GenerateSessionId()
   dealerSessionCounter = dealerSessionCounter + 1
-  return string.format("%s-%d-%d", DEALER_NAME, time(), dealerSessionCounter)
+  return string.format("%s-%d-%d", CB.shortName(UnitName("player")) or "Dealer", time(), dealerSessionCounter)
 end
 
 -- Dealer Audit Log
@@ -2511,7 +2521,7 @@ end
 function DealerOnWhisper(msg, sender)
   if not dealerEnabled then return end
   if not sender then return end
-  sender = shortName(sender)
+  sender = CB.shortName(sender)
   if not sender then return end
   
   local lowerMsg = msg:lower()
@@ -2751,9 +2761,6 @@ function DealerToggle(onOff)
   if onOff == "on" then
     dealerEnabled = true
     isDealerMode = true
-    -- Fresh profiles have no SavedVariables yet: fail-closed tables, never nil-index.
-    CasinobabeDB = CasinobabeDB or {}
-    CasinobabeDB.dealer = CasinobabeDB.dealer or {}
     CasinobabeDB.dealer.enabled = true
     print("|cffFFD700Casinobabe|r Dealer mode ENABLED")
     DealerAuditLog(nil, nil, "DEALER_ON", "Dealer mode enabled")
@@ -3287,8 +3294,8 @@ local function DealerTestWinSteps()
         s.multiplier = mult
         s.result = (mult and mult > 0) and "WIN" or "LOSS"
         DealerTestSay("[TEST REACTION] WIN -> CHEER + CLAP described (no auto physical emote)")
-        if CB.CasinoSound and CB.CasinoSound.Play then
-          CB.CasinoSound:Play("WIN_SMALL")
+        if CasinoSound and CasinoSound.Play then
+          CasinoSound:Play("WIN_SMALL")
           DealerTestSay("[TEST SOUND] WIN_SMALL (local only)")
         end
         return mult == 7 and s.result == "WIN", "mult=x" .. tostring(mult) .. " result=" .. tostring(s.result)
@@ -3366,8 +3373,8 @@ local function DealerTestLossSteps()
         s.multiplier = mult
         s.result = (mult and mult > 0) and "WIN" or "LOSS"
         DealerTestSay("[TEST REACTION] LOSS -> SHRUG described (no auto physical emote)")
-        if CB.CasinoSound and CB.CasinoSound.Play then
-          CB.CasinoSound:Play("LOSS")
+        if CasinoSound and CasinoSound.Play then
+          CasinoSound:Play("LOSS")
           DealerTestSay("[TEST SOUND] LOSS (local only)")
         end
         return mult == 0 and s.result == "LOSS", "mult=x" .. tostring(mult) .. " result=" .. tostring(s.result)
@@ -4305,7 +4312,23 @@ local function groupLeaderName()
   end
   return nil
 end
-SendControl = function(msg)
+
+-- Resolve the dealer target without hard-coding a character name.
+-- Dealer mode: current character is the dealer.
+-- Player mode: the casino/raid leader is the remote dealer.
+function CB.GetDealerName()
+  if dealerEnabled or isDealerMode then
+    return CB.shortName(UnitName("player"))
+  end
+  local leader = groupLeaderName()
+  if leader then return leader end
+  if CasinobabeDB and CasinobabeDB.casino then
+    return CB.shortName(CasinobabeDB.casino)
+  end
+  return nil
+end
+
+function SendControl(msg)
   local ch=groupChannel(); if not ch then return false end
   if C_ChatInfo and C_ChatInfo.SendAddonMessage then C_ChatInfo.SendAddonMessage(PREFIX,msg,ch)
   elseif SendAddonMessage then SendAddonMessage(PREFIX,msg,ch) else return false end
@@ -5197,7 +5220,7 @@ local function CreatePanel()
     end)
   end
 
-  local function UpdateLiveTestButton()
+  function UpdateLiveTestButton()
     if not f.liveTestBtn then return end
     local ctx = GetLiveTestContext()
     local statusText = ""
@@ -5418,7 +5441,7 @@ local function CreatePanel()
     UpdateAutopilotButtons()
   end
 
-  local function UpdateAutopilotButtons()
+  function UpdateAutopilotButtons()
     if not f.startCasinoBtn or not f.stopCasinoBtn then return end
     
     if autopilotState.active then
@@ -5513,7 +5536,7 @@ local function CreatePanel()
     f.announceSayBtn:SetScript("OnClick", function()
       if type(SendChatMessage) == "function" then
         local msg = string.format("[CasinoBae] Table open! %s | Whisper %s JOIN", 
-          GetRealZoneText and GetRealZoneText() or GetZoneText(), DEALER_NAME)
+          GetRealZoneText and GetRealZoneText() or GetZoneText(), CB.GetDealerName() or "dealer")
         pcall(SendChatMessage, msg, "SAY")
         print("|cffFFD700[CB AUTOPILOT]|r SAY announcement sent")
       end
@@ -5534,7 +5557,7 @@ local function CreatePanel()
     ayHl:SetColorTexture(1, 0.8, 0.5, 0.12)
     f.announceYellBtn:SetScript("OnClick", function()
       if type(SendChatMessage) == "function" then
-        local msg = string.format("[CasinoBae] Casino open! Whisper %s JOIN", DEALER_NAME)
+        local msg = string.format("[CasinoBae] Casino open! Whisper %s JOIN", CB.GetDealerName() or "dealer")
         pcall(SendChatMessage, msg, "YELL")
         print("|cffFFD700[CB AUTOPILOT]|r YELL announcement sent")
       end
@@ -6182,7 +6205,7 @@ function OnMyRoll(roll)
       -- Dealer auto-payout (trade) runs in parallel on dealer client.
       -- Never claim payment received before real WoW trade event.
       local total = pending.stake + net
-      SetStatus(("%s - YOU WIN! +%dg net (total %dg). Opening trade with %s..."):format(rolledStr, net, total, DEALER_NAME), C.green)
+      SetStatus(("%s - YOU WIN! +%dg net (total %dg). Opening trade with %s..."):format(rolledStr, net, total, CB.GetDealerName() or "dealer"), C.green)
       RecordResult(pending.game, pending.stake, true, net)
       ShowResult(true, net)
     else
@@ -6212,7 +6235,7 @@ end
 -- Nu forsoker vi flera ganger, och gruppandringar triggar ett nytt forsok.
 local connTkn=0
 function RequestState(tries)
-  myName=myName or shortName(UnitName("player"))
+  myName=myName or CB.shortName(UnitName("player"))
   connTkn=connTkn+1
   local tkn=connTkn
   tries=tries or 0
@@ -6268,9 +6291,9 @@ function PlaceBet()
   -- Skip self-whisper when local is dealer.
   if not inRaid then
     do
-      local me = shortName(UnitName("player"))
-      if me and me:lower() ~= DEALER_NAME:lower() and SendChatMessage then
-        local dealer = DEALER_NAME
+      local me = CB.shortName(UnitName("player"))
+      local dealer = CB.GetDealerName()
+      if me and dealer and me:lower() ~= dealer:lower() and SendChatMessage then
         local gkey = selectedGame
         local samt = tostring(amt)
         pcall(SendChatMessage, "JOIN", "WHISPER", nil, dealer)
@@ -6366,7 +6389,7 @@ end
 function HandleMessage(msg, sender)
   if not msg then return end
   local to=msg:match("|to=([^|]+)$")
-  if to then if shortName(to)~=(myName or shortName(UnitName("player"))) then return end; msg=msg:gsub("|to=[^|]+$","") end
+  if to then if CB.shortName(to)~=(myName or CB.shortName(UnitName("player"))) then return end; msg=msg:gsub("|to=[^|]+$","") end
   SetConnected(true)
   if msg=="BUSY" then
     BlackjackBusy()
@@ -6707,12 +6730,12 @@ loader:SetScript("OnEvent", function(self, event, ...)
       -- Update dealer connection state on group changes
       local newCh = groupChannel()
       if newCh then
-        if dealerConnState == DEALER_CONN_STATES.CONNECTING or dealerConnState == DEALER_CONN_STATES.OFF then
+        if CB.state.dealerConnState == DEALER_CONN_STATES.CONNECTING or CB.state.dealerConnState == DEALER_CONN_STATES.OFF then
           DealerSetConnState(DEALER_CONN_STATES.CONNECTED, "raid/group joined")
           SendControl("HELLO")
         end
       else
-        if dealerConnState == DEALER_CONN_STATES.CONNECTED or dealerConnState == DEALER_CONN_STATES.READY then
+        if CB.state.dealerConnState == DEALER_CONN_STATES.CONNECTED or CB.state.dealerConnState == DEALER_CONN_STATES.READY then
           DealerSetConnState(DEALER_CONN_STATES.CONNECTING, "no raid/group - waiting")
         end
       end
@@ -6731,7 +6754,7 @@ loader:SetScript("OnEvent", function(self, event, ...)
     -- knappen forst vid PLAYER_LOGIN kan samlaren hinna scanna fore oss och missa den.
     if not LibDBIcon10_Casinobabe then CreateMinimapButton() end
   elseif event=="PLAYER_LOGIN" then
-    myName=shortName(UnitName("player"))
+    myName=CB.shortName(UnitName("player"))
     CasinobabeDB.casino=nil   -- rensa gammalt felaktigt sparat namn; vi visar raid-ledaren
     if not LibDBIcon10_Casinobabe then CreateMinimapButton() end   -- fallback
     RequestState()
@@ -6757,7 +6780,7 @@ loader:SetScript("OnEvent", function(self, event, ...)
       -- Locale-robust: pa icke-engelska klienter ar verbet annorlunda
       -- ("wuerfelt", "obtient" osv.), men "<namn> ... <roll> (1-100)" galler
       -- overallt. Vi matchar siffran + (1-100) och kollar att namnet ar vart.
-      myName=myName or shortName(UnitName("player"))
+myName=myName or CB.shortName(UnitName("player"))
       local who,roll=text:match("^(%S+) .-(%d+) %(1%-100%)")
       if who and roll and shortName(who)==myName then
         OnMyRoll(tonumber(roll))
@@ -7020,7 +7043,7 @@ function UpdateZoneContext()
     currentInstanceType = instanceType
     
     print(string.format("|cffFFD700[CB ZONE]|r %s / %s (instance=%s, type=%s)", 
-      zone, subZone ~= "" and subZone or "(none)", tostring(inInstance), instanceType))
+      zone, subZone ~= "" and subZone or "(none)", tostring(inInstance), instanceType or "(none)"))
     
     -- Update dealer panel UI
     if panel and panel.dealerPanel and panel.dealerPanel.UpdateZone then
@@ -7035,7 +7058,7 @@ function GetProspects()
 end
 
 -- Clear old prospects (call periodically)
-local function CleanOldProspects()
+function CleanOldProspects()
   local now = time()
   for name, prospect in pairs(prospects) do
     if now - prospect.lastSeen > 300 then -- 5 minutes
@@ -7132,7 +7155,7 @@ function DealerDemoCommand(arg)
   end
 
   local function dsound(key)
-    if CB.CasinoSound and CB.CasinoSound.Play then CB.CasinoSound:Play(key) end
+    if CasinoSound and CasinoSound.Play then CasinoSound:Play(key) end
     dsay("[DEMO SOUND] " .. tostring(key) .. " (local only, nothing broadcast)")
   end
 
@@ -7703,4 +7726,3 @@ SlashCmdList["CASINOBABE"]=function(msg)
     print("|cffFFD700Casinobabe|r Commands: /cb dealer on|off|status|ad|attract|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote | /cb auto | /cb auto stop | /cb auto status | /cb who | /cb discord <text> | /cb fx | /cb resetstats | /cb reset | /cb intro")
   end
 end
-
