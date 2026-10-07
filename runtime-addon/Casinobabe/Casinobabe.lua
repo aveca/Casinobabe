@@ -7700,7 +7700,98 @@ SlashCmdList["CASINOBABE"]=function(msg)
     -- Bare /cb or /casinobabe opens the player UI (must work offline).
     TogglePanel()
   else
-    print("|cffFFD700Casinobabe|r Commands: /cb dealer on|off|status|ad|attract|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote | /cb auto | /cb auto stop | /cb auto status | /cb who | /cb discord <text> | /cb fx | /cb resetstats | /cb reset | /cb intro")
+    print("|cffFFD700Casinobabe|r Commands: /cb dealer on|off|status|ad|attract|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote | /cb auto | /cb auto stop | /cb auto status | /cb who | /cb discord <text> | /cb fx | /cb resetstats | /cb reset | /cb intro | /cb panel")
+  end
+end
+
+-- ============================================================================
+-- VISUAL CASINO RESULT PANEL - minimal frame-based result display
+-- ============================================================================
+do
+  local panelCreated = false
+  local panelTimer = nil
+
+  function CB.ShowCasinoResult(game, stake, roll, mult, won, jackpot)
+    if CB.state.errorCaptureDisabled then return end
+    local frame = CreateFrame("Frame", "CB_ResultPanel", UIParent, "BackdropTemplate")
+    frame:SetSize(280, 60)
+    frame:SetPoint("CENTER", UIParent, "CENTER")
+    frame:SetFrameStrata("HIGH")
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:SetOpacity(1)
+    frame:SetBackdrop({
+      bgFile = "Interface/Dialogues/UI-Dialog-Background",
+      edgeFile = "Interface/Dialogues/UI-Dialog-Border",
+      tile = true, tileSize = 32, edgeSize = 32,
+      insets = { left = 8, right = 8, top = 8, bottom = 8 }
+    })
+    frame:SetBackdropColor(0, 0, 0, 0.9)
+    frame:SetBackdropBorderColor(0.8, 0.7, 0.4)
+
+    local text = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    text:SetPoint("CENTER", frame, "CENTER", 0, 0)
+    text:SetJustifyH("CENTER")
+
+    local lines = {}
+    if jackpot then
+      table.insert(lines, "|cffffd700Jackpot!|r "..(won and "YOU WON" or "you lost"))
+    elseif won then
+      table.insert(lines, "|cff00ff00You won!|r")
+    else
+      table.insert(lines, "|cffe84f4fYou lost|r")
+    end
+    table.insert(lines, "Game: "..(game or "?"))
+    table.insert(lines, "Stake: "..(stake and tostring(stake).."g" or "?"))
+    table.insert(lines, "Roll: "..(roll or "?"))
+    if mult and mult > 1 then
+      table.insert(lines, "Mult: x"..mult)
+    end
+    text:SetText(table.concat(lines, "\\n"))
+
+    frame:Show()
+    panelCreated = true
+
+    if panelTimer then
+      frame:Hide()
+      panelTimer:Cancel()
+    end
+    panelTimer = C_Timer.NewTimer(8, function()
+      if frame and frame:IsShown() then
+        frame:Hide()
+        panelCreated = false
+      end
+    end)
+  end
+
+  function CB.HideCasinoPanel()
+    if CB.panel and CB.panel:IsShown() then
+      CB.panel:Hide()
+      CB.panelCreated = false
+    end
+    if CB.panelTimer then
+      CB.panelTimer:Cancel()
+      CB.panelTimer = nil
+    end
+  end
+
+  SLASH_CBPANEL1 = "/cb panel"
+  SlashCmdList["CBPANEL"] = function(msg)
+    if msg:lower() == "on" then
+      CB.ShowCasinoResult(CB.lastGame, CB.lastStake, CB.lastRoll, CB.lastMult, CB.lastWon, CB.lastJackpot)
+    elseif msg:lower() == "off" then
+      CB.HideCasinoPanel()
+    else
+      if CB.panel and CB.panel:IsShown() then
+        CB.HideCasinoPanel()
+      else
+        if CB.lastGame then
+          CB.ShowCasinoResult(CB.lastGame, CB.lastStake, CB.lastRoll, CB.lastMult, CB.lastWon, CB.lastJackpot)
+        else
+          print("|cffFFD700Casinobabe|r No result to display. Play a game first.")
+        end
+      end
+    end
   end
 end
 
