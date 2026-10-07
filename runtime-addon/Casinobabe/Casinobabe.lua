@@ -6730,12 +6730,14 @@ loader:SetScript("OnEvent", function(self, event, ...)
       -- Update dealer connection state on group changes
       local newCh = groupChannel()
       if newCh then
-        if CB.state.dealerConnState == DEALER_CONN_STATES.CONNECTING or CB.state.dealerConnState == DEALER_CONN_STATES.OFF then
+        local connState = CB.state and CB.state.dealerConnState or DEALER_CONN_STATES.OFF
+        if connState == DEALER_CONN_STATES.CONNECTING or connState == DEALER_CONN_STATES.OFF then
           DealerSetConnState(DEALER_CONN_STATES.CONNECTED, "raid/group joined")
           SendControl("HELLO")
         end
       else
-        if CB.state.dealerConnState == DEALER_CONN_STATES.CONNECTED or CB.state.dealerConnState == DEALER_CONN_STATES.READY then
+        local connState = CB.state and CB.state.dealerConnState or DEALER_CONN_STATES.OFF
+        if connState == DEALER_CONN_STATES.CONNECTED or connState == DEALER_CONN_STATES.READY then
           DealerSetConnState(DEALER_CONN_STATES.CONNECTING, "no raid/group - waiting")
         end
       end
