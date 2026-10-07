@@ -4875,3 +4875,4 @@ SlashCmdList["CASINOBABE"]=function(msg)
     print("|cffFFD700Casinobabe|r Commands: /cb dealer on|off|status|ad|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote | /cb auto | /cb auto stop | /cb auto status | /cb who | /cb discord <text> | /cb fx | /cb resetstats | /cb reset | /cb intro")
   end
 end
+  
