@@ -119,6 +119,143 @@ function extractSavedVariableJournal(content) {
   return match ? decodeLuaString(match[1]) : "";
 }
 
+function extractLastError(content) {
+  const patterns = {
+    message: /\["message"\]\s*=\s*"([^"]*)"/,
+    line: /\["line"\]\s*=\s*(\d+)/,
+    file: /\["file"\]\s*=\s*"([^"]*)"/,
+    id: /\["id"\]\s*=\s*"([^"]*)"/,
+    stack: /\["stack"\]\s*=\s*"([^"]*)"/,
+    at: /\["at"\]\s*=\s*(\d+)/,
+    priority: /\["priority"\]\s*=\s*"([^"]*)"/
+  };
+
+  const error = {};
+  for (const [key, pattern] of Object.entries(patterns)) {
+    const match = content.match(pattern);
+    if (match) error[key] = match[1];
+  }
+
+  if (!error.message) return null;
+  return error;
+}
+
+function extractErrorBus(content) {
+  const busMatch = String(content).match(/CasinobabeErrorBus\s*=\s*\{([\s\S]*?)\n\}/m);
+  if (!busMatch) return null;
+
+  const busContent = busMatch[1];
+  const bus = { pending: [] };
+
+  const seqMatch = busContent.match(/\[\s*"seq"\s*\]\s*=\s*(\d+)/);
+  if (seqMatch) bus.seq = Number(seqMatch[1]);
+
+  const versionMatch = busContent.match(/\[\s*"version"\s*\]\s*=\s*(\d+)/);
+  if (versionMatch) bus.version = Number(versionMatch[1]);
+
+  const pendingMatch = busContent.match(/\[\s*"pending"\s*\]\s*=\s*\{([\s\S]*?)\n\s*\}/m);
+  if (pendingMatch) {
+    const pendingContent = pendingMatch[1];
+    const entryPattern = /\{([\s\S]*?)\}/g;
+    let entryMatch;
+    while ((entryMatch = entryPattern.exec(pendingContent)) !== null) {
+      const entryContent = entryMatch[1];
+      const entry = {};
+      const patterns = {
+        id: /\["id"\]\s*=\s*"([^"]*)"/,
+        time: /\["time"\]\s*=\s*(\d+)/,
+        message: /\["message"\]\s*=\s*"([^"]*)"/,
+        stack: /\["stack"\]\s*=\s*"([^"]*)"/
+      };
+      for (const [key, pattern] of Object.entries(patterns)) {
+        const match = entryContent.match(pattern);
+        if (match) entry[key] = match[1];
+      }
+      if (entry.message) bus.pending.push(entry);
+    }
+  }
+
+  const lastMatch = busContent.match(/\[\s*"last"\s*\]\s*=\s*\{([\s\S]*?)\n\s*\}/m);
+  if (lastMatch) {
+    const lastContent = lastMatch[1];
+    const last = {};
+    const patterns = {
+      id: /\["id"\]\s*=\s*"([^"]*)"/,
+      time: /\["time"\]\s*=\s*(\d+)/,
+      message: /\["message"\]\s*=\s*"([^"]*)"/,
+      stack: /\["stack"\]\s*=\s*"([^"]*)"/
+    };
+    for (const [key, pattern] of Object.entries(patterns)) {
+      const match = lastContent.match(pattern);
+      if (match) last[key] = match[1];
+    }
+    bus.last = last;
+  }
+
+  return bus;
+}
+
+function extractErrorsFromSavedVariables(content) {
+  const errors = [];
+
+  const lastError = extractLastError(content);
+  if (lastError && lastError.message) {
+    errors.push({
+      timestamp: lastError.at ? new Date(Number(lastError.at) * 1000).toISOString() : new Date().toISOString(),
+      addon: "Casinobabe",
+      file: lastError.file || "unknown",
+      line: Number(lastError.line) || 0,
+      message: lastError.message || "",
+      stack: lastError.stack || "",
+      phase: "RUNTIME",
+      dealerState: null,
+      game: null,
+      id: lastError.id || "unknown",
+      priority: lastError.priority || "UNKNOWN"
+    });
+  }
+
+  const errorBus = extractErrorBus(content);
+  if (errorBus && errorBus.pending && errorBus.pending.length > 0) {
+    for (const entry of errorBus.pending) {
+      if (entry.message) {
+        errors.push({
+          timestamp: entry.time ? new Date(Number(entry.time) * 1000).toISOString() : new Date().toISOString(),
+          addon: "Casinobabe",
+          file: entry.file || "unknown",
+          line: Number(entry.line) || 0,
+          message: entry.message || "",
+          stack: entry.stack || "",
+          phase: "RUNTIME",
+          dealerState: null,
+          game: null,
+          id: entry.id || "unknown",
+          priority: "UNKNOWN"
+        });
+      }
+    }
+  }
+
+  if (errorBus && errorBus.last && errorBus.last.message) {
+    const entry = errorBus.last;
+    errors.push({
+      timestamp: entry.time ? new Date(Number(entry.time) * 1000).toISOString() : new Date().toISOString(),
+      addon: "Casinobabe",
+      file: entry.file || "unknown",
+      line: Number(entry.line) || 0,
+      message: entry.message || "",
+      stack: entry.stack || "",
+      phase: "RUNTIME",
+      dealerState: null,
+      game: null,
+      id: entry.id || "unknown",
+      priority: "UNKNOWN"
+    });
+  }
+
+  return errors;
+}
+
 function parseEscapedFields(line) {
   const fields = [];
   let current = "";
@@ -372,12 +509,17 @@ function scanOnce() {
         continue;
       }
 
-      const journal = extractSavedVariableJournal(content);
-      if (!journal) continue;
+      const errors = extractErrorsFromSavedVariables(content);
+      for (const error of errors) {
+        if (processEvent(error, state, queue)) processed++;
+      }
 
-      for (const raw of journal.split(/\r?\n/).filter(Boolean)) {
-        const event = parseJournalLine(raw);
-        if (event && processEvent(event, state, queue)) processed++;
+      const journal = extractSavedVariableJournal(content);
+      if (journal) {
+        for (const raw of journal.split(/\r?\n/).filter(Boolean)) {
+          const event = parseJournalLine(raw);
+          if (event && processEvent(event, state, queue)) processed++;
+        }
       }
     }
   }
