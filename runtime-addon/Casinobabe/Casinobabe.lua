@@ -14,6 +14,8 @@ local MEDIA  = "Interface\\AddOns\\Casinobabe\\media\\background"
 local CB = {}
 Casinobabe = CB
 CB.state = CB.state or {}
+CB.state.errorCaptureEnabled = false
+CB.state.previousErrorHandler = nil
 CB.ui = CB.ui or {}
 CB.libs = CB.libs or {}
 CB.constants = CB.constants or {}
@@ -77,6 +79,12 @@ local function LiveErrorBusAppend(message, stack)
 end
 
 local function InstallLiveErrorBus()
+  if CB.state.errorCaptureEnabled then
+    -- Error capture is enabled by user command; do not auto-install
+    -- at load time. The handler is managed by ToggleErrorCapture().
+    return false
+  end
+
   if type(geterrorhandler) ~= "function" or type(seterrorhandler) ~= "function" then
     return false
   end
@@ -95,11 +103,51 @@ local function InstallLiveErrorBus()
     return previous(message, stack)
   end)
 
+  CB.state.previousErrorHandler = previous
+  CB.state.errorCaptureEnabled = true
+
   return true
 end
 
 -- Install immediately so load-time/runtime callback errors are captured.
+-- This will be overridden if the user disables error capture via /cb errors off.
 pcall(InstallLiveErrorBus)
+
+-- /cb commands for error capture control
+function CB.ToggleErrorCapture()
+  if CB.state.errorCaptureEnabled then
+    -- Restore original error handler
+    seterrorhandler(CB.state.previousErrorHandler)
+    CB.state.errorCaptureEnabled = false
+    CB.state.previousErrorHandler = nil
+    print("|cffFFD700Casinobabe|r Error capture disabled.")
+  else
+    -- Install error capture
+    local ok = InstallLiveErrorBus()
+    if ok then
+      print("|cffFFD700Casinobabe|r Error capture enabled.")
+    else
+      print("|cffFFD700Casinobabe|r Could not enable error capture.")
+    end
+  end
+end
+
+SLASH_CBERROR1 = "/cb errors"
+SLASH_CBERROR2 = "/cb error"
+SlashCmdList.CBERROR = CB.ToggleErrorCapture
+
+-- Status command
+function CB.ErrorCaptureStatus()
+  if CB.state.errorCaptureEnabled then
+    print("|cffFFD700Casinobabe|r Error capture: ENABLED")
+  else
+    print("|cffFFD700Casinobabe|r Error capture: DISABLED")
+  end
+end
+
+SLASH_CBERRORSTATUS1 = "/cb errors status"
+SLASH_CBERRORSTATUS2 = "/cb error status"
+SlashCmdList.CBERRORSTATUS = CB.ErrorCaptureStatus
 
 
 -- ===== forward =====
