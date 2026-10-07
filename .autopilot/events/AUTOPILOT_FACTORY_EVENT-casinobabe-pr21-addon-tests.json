@@ -1,0 +1,15 @@
+{
+  "event_id": "AUTOPILOT_FACTORY_EVENT-casinobabe-pr21-addon-tests",
+  "repo": "aveca/Casinobabe",
+  "sha": "5c57325ad6470b0aa44cc188d72708d30a6844bf",
+  "branch": "factory/casinobabe-1791302557150-ols6",
+  "pr": 21,
+  "workflow": "CasinoBae Addon Tests",
+  "job": "factory",
+  "severity": "P1",
+  "error": "Authoritative offline Lua 5.1 harness failed with exit code 1; ERRORS=8, INFRA_ERROR=NO.",
+  "evidence_url": "https://github.com/aveca/Casinobabe/actions/runs/37567118536",
+  "detected_at": "2026-10-07T03:31:07Z",
+  "human_gate": false,
+  "requested_action": "Inspect and repair the failing offline Lua 5.1 harness/tests for PR #21, then rerun the existing CI validation. Do not bypass the authoritative harness."
+}
