@@ -5448,28 +5448,32 @@ local function CreatePanel()
       f.startCasinoBtn:SetText("|cff78EB96CASINO LIVE|r")
       f.startCasinoBtn:SetEnabled(false)
       f.stopCasinoBtn:SetEnabled(true)
-      f.autoWhisperBtn:SetEnabled(true)
-      if autopilotState.autoWhisper then
-        f.autoWhisperBtn:SetText("|cff78EB96AUTO-WHISPER: ON|r")
-        f.autoWhisperBtn:SetBackdropColor(0.1, 0.3, 0.1, 1)
-      else
-        f.autoWhisperBtn:SetText("|cffEB5E4FAUTO-WHISPER: OFF|r")
-        f.autoWhisperBtn:SetBackdropColor(0.3, 0.1, 0.1, 1)
+      if f.autoWhisperBtn then
+        f.autoWhisperBtn:SetEnabled(true)
+        if autopilotState.autoWhisper then
+          f.autoWhisperBtn:SetText("|cff78EB96AUTO-WHISPER: ON|r")
+          f.autoWhisperBtn:SetBackdropColor(0.1, 0.3, 0.1, 1)
+        else
+          f.autoWhisperBtn:SetText("|cffEB5E4FAUTO-WHISPER: OFF|r")
+          f.autoWhisperBtn:SetBackdropColor(0.3, 0.1, 0.1, 1)
+        end
       end
-      f.announceSayBtn:SetEnabled(true)
-      f.announceYellBtn:SetEnabled(true)
-      f.moveSpotBtn:SetEnabled(true)
-      f.faceCrowdBtn:SetEnabled(true)
+      if f.announceSayBtn then f.announceSayBtn:SetEnabled(true) end
+      if f.announceYellBtn then f.announceYellBtn:SetEnabled(true) end
+      if f.moveSpotBtn then f.moveSpotBtn:SetEnabled(true) end
+      if f.faceCrowdBtn then f.faceCrowdBtn:SetEnabled(true) end
     else
       f.startCasinoBtn:SetText("|cffFFD700🎰 START CASINO|r")
       f.startCasinoBtn:SetEnabled(true)
       f.stopCasinoBtn:SetEnabled(false)
-      f.autoWhisperBtn:SetEnabled(false)
-      f.autoWhisperBtn:SetText("|cffEB5E4FAUTO-WHISPER: OFF|r")
-      f.announceSayBtn:SetEnabled(false)
-      f.announceYellBtn:SetEnabled(false)
-      f.moveSpotBtn:SetEnabled(false)
-      f.faceCrowdBtn:SetEnabled(false)
+      if f.autoWhisperBtn then
+        f.autoWhisperBtn:SetEnabled(false)
+        f.autoWhisperBtn:SetText("|cffEB5E4FAUTO-WHISPER: OFF|r")
+      end
+      if f.announceSayBtn then f.announceSayBtn:SetEnabled(false) end
+      if f.announceYellBtn then f.announceYellBtn:SetEnabled(false) end
+      if f.moveSpotBtn then f.moveSpotBtn:SetEnabled(false) end
+      if f.faceCrowdBtn then f.faceCrowdBtn:SetEnabled(false) end
     end
   end
 
@@ -6730,12 +6734,14 @@ loader:SetScript("OnEvent", function(self, event, ...)
       -- Update dealer connection state on group changes
       local newCh = groupChannel()
       if newCh then
-        if CB.state.dealerConnState == DEALER_CONN_STATES.CONNECTING or CB.state.dealerConnState == DEALER_CONN_STATES.OFF then
+        local connState = CB.state and CB.state.dealerConnState or DEALER_CONN_STATES.OFF
+        if connState == DEALER_CONN_STATES.CONNECTING or connState == DEALER_CONN_STATES.OFF then
           DealerSetConnState(DEALER_CONN_STATES.CONNECTED, "raid/group joined")
           SendControl("HELLO")
         end
       else
-        if CB.state.dealerConnState == DEALER_CONN_STATES.CONNECTED or CB.state.dealerConnState == DEALER_CONN_STATES.READY then
+        local connState = CB.state and CB.state.dealerConnState or DEALER_CONN_STATES.OFF
+        if connState == DEALER_CONN_STATES.CONNECTED or connState == DEALER_CONN_STATES.READY then
           DealerSetConnState(DEALER_CONN_STATES.CONNECTING, "no raid/group - waiting")
         end
       end
