@@ -7732,7 +7732,6 @@ end
 -- ============================================================================
 do
   local panelCreated = false
-  local panelTimer = nil
 
   function CB.ShowCasinoResult(game, stake, roll, mult, won, jackpot)
     if CB.state.errorCaptureDisabled then return end
@@ -7775,14 +7774,14 @@ do
     frame:Show()
     panelCreated = true
 
-    if panelTimer then
-      frame:Hide()
-      panelTimer:Cancel()
-    end
-    panelTimer = C_Timer.NewTimer(8, function()
-      if frame and frame:IsShown() then
-        frame:Hide()
-        panelCreated = false
+    frame:SetScript("OnUpdate", function(self, elapsed)
+      self.timeSelf = (self.timeSelf or 0) + elapsed
+      if self.timeSelf >= 8 then
+        self:SetScript("OnUpdate", nil)
+        if frame and frame:IsShown() then
+          frame:Hide()
+          panelCreated = false
+        end
       end
     end)
   end
@@ -7791,10 +7790,6 @@ do
     if CB.panel and CB.panel:IsShown() then
       CB.panel:Hide()
       CB.panelCreated = false
-    end
-    if CB.panelTimer then
-      CB.panelTimer:Cancel()
-      CB.panelTimer = nil
     end
   end
 
