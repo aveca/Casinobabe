@@ -970,7 +970,13 @@ math.randomseed(os.time())
 
 -- Initialize SavedVariables
 CasinobabeDB = CasinobabeDB or {}
-CasinobabeErrorBus = CasinobabeErrorBus or {}
+CasinobabeDB.dealer = CasinobabeDB.dealer or { enabled = false, log = {} }
+CasinobabeDB.stats = CasinobabeDB.stats or { games = 0, wagered = 0, wins = 0, wonGold = 0, lostGold = 0, byGame = {} }
+CasinobabeDB.history = CasinobabeDB.history or {}
+CasinobabeDB.sessions = CasinobabeDB.sessions or {}
+CasinobabeDB.pos = CasinobabeDB.pos or {}
+CasinobabeDB.minimap = CasinobabeDB.minimap or {}
+CasinobabeErrorBus = CasinobabeErrorBus or { version = 1, seq = 0, pending = {}, last = nil }
 
 -- Initialize CB namespace
 CB = CB or {}
@@ -1000,6 +1006,16 @@ rawset(_G, "YES", "Yes")
 declaredGlobals["YES"] = true
 rawset(_G, "NO", "No")
 declaredGlobals["NO"] = true
+
+-- Addon-specific globals that exist in real WoW but not in mock
+rawset(_G, "Casinobabe", {})
+declaredGlobals["Casinobabe"] = true
+rawset(_G, "AddonPrint", function(...) print("[AddonPrint]", ...) end)
+declaredGlobals["AddonPrint"] = true
+rawset(_G, "UnitFactionGroup", function() return "Horde" end)
+declaredGlobals["UnitFactionGroup"] = true
+rawset(_G, "GetLocale", function() return "enUS" end)
+declaredGlobals["GetLocale"] = true
 
 -- Expose WoWMock globally for test control
 _G.WoWMock = WoWMock
