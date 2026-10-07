@@ -149,8 +149,117 @@ SLASH_CBERRORSTATUS1 = "/cb errors status"
 SLASH_CBERRORSTATUS2 = "/cb error status"
 SlashCmdList.CBERRORSTATUS = CB.ErrorCaptureStatus
 
+-- ===== visual casino panel =====
+local function CreateCasinoPanel()
+  local panel = CreateFrame("Frame", "CasinoPanel", UIParent)
+  panel:SetSize(300, 220)
+  panel:SetPoint("CENTER", UIParent, "CENTER", 0, 100)
+  panel:SetFrameStrata("MEDIUM")
+  panel:SetFrameLevel(100)
+  panel:SetMovable(true)
+  panel:EnableMouse(true)
+  panel:Hide()
 
--- ===== forward =====
+  panel.bg = panel:CreateTexture(nil, "BACKGROUND")
+  panel.bg:SetAllPoints()
+  panel.bg:SetColorTexture(0, 0, 0, 0.9)
+
+  panel.title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+  panel.title:SetPoint("TOP", 0, -12)
+  panel.title:SetText("Casinobae")
+
+  panel.status = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  panel.status:SetPoint("TOP", panel.title, "BOTTOM", 0, -8)
+  panel.status:SetText("")
+
+  panel.game = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+  panel.game:SetPoint("TOP", panel.status, "BOTTOM", 0, -8)
+  panel.game:SetText("")
+
+  panel.stake = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+  panel.stake:SetPoint("TOP", panel.game, "BOTTOM", 0, -8)
+  panel.stake:SetText("")
+
+  panel.result = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
+  panel.result:SetPoint("TOP", panel.stake, "BOTTOM", 0, -16)
+  panel.result:SetText("")
+
+  panel.btnRoll = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+  panel.btnRoll:SetSize(100, 30)
+  panel.btnRoll:SetPoint("BOTTOMLEFT", 16, 16)
+  panel.btnRoll:SetText("Roll")
+  panel.btnRoll:SetScript("OnClick", function()
+    -- Signal the dealer to roll
+    if CB.DealerGetConnState() == "READY" then
+      CB.DealerDiag("ROLL_START")
+    end
+    panel:Hide()
+  end)
+
+  panel.btnClose = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+  panel.btnClose:SetSize(100, 30)
+  panel.btnClose:SetPoint("BOTTOMRIGHT", -16, 16)
+  panel.btnClose:SetText("Close")
+  panel.btnClose:SetScript("OnClick", function() panel:Hide() end)
+
+  -- Auto-hide after 5 seconds
+  local function AutoHide()
+    panel:Hide()
+  end
+  panel:SetScript("OnUpdate", function(self, elapsed)
+    self.hideTimer = (self.hideTimer or 5) - elapsed
+    if self.hideTimer and self.hideTimer <= 0 then
+      AutoHide()
+    end
+  end)
+
+  return panel
+end
+
+local casinoPanel = CreateCasinoPanel()
+
+function CB.ShowCasinoResult(game, stake, roll, mult, won, jackpot)
+  casinoPanel:Show()
+  local gameNames = {normal="Normal", high="High Risk", blackjack="Blackjack", roulette="Roulette", dice="Dice", lucky7="Lucky 7"}
+  casinoPanel.title:SetText("Casinobae")
+  casinoPanel.game:SetText(gameNames[game] or game)
+  casinoPanel.stake:SetText("Stake: " .. (stake or "—"))
+  if won then
+    if jackpot then
+      casinoPanel.result:SetText("|cffFFD700JACKPOT! " .. (roll or "—") .. " x" .. (mult or "—"))
+    else
+      casinoPanel.result:SetText("|cffC41F3BWin! " .. (roll or "—") .. " x" .. (mult or "—"))
+    end
+  else
+    casinoPanel.result:SetText("|cffE8E8E8Loss " .. (roll or "—"))
+  end
+
+  -- Reset auto-hide timer
+  casinoPanel.hideTimer = 8
+  casinoPanel:SetScript("OnUpdate", function(self, elapsed)
+    self.hideTimer = (self.hideTimer or 8) - elapsed
+    if self.hideTimer and self.hideTimer <= 0 then
+      AutoHide()
+    end
+  end)
+end
+
+function CB.HideCasinoPanel()
+  casinoPanel:Hide()
+end
+
+-- /cb panel command
+function CB.TogglePanel()
+  if casinoPanel:IsShown() then
+    casinoPanel:Hide()
+  else
+    CB.ShowCasinoResult(CB.state.activeGame or "normal", CB.state.currentStake or 100, 0, 0, false)
+  end
+end
+
+SLASH_CBPANEL1 = "/cb panel"
+SLASH_CBPANEL2 = "/cb panel toggle"
+SlashCmdList.CBPANEL = CB.TogglePanel
 local panel, langMenu
 local UpdateDisplay, SetStatus, SetConnected, RequestState, PlaceBet
 local CollectCashback, SelectGame, SelectAmount, FlashResult, HandleMessage
@@ -1202,6 +1311,13 @@ local CasinoReactionEngine = {
     if self:OnCooldown("REACTION") then return nil end
     self:SetCooldown("REACTION")
     local physical = CasinoEmote:GetSuggestedPhysical("WIN")
+    local result
+    if ctx.payout and ctx.payout > 0 then
+      result = { roll = ctx.roll, mult = ctx.mult, won = true, jackpot = false }
+    else
+      result = { roll = ctx.roll, mult = ctx.mult, won = false, jackpot = false }
+    end
+    CB.ShowCasinoResult(CB.state.activeGame or "normal", CB.state.currentStake or 100, result.roll, result.mult, result.won, result.jackpot)
     return {
       { channel = "SAY", msg = CasinoVariants:Get("REACTION_WIN", { roll = ctx.roll, payout = ctx.payout, mult = ctx.mult }) },
       { channel = "EMOTE", msg = CasinoEmote:PlayContext("WIN") },
@@ -1215,6 +1331,13 @@ local CasinoReactionEngine = {
     if self:OnCooldown("REACTION") then return nil end
     self:SetCooldown("REACTION")
     local physical = CasinoEmote:GetSuggestedPhysical("BIG_WIN")
+    local result
+    if ctx.payout and ctx.payout > ctx.mult then
+      result = { roll = ctx.roll, mult = ctx.mult, won = true, jackpot = false }
+    else
+      result = { roll = ctx.roll, mult = ctx.mult, won = true, jackpot = true }
+    end
+    CB.ShowCasinoResult(CB.state.activeGame or "normal", CB.state.currentStake or 100, result.roll, result.mult, result.won, result.jackpot)
     return {
       { channel = "SAY", msg = CasinoVariants:Get("REACTION_BIG_WIN", { roll = ctx.roll, payout = ctx.payout, mult = ctx.mult }) },
       { channel = "EMOTE", msg = CasinoEmote:PlayContext("WIN") },
@@ -1227,6 +1350,8 @@ local CasinoReactionEngine = {
   ReactJackpot = function(self, ctx)
     -- Jackpot bypasses normal cooldown for YELL
     local physical = CasinoEmote:GetSuggestedPhysical("JACKPOT")
+    local result = { roll = ctx.roll, mult = ctx.mult, won = true, jackpot = true }
+    CB.ShowCasinoResult(CB.state.activeGame or "normal", CB.state.currentStake or 100, result.roll, result.mult, result.won, result.jackpot)
     return {
       { channel = "YELL", msg = CasinoVariants:Get("REACTION_JACKPOT", { roll = ctx.roll, payout = ctx.payout, mult = ctx.mult }) },
       { channel = "EMOTE", msg = CasinoEmote:PlayContext("JACKPOT") },
@@ -1241,6 +1366,8 @@ local CasinoReactionEngine = {
     self:SetCooldown("REACTION")
     local physical = CasinoEmote:GetSuggestedPhysical("LOSS")
     local key = ctx.game == "high" and "ROLL_HIGH_LOSS" or "ROLL_LOSS"
+    local result = { roll = ctx.roll, mult = 0, won = false, jackpot = false }
+    CB.ShowCasinoResult(CB.state.activeGame or "normal", CB.state.currentStake or 100, result.roll, result.mult, result.won, result.jackpot)
     return {
       { channel = "SAY", msg = CasinoVariants:Get(key, { roll = ctx.roll }) },
       { channel = "EMOTE", msg = CasinoEmote:PlayContext("LOSS") },
