@@ -1,0 +1,15 @@
+{
+  "event_id": "evt-c924e1360a3bf9e4",
+  "repo": "aveca/Casinobabe",
+  "sha": "c924e1360a3bf9e4311e5f40ef3f91599480e851",
+  "branch": "main",
+  "pr": null,
+  "workflow": "CasinoBae Addon Tests",
+  "job": "factory",
+  "severity": "P1",
+  "error": "Authoritative offline Lua 5.1 harness failed: CHECKS=10/14, ERRORS=3, INFRA_ERROR=NO, EXIT_CODE=1.",
+  "evidence_url": "https://github.com/aveca/Casinobabe/actions/runs/37569616391",
+  "detected_at": "2026-10-07T04:03:28Z",
+  "human_gate": false,
+  "requested_action": "Investigate and repair the authoritative offline Lua 5.1 harness regression; do not modify WoW runtime, merge, or deploy."
+}
