@@ -18,7 +18,7 @@ local function ExtractSourceLine(stack)
   -- Look for patterns like "Interface\\AddOns\\Casinobabe\\Casinobabe.lua:123" or "Casinobabe.lua:45"
   local source, line = "unknown", 0
   -- Pattern: filename:linenumber
-  for s in string.gmatch(stack, "[^\\n]*") do
+  for s in string.gmatch(stack, "[^\n]*") do
     local fn, lin = s:match("(.+:)%s*(%d+)")
     if fn and lin then
       -- Prioritize Casinobabe files
