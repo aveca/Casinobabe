@@ -43,7 +43,7 @@ ShowEngine = {
   showThrottle = 2, -- minimum seconds between full shows
 
   -- Initialize show definitions
-  Initialize = function(self)
+  InitializeShows = function(self)
     -- Register default shows
     self:RegisterShow("WELCOME", {
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "WAVE" },

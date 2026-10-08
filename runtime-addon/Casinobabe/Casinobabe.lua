@@ -7820,12 +7820,6 @@ function ShowEngineBootstrap()
   end
 
   -- Initialize the Show Engine
-    LiveErrorBusAppend("SHOW_ENGINE_LOAD_ERROR", tostring(showEngineErr))
-    print("|cffEB5E4FShow Engine|r Failed to load: " .. tostring(showEngineErr))
-    return false
-  end
-
-  -- Initialize the Show Engine
   local initOk = ShowEngine:Initialize()
   if not initOk then
     print("|cffEB5E4FShow Engine|r Failed to initialize")

@@ -5,7 +5,8 @@
   "description": "Deterministic offline and synthetic-live validation plus Windows live error capture for CasinoBae.",
   "engines": { "node": ">=20" },
   "scripts": {
-    "test": "node tests/run-offline-harness.mjs && node tests/live_pipeline_synthetic.cjs && node tests/regression-runtime-contract.cjs",
+    "test": "node tests/lua-syntax-gate.mjs && node tests/run-offline-harness.mjs && node tests/live_pipeline_synthetic.cjs && node tests/regression-runtime-contract.cjs",
+    "test:syntax": "node tests/lua-syntax-gate.mjs",
     "test:offline": "node tests/run-offline-harness.mjs",
     "test:synthetic": "node tests/live_pipeline_synthetic.cjs",
     "test:regression": "node tests/regression-runtime-contract.cjs",
