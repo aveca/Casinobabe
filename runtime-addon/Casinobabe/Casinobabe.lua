@@ -6774,16 +6774,26 @@ loader:SetScript("OnEvent", function(self, event, ...)
     AutoDetectDealerMode()
 
     -- Colorabi Gate: explicit authorization for Colorabi dealer character
-    -- Authorized: Colorabi on Nightslayer (account 103329567#1)
+    -- SHOW_TRIGGER_AUTH: Colorabi@Nightslayer uniquement (mécanisme show trigger)
+    -- LEGACY_SELFTEST_AUTH: mécanisme QA legacy (Infection inclus par convention)
+    -- Authorized: Colorabi on Nightslayer (account 103329567#1) — show trigger seulement
     -- Forbidden: Infection QA character (handled by SelfTest gate on YACOV972/Thunderstrike)
-    local isColorabi = (myName == "Colorabi" and myRealm == "Nightslayer")
-    local isInfectionQA = (myName == "Infection" and myRealm == "Thunderstrike")
-    CB.isColorabiAuthorized = isColorabi
+    local isColorabiShowTrigger = (myName == "Colorabi" and myRealm == "Nightslayer")
+    local isInfectionQuit
+    -- Auto-detect Infection QA for legacy SelfTest (do NOT use for show trigger)
+    if myName == "Infection" and myRealm == "Thunderstrike" then
+      isInfectionQA = true
+    else
+      isInfectionQA = false
+    end
+    -- SHOW_TRIGGER_AUTH only: Colorabi on Nightslayer
+    CB.isColorabiAuthorized = isColorabiShowTrigger
+    -- LEGACY_SELFTEST_AUTH: Infection QA detection (legacy only)
     CB.isInfectionQA = isInfectionQA
-    if isColorabi then
-      print("|cffFFD700Casinobabe|r Colorabi dealer authorized on " .. myRealm)
+    if isColorabiShowTrigger then
+      print("|cffFFD700Casinobabe|r Colorabi dealer authorized on " .. myRealm .. " (SHOW_TRIGGER_AUTH)")
     elseif isInfectionQA then
-      print("|cffEB5E4FCasinobabe|r Infection QA character detected - QA gate active (SelfTest)")
+      print("|cffEB5E4FCasinobabe|r Infection QA character detected - LEGACY_SELFTEST_AUTH active")
     end
     -- Authorized SHOW TRIGGER: bridge can request a show start via SavedVariables
     -- Trigger format: CasinobabeDB.showTrigger = { showName = "WELCOME", authorized = true, requestId = "...", timestamp = 0 }
