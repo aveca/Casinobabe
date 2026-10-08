@@ -6793,38 +6793,49 @@ loader:SetScript("OnEvent", function(self, event, ...)
     -- Double-execution guard: only start if not already showing.
     -- Consumption logging: SENT / DENIED / CONSUMED / EXPIRED / ERROR
     if CasinobabeDB.showTrigger then
-      local triggerShow = CasinobabeDB.showTrigger.showName
-      local triggerAuthorized = CasinobabeDB.showTrigger.authorized
-      local triggerRequestId = CasinobabeDB.showTrigger.requestId or "unknown"
-      local triggerTimestamp = CasinobabeDB.showTrigger.timestamp or 0
+      local trigger = CasinobabeDB.showTrigger
+      local triggerShow = trigger.showName
+      local triggerAuthorized = trigger.authorized
+      local triggerRequestId = trigger.requestId
+      local triggerTimestamp = tonumber(trigger.timestamp) or 0
+      local triggerTtlSeconds = tonumber(trigger.ttlSeconds) or 300
       local now = time()
-      local TRIGGER_TTL = 300 -- 5 minutes TTL; bridge must re-send after expiry
-      -- Check expiration first
-      if now - triggerTimestamp > TRIGGER_TTL then
-        print("|cffFFAA00Show Engine|r Trigger EXPIRED (stale, " .. tostring(now - triggerTimestamp) .. "s old, TTL=" .. TRIGGER_TTL .. ")")
+
+      -- Persist request IDs so the same bridge command cannot execute twice.
+      local processedRequestIds = CasinobabeDB.processedShowTriggerIds
+      if type(processedRequestIds) ~= "table" then
+        processedRequestIds = {}
+        CasinobabeDB.processedShowTriggerIds = processedRequestIds
+      end
+
+      if now - triggerTimestamp > triggerTtlSeconds then
+        print("|cffFFAA00Show Engine|r Trigger EXPIRED (stale, " .. tostring(now - triggerTimestamp) .. "s old, TTL=" .. tostring(triggerTtlSeconds) .. ", requestId=" .. tostring(triggerRequestId or "missing") .. ")")
         CasinobabeDB.showTrigger = nil
-        -- Log expiration but do not clear isColorabiAuthorized state
+      elseif not triggerRequestId or triggerRequestId == "" then
+        print("|cffFFAA00Show Engine|r Trigger DENIED (missing requestId)")
+        CasinobabeDB.showTrigger = nil
       elseif not (triggerAuthorized and CB.isColorabiAuthorized) then
-        -- Authorization failed (Colorabi gate not met)
+        -- SHOW_TRIGGER_AUTH is Colorabi@Nightslayer only. Infection QA never authorizes this path.
         print("|cffFFAA00Show Engine|r Trigger DENIED (not authorized: triggerAuthorized=" .. tostring(triggerAuthorized) .. ", isColorabiAuthorized=" .. tostring(CB.isColorabiAuthorized) .. ")")
         CasinobabeDB.showTrigger = nil
       elseif not allowedShows[triggerShow] then
-        -- Show not in allowlist
-        print("|cffFFAA00Show Engine|r Trigger DENIED (show '" .. triggerShow .. "' not in allowlist)")
+        print("|cffFFAA00Show Engine|r Trigger DENIED (show '" .. tostring(triggerShow) .. "' not in allowlist)")
+        CasinobabeDB.showTrigger = nil
+      elseif processedRequestIds[triggerRequestId] then
+        print("|cffFFAA00Show Engine|r DUPLICATE REQUEST SKIPPED: " .. triggerRequestId)
         CasinobabeDB.showTrigger = nil
       elseif ShowEngine.isRunning then
-        -- Double-execution guard: already showing, skip
+        processedRequestIds[triggerRequestId] = true
         print("|cffFFAA00Show Engine|r Trigger CONSUMED (show already running, skip double-start, requestId=" .. triggerRequestId .. ")")
-        -- Do NOT clear trigger here; let it be re-checked or cleared by bridge on next cycle
+        CasinobabeDB.showTrigger = nil
       else
-        -- All checks passed: start the show
+        processedRequestIds[triggerRequestId] = true
         if ShowEngine.shows[triggerShow] then
           ShowEngine:StartShow(triggerShow)
           print("|cff78EB96Show Engine|r Authorized trigger started show: " .. triggerShow .. " (requestId: " .. triggerRequestId .. ")")
         else
-          print("|cffEB5E4FShow Engine|r Triggered show definition missing: " .. triggerShow)
+          print("|cffEB5E4FShow Engine|r Triggered show definition missing: " .. tostring(triggerShow))
         end
-        -- Clear trigger after successful consumption
         CasinobabeDB.showTrigger = nil
       end
     end

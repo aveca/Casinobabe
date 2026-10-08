@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 
 # ============================================================================
 # CONFIGURATION
@@ -1422,12 +1423,12 @@ def send_show_trigger(show_name):
             return f'DENIED - show "{show_name}" not in allowed list'
 
         # 3. Build the trigger record to write to WoW SavedVariables
-        import time as _t
         trigger = {
             'showName': show_name,
             'authorized': True,
-            'requestId': f"trigger-{show_name}-{_t.time()}",
-            'timestamp': _t.time(),
+            'requestId': str(uuid.uuid4()),
+            'timestamp': time.time(),
+            'ttlSeconds': 300,
         }
 
         # 4. Write trigger to the live Casinobabe SavedVariables
@@ -1478,29 +1479,25 @@ def send_show_trigger(show_name):
         # or we set it as a new top-level field.  To keep it simple and non-destructive,
         # we set CasinobabeDB.showTrigger = { ... } using a string insertion pattern.
         _trigger_marker = 'CasinobabeDB.showTrigger'
-        if _trigger_marker in _sv_content:
-            # Already present; overwrite with new values
-            _ replacement = f'{_trigger_marker} = {{{"showName": "{show_name}", "authorized": true, "requestId": "{trigger["requestId"]}", "timestamp": {trigger["timestamp"]}}}}'
-            # Simple overwrite: replace the whole line/block
-            _sv_content = _sv_content.replace(
-                f'{_trigger_marker} = {{...}}',
-                _replacement
-            )
-            # If the marker exists but in a different format, try a broader replace
-            if _trigger_marker not in _sv_content.split('authorized')[0] if 'authorized' in _sv_content else True:
-                pass  # fallback below
+        # SavedVariables are Lua, not JSON: write a valid Lua table constructor.
+        _replacement = (
+            f'{_trigger_marker} = {{'
+            f'showName = "{show_name}", '
+            f'authorized = true, '
+            f'requestId = "{trigger["requestId"]}", '
+            f'timestamp = {trigger["timestamp"]}, '
+            f'ttlSeconds = {trigger["ttlSeconds"]}'
+            f'}}'
+        )
+
+        # Replace an existing top-level trigger assignment; otherwise append one.
+        _trigger_pattern = re.compile(
+            r'(?m)^[ 	]*CasinobabeDB\.showTrigger\s*=\s*\{[^\n{}]*\}[ 	]*$'
+        )
+        if _trigger_pattern.search(_sv_content):
+            _sv_content = _trigger_pattern.sub(_replacement, _sv_content, count=1)
         else:
-            # Append new entry before the LiveErrorBus closing section.
-            # Find a good insertion point: before "CasinobabeErrorBus" global definition.
-            _insert_point = 'CasinobabeErrorBus'
-            if _insert_point in _sv_content:
-                _sv_content = _sv_content.replace(
-                    _insert_point,
-                    f'{_trigger_marker} = {{{"showName": "{show_name}", "authorized": true, "requestId": "{trigger["requestId"]}", "timestamp": {trigger["timestamp"]}}}}\n\n{_insert_point}'
-                )
-            else:
-                # Last resort: append at the very end before the last newline
-                _sv_content = _sv_content.rstrip() + f'\n{_trigger_marker} = {{{"showName": "{show_name}", "authorized": true, "requestId": "{trigger["requestId"]}", "timestamp": {trigger["timestamp"]}}}}}'
+            _sv_content = _sv_content.rstrip() + "\n" + _replacement + "\n"
 
         # Write back the modified SV file
         with open(_sv_path, 'w', encoding='utf-8', errors='replace') as _f:
