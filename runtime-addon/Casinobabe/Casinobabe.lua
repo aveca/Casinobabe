@@ -6759,13 +6759,32 @@ loader:SetScript("OnEvent", function(self, event, ...)
     -- pa Minimap NAR samlar-addon som MinimapButtonButton gor sin insamling. Skapas
     -- knappen forst vid PLAYER_LOGIN kan samlaren hinna scanna fore oss och missa den.
     if not LibDBIcon10_Casinobabe then CreateMinimapButton() end
+
+    -- Initialize ShowEngine (registers shows, slash commands)
+    if _G.ShowEngine and _G.ShowEngine.OnLoad then
+      pcall(_G.ShowEngine.OnLoad)
+    end
   elseif event=="PLAYER_LOGIN" then
     myName=CB.shortName(UnitName("player"))
+    myRealm=GetRealmName and GetRealmName() or "Unknown"
     CasinobabeDB.casino=nil   -- rensa gammalt felaktigt sparat namn; vi visar raid-ledaren
     if not LibDBIcon10_Casinobabe then CreateMinimapButton() end   -- fallback
     RequestState()
     -- Auto-detect dealer mode for Casinobae
     AutoDetectDealerMode()
+
+    -- Colorabi Gate: explicit authorization for Colorabi dealer character
+    -- Authorized: Colorabi on Nightslayer (account 103329567#1)
+    -- Forbidden: Infection QA character (handled by SelfTest gate on YACOV972/Thunderstrike)
+    local isColorabi = (myName == "Colorabi" and myRealm == "Nightslayer")
+    local isInfectionQA = (myName == "Infection" and myRealm == "Thunderstrike")
+    CB.isColorabiAuthorized = isColorabi
+    CB.isInfectionQA = isInfectionQA
+    if isColorabi then
+      print("|cffFFD700Casinobabe|r Colorabi dealer authorized on " .. myRealm)
+    elseif isInfectionQA then
+      print("|cffEB5E4FCasinobabe|r Infection QA character detected - QA gate active (SelfTest)")
+    end
     -- Forsta gangen efter installation: oppna panelen automatiskt sa nya spelare
     -- hittar den direkt (slipper leta efter C:et pa minimappen). Sker bara EN gang -
     -- flaggan sparas, sen oppnas den aldrig av sig sjalv igen.
