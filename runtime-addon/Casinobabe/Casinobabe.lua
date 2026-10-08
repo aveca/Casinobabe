@@ -7704,3 +7704,74 @@ SlashCmdList["CASINOBABE"]=function(msg)
   end
 end
 
+
+
+-- ============================================================================
+-- SHOW ENGINE INTEGRATION
+-- ============================================================================
+-- Load the Show Engine after the addon has initialized
+-- This runs after ADDON_LOADED in the live client
+function ShowEngineBootstrap()
+  -- ShowEngine is loaded via TOC (CasinobabeShowEngine.lua listed in manifest)
+  -- No need for dofile; the TOC ensures it is loaded before ADDON_LOADED completes
+  if not ShowEngine then
+    print("|cffFFAA00Show Engine|r ShowEngine not available yet, retrying...")
+    return false
+  end
+
+  -- Initialize the Show Engine
+  local initOk = ShowEngine:Initialize()
+  if not initOk then
+    print("|cffEB5E4FShow Engine|r Failed to initialize")
+    return false
+  end
+
+  -- Register slash commands for shows
+  -- /cbs <show> - Run a show
+  -- /cbshow <show> - Alias for /cbs
+  SlashCmdList["CASINOBAE_SHOW_ENGINE"] = function(cmd)
+    local command = cmd:lower()
+    local showName = command:match("^(%S+)")
+    if not showName or showName == "" then
+      ShowEngine:ShowHelp()
+      return
+    end
+
+    -- Check if it's a known show
+    if ShowEngine.shows[showName] then
+      local ok, result = ShowEngine:StartShow(showName)
+      if ok then
+        print("|cff78EB96Show Engine|r Starting show: " .. showName)
+      else
+        print("|cffEB5E4FShow Engine|r Failed to start show: " .. tostring(result))
+      end
+    else
+      print("|cffFFAA00Show Engine|r Unknown show: " .. showName)
+      print("|cff78EB96Available shows:|r")
+      for name in pairs(ShowEngine.shows) do
+        print("  - " .. name)
+      end
+    end
+  end
+  SLASH_CASINOBAE_SHOW_ENGINE1 = "/cbs"
+  SLASH_CASINOBAE_SHOW_ENGINE2 = "/cbshow"
+
+  -- /cbs help - Show help
+  SLASH_CASINOBAE_SHOW_HELP1 = "/cbshow help"
+
+  -- Print initialization summary
+  local showCount = 0
+  for _ in pairs(ShowEngine.shows) do showCount = showCount + 1 end
+  print("|cffFFD700Casinobabe|r Show Engine loaded - " .. showCount .. " shows registered")
+  print("|cffFFD700Casinobabe|r Show commands: /cbs <show_name> | /cbshow <show_name>")
+  print("|cffFFD700Casinobabe|r Available shows: welcome, dice, jackpot, roulette, blackjack, fire, showgirl, finale")
+
+  return true
+end
+
+-- Run bootstrap after a short delay to ensure all globals are ready
+if C_Timer and C_Timer.After then
+  C_Timer.After(2, function()
+    ShowEngineBootstrap()
+  end)
+end
