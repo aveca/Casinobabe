@@ -1,0 +1,2 @@
+# Keep Lua sources LF-normalized in git (stops CRLF flip-flop noise).
+*.lua text eol=lf
