@@ -67,7 +67,7 @@ function testSavedVariablesErrorBus() {
     "    [\"session\"] = \"unknown\",",
     "  },",
     "}"
-  ].join("\\n");
+  ].join("\n");
 
   const bus = sentinel.extractErrorBus(fixture);
   assert(bus && bus.seq === 5, "SavedVariables ErrorBus seq must be parsed as 5");
