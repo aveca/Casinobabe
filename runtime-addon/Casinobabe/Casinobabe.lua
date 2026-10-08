@@ -7847,7 +7847,7 @@ function ShowEngineBootstrap()
     end
 
     -- Check if it's a known show
-    if ShowEngine.shows[showName] then
+    if ShowEngine.shows[showName:upper()] then
       local ok, result = ShowEngine:StartShow(showName)
       if ok then
         print("|cff78EB96Show Engine|r Starting show: " .. showName)
