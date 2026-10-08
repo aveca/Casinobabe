@@ -4858,7 +4858,7 @@ local function CreatePanel()
   scrim:SetColorTexture(0.02,0.01,0.03,0.24)
 
   if f.SetBackdrop then f:SetBackdrop({edgeFile="Interface\\DialogFrame\\UI-DialogBox-Border", edgeSize=18, insets={left=4,right=4,top=4,bottom=4}}); f:SetBackdropBorderColor(1,0.95,0.8,1)
-  else MakeBorder(f,2):SetColor(uc(C.goldDk)) end
+  else local border = MakeBorder(f,2); if border then border:SetColor(uc(C.goldDk)) end end
 
   BuildFX(f)
 
@@ -5484,8 +5484,8 @@ local function CreatePanel()
     f.startCasinoBtn:SetSize(f:GetWidth() - PAD * 2, 34)
     f.startCasinoBtn:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -432)
     MakeBacking(f.startCasinoBtn, uc(C.gold, 1))
-    MakeBorder(f.startCasinoBtn, 2):SetColor(uc(C.goldDk))
-    f.startCasinoTxt = MakeText(f.startCasinoBtn, 13, "", "CENTER")
+    local b = MakeBorder(f.startCasinoBtn, 2); if b then b:SetColor(uc(C.goldDk)) end
+    if f.startCasinoBtn then f.startCasinoTxt = MakeText(f.startCasinoBtn, 13, "", "CENTER") end
     f.startCasinoTxt:SetPoint("CENTER")
     f.startCasinoTxt:SetText("|cffFFD700🎰 START CASINO|r")
     f.startCasinoTxt:SetTextColor(0.10, 0.05, 0.02, 1)
@@ -6734,13 +6734,13 @@ loader:SetScript("OnEvent", function(self, event, ...)
       -- Update dealer connection state on group changes
       local newCh = groupChannel()
       if newCh then
-        local connState = CB.state and CB.state.dealerConnState or DEALER_CONN_STATES.OFF
+        local connState = (CB and CB.state and CB.state.dealerConnState) or DEALER_CONN_STATES.OFF
         if connState == DEALER_CONN_STATES.CONNECTING or connState == DEALER_CONN_STATES.OFF then
           DealerSetConnState(DEALER_CONN_STATES.CONNECTED, "raid/group joined")
           SendControl("HELLO")
         end
       else
-        local connState = CB.state and CB.state.dealerConnState or DEALER_CONN_STATES.OFF
+        local connState = (CB and CB.state and CB.state.dealerConnState) or DEALER_CONN_STATES.OFF
         if connState == DEALER_CONN_STATES.CONNECTED or connState == DEALER_CONN_STATES.READY then
           DealerSetConnState(DEALER_CONN_STATES.CONNECTING, "no raid/group - waiting")
         end
@@ -7011,7 +7011,7 @@ function HandleInboundChat(eventType, text, sender, channelType, channelName, ch
   UpdateProspect(sender, channelType or eventType, text, nil, 0)
   
   -- Debug log
-  print(string.format("|cffFFD700[CB CHAT]|r [%s] %s in %s: %s", eventType, sender, channelType or "?", text))
+  print(string.format("|cffFFD700[CB CHAT]|r [%s] %s in %s: %s", eventType, sender, channelType or "?", tostring(text)))
   
   -- Existing whisper handling for dealer flow
   if eventType == "WHISPER" and dealerEnabled then
@@ -7732,3 +7732,140 @@ SlashCmdList["CASINOBABE"]=function(msg)
     print("|cffFFD700Casinobabe|r Commands: /cb dealer on|off|status|ad|attract|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote | /cb auto | /cb auto stop | /cb auto status | /cb who | /cb discord <text> | /cb fx | /cb resetstats | /cb reset | /cb intro")
   end
 end
+
+-- ============================================================================
+-- SHOW ENGINE INTEGRATION
+-- ============================================================================
+-- Load the Show Engine after the addon has initialized
+-- This runs after ADDON_LOADED in the live client
+function ShowEngineBootstrap()
+  -- ShowEngine is loaded via TOC (CasinobabeShowEngine.lua listed in manifest)
+  -- No need for dofile; the TOC ensures it is loaded before ADDON_LOADED completes
+  if not ShowEngine then
+    print("|cffFFAA00Show Engine|r ShowEngine not available yet, retrying...")
+    return false
+  end
+
+  -- Initialize the Show Engine
+    LiveErrorBusAppend("SHOW_ENGINE_LOAD_ERROR", tostring(showEngineErr))
+    print("|cffEB5E4FShow Engine|r Failed to load: " .. tostring(showEngineErr))
+    return false
+  end
+
+  -- Initialize the Show Engine
+  local initOk = ShowEngine:Initialize()
+  if not initOk then
+    print("|cffEB5E4FShow Engine|r Failed to initialize")
+    return false
+  end
+
+  -- Register slash commands for shows
+  -- /cbs <show> - Run a show
+  -- /cbshow <show> - Alias for /cbs
+  SlashCmdList["CASINOBAE_SHOW_ENGINE"] = function(cmd)
+    local command = cmd:lower()
+    local showName = command:match("^(%S+)")
+    if not showName or showName == "" then
+      ShowEngine:ShowHelp()
+      return
+    end
+
+    -- Check if it's a known show
+    if ShowEngine.shows[showName] then
+      local ok, result = ShowEngine:StartShow(showName)
+      if ok then
+        print("|cff78EB96Show Engine|r Starting show: " .. showName)
+      else
+        print("|cffEB5E4FShow Engine|r Failed to start show: " .. tostring(result))
+      end
+    else
+      print("|cffFFAA00Show Engine|r Unknown show: " .. showName)
+      print("|cff78EB96Available shows:|r")
+      for name in pairs(ShowEngine.shows) do
+        print("  - " .. name)
+      end
+    end
+  end
+  SLASH_CASINOBAE_SHOW_ENGINE1 = "/cbs"
+  SLASH_CASINOBAE_SHOW_ENGINE2 = "/cbshow"
+
+  -- /cbs help - Show help
+  SLASH_CASINOBAE_SHOW_HELP1 = "/cbshow help"
+
+  -- Print initialization summary
+  local showCount = 0
+  for _ in pairs(ShowEngine.shows) do showCount = showCount + 1 end
+  print("|cffFFD700Casinobabe|r Show Engine loaded - " .. showCount .. " shows registered")
+  print("|cffFFD700Casinobabe|r Show commands: /cbs <show_name> | /cbshow <show_name>")
+  print("|cffFFD700Casinobabe|r Available shows: welcome, dice, jackpot, roulette, blackjack, fire, showgirl, finale")
+
+  return true
+end
+
+-- Run bootstrap after a short delay to ensure all globals are ready
+if C_Timer and C_Timer.After then
+  C_Timer.After(2, function()
+    ShowEngineBootstrap()
+  end)
+end
+
+
+-- ===== CB QA SELFTEST BEGIN =====
+-- QA gate for dedicated test character Colorabi (Nightslayer/103329567#1)
+-- and casino characters on Thunderstrike (YACOV972).
+-- Infection is explicitly excluded from QA.
+(function()
+  local QA_REALMS = {
+    ["Thunderstrike"] = true,
+    ["Nightslayer"] = true,
+  }
+  local QA_CHARS = {
+    ["Casinøbabe"] = true,
+    ["Câsínobâbe"] = true,
+    ["Colorabi"] = true,
+  }
+  local function IsQATarget()
+    if not UnitName then return false end
+    local n = UnitName("player")
+    local r = GetRealmName and GetRealmName() or ""
+    return (n ~= nil) and QA_CHARS[n] and QA_REALMS[r]
+  end
+
+  local function QADB()
+    CasinobabeDB = CasinobabeDB or {}
+    CasinobabeDB.qa = CasinobabeDB.qa or {}
+    local qa = CasinobabeDB.qa
+    if qa.armed     == nil then qa.armed = false end
+    if qa.maxCycles == nil then qa.maxCycles = 2 end
+    qa.cycle = qa.cycle or 0
+    qa.runs  = qa.runs or {}
+    return qa
+  end
+
+  local function QALog(msg)
+    print(("|cffADD8E6[CB-QA]|r %s"):format(tostring(msg)))
+  end
+
+  -- Optional slash command: /cbqa run | status | disarm
+  SLASH_CASINOBABE_QA1 = "/cbqa"
+  SlashCmdList["CASINOBABE_QA"] = function(msg)
+    if not IsQATarget() then QALog("refusé : personnage hors périmètre QA") return end
+    local qa = QADB()
+    msg = (msg or ""):match("^%s*(.-)%s*$"):lower()
+    if msg == "run" then
+      qa.armed = true; qa.cycle = 0; qa.maxCycles = 2
+      QALog("armé (2 cycles) — ReloadUI")
+      ReloadUI()
+    elseif msg == "disarm" then
+      qa.armed = false
+      QALog("désarmé")
+    elseif msg == "status" then
+      QALog(("armed=%s cycle=%d/%d boots=%d runs=%d verdict=%s")
+        :format(tostring(qa.armed), qa.cycle, qa.maxCycles,
+                qa.bootCount or 0, #qa.runs, tostring(qa.lastVerdict)))
+    else
+      QALog("usage: /cbqa run | status | disarm")
+    end
+  end
+end)()
+-- ===== CB QA SELFTEST END =====
