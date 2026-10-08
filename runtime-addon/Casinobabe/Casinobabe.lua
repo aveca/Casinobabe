@@ -6779,7 +6779,7 @@ loader:SetScript("OnEvent", function(self, event, ...)
     -- Authorized: Colorabi on Nightslayer (account 103329567#1) — show trigger seulement
     -- Forbidden: Infection QA character (handled by SelfTest gate on YACOV972/Thunderstrike)
     local isColorabiShowTrigger = (myName == "Colorabi" and myRealm == "Nightslayer")
-    local isInfectionQuit
+    local isInfectionQA
     -- Auto-detect Infection QA for legacy SelfTest (do NOT use for show trigger)
     if myName == "Infection" and myRealm == "Thunderstrike" then
       isInfectionQA = true
