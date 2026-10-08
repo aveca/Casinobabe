@@ -119,89 +119,176 @@ function extractSavedVariableJournal(content) {
   return match ? decodeLuaString(match[1]) : "";
 }
 
-function extractLastError(content) {
-  const patterns = {
-    message: /\["message"\]\s*=\s*"([^"]*)"/,
-    line: /\["line"\]\s*=\s*(\d+)/,
-    file: /\["file"\]\s*=\s*"([^"]*)"/,
-    id: /\["id"\]\s*=\s*"([^"]*)"/,
-    stack: /\["stack"\]\s*=\s*"([^"]*)"/,
-    at: /\["at"\]\s*=\s*(\d+)/,
-    priority: /\["priority"\]\s*=\s*"([^"]*)"/
-  };
+function extractBalancedLuaTable(source, openIndex) {
+  const text = String(source || "");
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
 
-  const error = {};
-  for (const [key, pattern] of Object.entries(patterns)) {
-    const match = content.match(pattern);
-    if (match) error[key] = match[1];
+  for (let i = openIndex; i < text.length; i++) {
+    const ch = text[i];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(openIndex + 1, i);
+    }
   }
+  return null;
+}
+
+function extractLuaTableBody(source, key) {
+  const text = String(source || "");
+  const escapedKey = String(key).replace(/[.*+?^$()|[\]\\]/g, "\\$&");
+  const keyExpr = '(?:\\[\\s*["\\x27]' + escapedKey + '["\\x27]\\s*\\]|\\b' + escapedKey + '\\b)';
+  const match = new RegExp(keyExpr + "\\s*=\\s*\\{", "m").exec(text);
+  if (!match) return null;
+  const openIndex = match.index + match[0].lastIndexOf("{");
+  return extractBalancedLuaTable(text, openIndex);
+}
+
+function extractLuaTableEntries(source) {
+  const text = String(source || "");
+  const entries = [];
+  let depth = 0;
+  let start = -1;
+  let quote = null;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        entries.push(text.slice(start + 1, i));
+        start = -1;
+      }
+      if (depth < 0) return [];
+    }
+  }
+  return entries;
+}
+
+function readLuaField(source, key, kind) {
+  const escapedKey = String(key).replace(/[.*+?^$()|[\]\\]/g, "\\$&");
+  const keyExpr = '(?:\\[\\s*["\\x27]' + escapedKey + '["\\x27]\\s*\\]|\\b' + escapedKey + '\\b)';
+  const pattern = kind === "number"
+    ? new RegExp(keyExpr + "\\s*=\\s*(-?\\d+(?:\\.\\d+)?)", "m")
+    : new RegExp(keyExpr + '\\s*=\\s*"((?:\\\\.|[^"\\\\])*)"', "m");
+  const match = pattern.exec(String(source || ""));
+  if (!match) return null;
+  return kind === "number" ? Number(match[1]) : decodeLuaString(match[1]);
+}
+
+function readLuaStringField(source, key) {
+  return readLuaField(source, key, "string");
+}
+
+function readLuaNumberField(source, key) {
+  return readLuaField(source, key, "number");
+}
+
+function parseErrorBusEntry(source) {
+  const id = readLuaStringField(source, "id");
+  const timestamp = readLuaNumberField(source, "timestamp");
+  const legacyTime = readLuaNumberField(source, "time");
+  const message = readLuaStringField(source, "message");
+  const sourcePath = readLuaStringField(source, "source") || readLuaStringField(source, "file");
+  const line = readLuaNumberField(source, "line");
+  const stack = readLuaStringField(source, "stack");
+  const session = readLuaStringField(source, "session");
+
+  if (!message) return null;
+  return {
+    id: id || "",
+    timestamp: timestamp === null ? legacyTime : timestamp,
+    message: message,
+    source: sourcePath || "",
+    file: sourcePath ? sourcePath.replace(/\\/g, "/").split("/").pop() : "unknown",
+    line: line === null ? 0 : line,
+    stack: stack || "",
+    session: session || "unknown"
+  };
+}
+
+function extractLastError(content) {
+  const lastBody = extractLuaTableBody(content, "lastError");
+  if (lastBody === null) return null;
+
+  const error = {
+    message: readLuaStringField(lastBody, "message"),
+    line: readLuaNumberField(lastBody, "line"),
+    file: readLuaStringField(lastBody, "file"),
+    id: readLuaStringField(lastBody, "id"),
+    stack: readLuaStringField(lastBody, "stack"),
+    at: readLuaNumberField(lastBody, "at"),
+    priority: readLuaStringField(lastBody, "priority")
+  };
 
   if (!error.message) return null;
   return error;
 }
 
 function extractErrorBus(content) {
-  const busMatch = String(content).match(/CasinobabeErrorBus\s*=\s*\{([\s\S]*?)\n\}/m);
-  if (!busMatch) return null;
+  const busContent = extractLuaTableBody(content, "CasinobabeErrorBus");
+  if (busContent === null) return null;
 
-  const busContent = busMatch[1];
   const bus = { pending: [] };
+  const seq = readLuaNumberField(busContent, "seq");
+  const version = readLuaNumberField(busContent, "version");
+  if (seq !== null) bus.seq = seq;
+  if (version !== null) bus.version = version;
 
-  const seqMatch = busContent.match(/\[\s*"seq"\s*\]\s*=\s*(\d+)/);
-  if (seqMatch) bus.seq = Number(seqMatch[1]);
-
-  const versionMatch = busContent.match(/\[\s*"version"\s*\]\s*=\s*(\d+)/);
-  if (versionMatch) bus.version = Number(versionMatch[1]);
-
-  const pendingMatch = busContent.match(/\[\s*"pending"\s*\]\s*=\s*\{([\s\S]*?)\n\s*\}/m);
-  if (pendingMatch) {
-    const pendingContent = pendingMatch[1];
-    const entryPattern = /\{([\s\S]*?)\}/g;
-    let entryMatch;
-    while ((entryMatch = entryPattern.exec(pendingContent)) !== null) {
-      const entryContent = entryMatch[1];
-      const entry = {};
-      const patterns = {
-        id: /\["id"\]\s*=\s*"([^"]*)"/,
-        time: /\["time"\]\s*=\s*(\d+)/,
-        message: /\["message"\]\s*=\s*"([^"]*)"/,
-        stack: /\["stack"\]\s*=\s*"([^"]*)"/
-      };
-      for (const [key, pattern] of Object.entries(patterns)) {
-        const match = entryContent.match(pattern);
-        if (match) entry[key] = match[1];
-      }
-      if (entry.message) bus.pending.push(entry);
+  const pendingContent = extractLuaTableBody(busContent, "pending");
+  if (pendingContent !== null) {
+    for (const entryContent of extractLuaTableEntries(pendingContent)) {
+      const entry = parseErrorBusEntry(entryContent);
+      if (entry) bus.pending.push(entry);
     }
   }
 
-  const lastMatch = busContent.match(/\[\s*"last"\s*\]\s*=\s*\{([\s\S]*?)\n\s*\}/m);
-  if (lastMatch) {
-    const lastContent = lastMatch[1];
-    const last = {};
-    const patterns = {
-      id: /\["id"\]\s*=\s*"([^"]*)"/,
-      time: /\["time"\]\s*=\s*(\d+)/,
-      message: /\["message"\]\s*=\s*"([^"]*)"/,
-      stack: /\["stack"\]\s*=\s*"([^"]*)"/
-    };
-    for (const [key, pattern] of Object.entries(patterns)) {
-      const match = lastContent.match(pattern);
-      if (match) last[key] = match[1];
-    }
-    bus.last = last;
-  }
+  const lastContent = extractLuaTableBody(busContent, "last");
+  if (lastContent !== null) bus.last = parseErrorBusEntry(lastContent);
 
   return bus;
 }
 
 function extractErrorsFromSavedVariables(content) {
   const errors = [];
+  const errorBus = extractErrorBus(content);
+  const busEntries = errorBus ? errorBus.pending.slice() : [];
+  const pendingIds = new Set(busEntries.map(function (entry) { return entry.id; }).filter(Boolean));
+
+  if (errorBus && errorBus.last && (!errorBus.last.id || !pendingIds.has(errorBus.last.id))) {
+    busEntries.push(errorBus.last);
+    if (errorBus.last.id) pendingIds.add(errorBus.last.id);
+  }
 
   const lastError = extractLastError(content);
-  if (lastError && lastError.message) {
+  if (lastError && lastError.message && !(lastError.id && pendingIds.has(lastError.id))) {
+    const at = lastError.at ? new Date(Number(lastError.at) * 1000).toISOString() : new Date().toISOString();
     errors.push({
-      timestamp: lastError.at ? new Date(Number(lastError.at) * 1000).toISOString() : new Date().toISOString(),
+      raw: ["SAVEDVAR_LAST", lastError.id || "", lastError.at || "", lastError.file || "", lastError.line || 0, lastError.message, lastError.stack || ""].join("|"),
+      timestamp: at,
       addon: "Casinobabe",
       file: lastError.file || "unknown",
       line: Number(lastError.line) || 0,
@@ -215,31 +302,24 @@ function extractErrorsFromSavedVariables(content) {
     });
   }
 
-  const errorBus = extractErrorBus(content);
-  if (errorBus && errorBus.pending && errorBus.pending.length > 0) {
-    for (const entry of errorBus.pending) {
-      if (entry.message) {
-        errors.push({
-          timestamp: entry.time ? new Date(Number(entry.time) * 1000).toISOString() : new Date().toISOString(),
-          addon: "Casinobabe",
-          file: entry.file || "unknown",
-          line: Number(entry.line) || 0,
-          message: entry.message || "",
-          stack: entry.stack || "",
-          phase: "RUNTIME",
-          dealerState: null,
-          game: null,
-          id: entry.id || "unknown",
-          priority: "UNKNOWN"
-        });
-      }
-    }
-  }
+  for (const entry of busEntries) {
+    if (!entry.message) continue;
+    const timestamp = entry.timestamp
+      ? new Date(Number(entry.timestamp) * 1000).toISOString()
+      : new Date().toISOString();
+    const raw = [
+      "CBERRBUS",
+      entry.id || "",
+      entry.timestamp === null ? "" : entry.timestamp,
+      entry.file || "unknown",
+      entry.line || 0,
+      entry.message || "",
+      entry.stack || ""
+    ].join("|");
 
-  if (errorBus && errorBus.last && errorBus.last.message) {
-    const entry = errorBus.last;
     errors.push({
-      timestamp: entry.time ? new Date(Number(entry.time) * 1000).toISOString() : new Date().toISOString(),
+      raw: raw,
+      timestamp: timestamp,
       addon: "Casinobabe",
       file: entry.file || "unknown",
       line: Number(entry.line) || 0,
@@ -585,6 +665,8 @@ module.exports = {
   classifySeverity,
   parseJournalLine,
   extractSavedVariableJournal,
+  extractErrorBus,
+  extractErrorsFromSavedVariables,
   findWowRoots,
   findSavedVariableFiles,
   scanOnce,
