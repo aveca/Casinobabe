@@ -67,7 +67,7 @@ ShowEngine = {
       { type = SHOW_TYPE.WAIT, duration = 1.2 },
       { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Le croupier reste immobile... puis relève lentement les bras." },
       { type = SHOW_TYPE.WAIT, duration = 0.8 },
-      { type = SHOW_TYPE.ASCII, template = "SLOT" },
+      { type = SHOW_TYPE.ASCII, template = "JACKPOT" },
       { type = SHOW_TYPE.CHAT, channel = "SAY", text = "🎰 JACKPOT !" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "CHEER" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "VICTORY" },
@@ -228,12 +228,13 @@ ShowEngine = {
     local steps = self.currentSteps
     if self.stepIndex > #steps then
       -- Show complete
+      local finishedShow = self.currentShow
       self.isRunning = false
       self.currentShow = nil
       if self.onComplete then
         self.onComplete()
       end
-      print("|cff78EB96Show Engine|r Show complete: " .. self.currentShow)
+      print("|cff78EB96Show Engine|r Show complete: " .. tostring(finishedShow))
       return
     end
 
@@ -304,7 +305,7 @@ ShowEngine = {
 -- ===== Native Emote Handler =====
 -- Uses real WoW emote APIs: DoEmote or C_ChatInfo.PerformEmote
 NativeEmoteHandler = {
-  Execute = function(step)
+  Execute = function(self, step)
     local token = step.token
     if not token then
       print("|cffEB5E4FNativeEmote|r Missing token in step")
@@ -351,7 +352,7 @@ NativeEmoteHandler = {
 -- ===== Custom Emote Handler =====
 -- Uses /e or /me text RP via SendChatMessage
 CustomEmoteHandler = {
-  Execute = function(step)
+  Execute = function(self, step)
     local text = step.text
     if not text then
       print("|cffEB5E4FCustomEmote|r Missing text in step")
@@ -372,7 +373,7 @@ CustomEmoteHandler = {
 -- ===== Chat Handler =====
 -- Uses /s or normal chat say
 ChatHandler = {
-  Execute = function(step)
+  Execute = function(self, step)
     local channel = step.channel or "SAY"
     local text = step.text
 
@@ -518,7 +519,7 @@ ASCIIHandler = {
 
 -- ===== Wait Handler =====
 WaitHandler = {
-  Execute = function(step)
+  Execute = function(self, step)
     local duration = step.duration or 0
     if duration and duration > 0 then
       C_Timer.After(duration, function()
