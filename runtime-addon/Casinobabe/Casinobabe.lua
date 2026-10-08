@@ -6785,6 +6785,49 @@ loader:SetScript("OnEvent", function(self, event, ...)
     elseif isInfectionQA then
       print("|cffEB5E4FCasinobabe|r Infection QA character detected - QA gate active (SelfTest)")
     end
+    -- Authorized SHOW TRIGGER: bridge can request a show start via SavedVariables
+    -- Trigger format: CasinobabeDB.showTrigger = { showName = "WELCOME", authorized = true, requestId = "...", timestamp = 0 }
+    -- The bridge writes this SV entry; the addon checks it on PLAYER_LOGIN and authorizes
+    -- only when Colorabi on Nightslayer gate is active and showName is in the allowlist.
+    -- Expiration: triggers older than 300s (5 min) are considered stale and ignored.
+    -- Double-execution guard: only start if not already showing.
+    -- Consumption logging: SENT / DENIED / CONSUMED / EXPIRED / ERROR
+    if CasinobabeDB.showTrigger then
+      local triggerShow = CasinobabeDB.showTrigger.showName
+      local triggerAuthorized = CasinobabeDB.showTrigger.authorized
+      local triggerRequestId = CasinobabeDB.showTrigger.requestId or "unknown"
+      local triggerTimestamp = CasinobabeDB.showTrigger.timestamp or 0
+      local now = time()
+      local TRIGGER_TTL = 300 -- 5 minutes TTL; bridge must re-send after expiry
+      -- Check expiration first
+      if now - triggerTimestamp > TRIGGER_TTL then
+        print("|cffFFAA00Show Engine|r Trigger EXPIRED (stale, " .. tostring(now - triggerTimestamp) .. "s old, TTL=" .. TRIGGER_TTL .. ")")
+        CasinobabeDB.showTrigger = nil
+        -- Log expiration but do not clear isColorabiAuthorized state
+      elseif not (triggerAuthorized and CB.isColorabiAuthorized) then
+        -- Authorization failed (Colorabi gate not met)
+        print("|cffFFAA00Show Engine|r Trigger DENIED (not authorized: triggerAuthorized=" .. tostring(triggerAuthorized) .. ", isColorabiAuthorized=" .. tostring(CB.isColorabiAuthorized) .. ")")
+        CasinobabeDB.showTrigger = nil
+      elseif not allowedShows[triggerShow] then
+        -- Show not in allowlist
+        print("|cffFFAA00Show Engine|r Trigger DENIED (show '" .. triggerShow .. "' not in allowlist)")
+        CasinobabeDB.showTrigger = nil
+      elseif ShowEngine.isRunning then
+        -- Double-execution guard: already showing, skip
+        print("|cffFFAA00Show Engine|r Trigger CONSUMED (show already running, skip double-start, requestId=" .. triggerRequestId .. ")")
+        -- Do NOT clear trigger here; let it be re-checked or cleared by bridge on next cycle
+      else
+        -- All checks passed: start the show
+        if ShowEngine.shows[triggerShow] then
+          ShowEngine:StartShow(triggerShow)
+          print("|cff78EB96Show Engine|r Authorized trigger started show: " .. triggerShow .. " (requestId: " .. triggerRequestId .. ")")
+        else
+          print("|cffEB5E4FShow Engine|r Triggered show definition missing: " .. triggerShow)
+        end
+        -- Clear trigger after successful consumption
+        CasinobabeDB.showTrigger = nil
+      end
+    end
     -- Forsta gangen efter installation: oppna panelen automatiskt sa nya spelare
     -- hittar den direkt (slipper leta efter C:et pa minimappen). Sker bara EN gang -
     -- flaggan sparas, sen oppnas den aldrig av sig sjalv igen.
