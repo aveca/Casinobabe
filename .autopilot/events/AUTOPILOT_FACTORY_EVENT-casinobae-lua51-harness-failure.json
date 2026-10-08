@@ -1,0 +1,15 @@
+{
+  "event_id": "AUTOPILOT_FACTORY_EVENT-casinobae-lua51-harness-failure",
+  "repo": "aveca/Casinobabe",
+  "sha": "adfe4253e1cbea5c34dd4cba4c190dec6ab0ba9c",
+  "branch": "factory/casinobabe-1791399107755-ynm5",
+  "pr": 25,
+  "workflow": "CasinoBae Addon Tests",
+  "job": "factory",
+  "severity": "P1",
+  "error": "Authoritative offline Lua 5.1 harness failed: LUA_VM=wasmoon-lua5.1, CHECKS=10/14, ERRORS=3, INFRA_ERROR=NO, EXIT_CODE=1.",
+  "evidence_url": "https://github.com/aveca/Casinobabe/actions/runs/37678410653",
+  "detected_at": "2026-10-08T05:15:33Z",
+  "human_gate": false,
+  "requested_action": "Repair the authoritative Lua 5.1 harness/runtime contract on the PR branch and rerun CI; do not create a parallel dispatch."
+}
