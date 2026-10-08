@@ -7822,7 +7822,6 @@ end
 -- Load the Show Engine after the addon has initialized
 -- This runs after ADDON_LOADED in the live client
 function ShowEngineBootstrap()
-  -- ShowEngine is loaded via TOC (CasinobabeShowEngine.lua listed in manifest)
   -- No need for dofile; the TOC ensures it is loaded before ADDON_LOADED completes
   if not ShowEngine then
     print("|cffFFAA00Show Engine|r ShowEngine not available yet, retrying...")

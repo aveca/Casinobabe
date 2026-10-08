@@ -1424,6 +1424,7 @@ def send_show_trigger(show_name):
 
         # 3. Build the trigger record to write to WoW SavedVariables
         trigger = {
+            "ttlSeconds": 300,
             'showName': show_name,
             'authorized': True,
             'requestId': str(uuid.uuid4()),
