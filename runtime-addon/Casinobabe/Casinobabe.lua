@@ -7835,19 +7835,19 @@ function ShowEngineBootstrap()
     return false
   end
 
-  -- Register slash commands for shows
-  -- /cbs <show> - Run a show
-  -- /cbshow <show> - Alias for /cbs
+  -- Canonical show slash command: /cbs <show> (alias /cbshow).
+  -- Single registration: ShowEngine.lua registers none (hash_SlashCmdList collision guard).
+  -- Normalize ONCE: membership check and StartShow must use the same casing.
   SlashCmdList["CASINOBAE_SHOW_ENGINE"] = function(cmd)
-    local command = cmd:lower()
-    local showName = command:match("^(%S+)")
+    local showName = (cmd or ""):match("^(%S+)")
     if not showName or showName == "" then
       ShowEngine:ShowHelp()
       return
     end
 
-    -- Check if it's a known show
-    if ShowEngine.shows[showName:upper()] then
+    showName = showName:upper()
+
+    if ShowEngine.shows[showName] then
       local ok, result = ShowEngine:StartShow(showName)
       if ok then
         print("|cff78EB96Show Engine|r Starting show: " .. showName)
@@ -7864,9 +7864,6 @@ function ShowEngineBootstrap()
   end
   SLASH_CASINOBAE_SHOW_ENGINE1 = "/cbs"
   SLASH_CASINOBAE_SHOW_ENGINE2 = "/cbshow"
-
-  -- /cbs help - Show help
-  SLASH_CASINOBAE_SHOW_HELP1 = "/cbshow help"
 
   -- Print initialization summary
   local showCount = 0

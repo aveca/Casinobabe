@@ -610,44 +610,9 @@ function ShowEngine.OnLoad()
     print("|cffEB5E4FShow Engine|r Failed to initialize")
     return
   end
-
-  -- Register slash commands
-  SlashCmdList["CASINOBAE_SHOW"] = function(cmd)
-    local command = cmd:lower():trim()
-    local showName = command:match("^(%S+)")
-    if showName then
-      ShowEngine:ShowCommand(showName)
-    else
-      ShowEngine:ShowHelp()
-    end
-  end
-  SLASH_CASINOBAE_SHOW1 = "/cbs"
-  SLASH_CASINOBAE_SHOW2 = "/cbshow"
-  print("|cffFFD700Casinobabe|r Show Engine slash commands registered: /cbs, /cbshow")
-end
-
--- Slash command handler
-function ShowEngine:ShowCommand(showName)
-  if not showName or showName == "" then
-    self:ShowHelp()
-    return
-  end
-
-  -- Check if it's a known show
-  if self.shows[showName] then
-    local ok, result = self:StartShow(showName)
-    if ok then
-      print("|cff78EB96Show Engine|r Starting show: " .. showName)
-    else
-      print("|cffEB5E4FShow Engine|r Failed to start show: " .. tostring(result))
-    end
-  else
-    print("|cffFFAA00Show Engine|r Unknown show: " .. showName)
-    print("|cff78EB96Available shows:|r")
-    for name in pairs(self.shows) do
-      print("  - " .. name)
-    end
-  end
+  -- NOTE: /cbs + /cbshow are registered ONCE by ShowEngineBootstrap (Casinobabe.lua)
+  -- as SlashCmdList["CASINOBAE_SHOW_ENGINE"]. Do not register here: a second
+  -- registration of the same slash names collides in hash_SlashCmdList.
 end
 
 function ShowEngine:ShowHelp()
