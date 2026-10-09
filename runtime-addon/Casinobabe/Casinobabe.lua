@@ -7475,6 +7475,7 @@ function DealerDemoCommand(arg)
   local function dbegin(scenario)
     dstopSeq()
     demoSession.scenario = scenario
+    demoSession.player = "TEST_PLAYER" -- virtual seat, asserted by /cb demo verify
     demoSession.step = 0
     demoSession.failed = false
     demoSession.failAt = nil
