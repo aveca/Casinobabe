@@ -5441,6 +5441,17 @@ local function CreatePanel()
     UpdateAutopilotButtons()
   end
 
+  -- Teinte defensive : SetBackdropColor n'existe que sur les frames avec
+  -- backdrop (BackdropTemplate). Nos boutons sont des Button nus + texture
+  -- MakeBacking, donc l'appel direct vaut nil dans le client 2.5.6 et leve
+  -- "attempt to call a nil value" dans UpdateAutopilotButtons (General.log).
+  -- Le texte ON/OFF porte deja l'etat, la teinte reste purement cosmetique.
+  local function SetBtnTint(btn, r, g, b, a)
+    if btn and btn.SetBackdropColor then
+      btn:SetBackdropColor(r, g, b, a)
+    end
+  end
+
   function UpdateAutopilotButtons()
     if not f.startCasinoBtn or not f.stopCasinoBtn then return end
     
@@ -5452,10 +5463,10 @@ local function CreatePanel()
         f.autoWhisperBtn:SetEnabled(true)
         if autopilotState.autoWhisper then
           f.autoWhisperBtn:SetText("|cff78EB96AUTO-WHISPER: ON|r")
-          f.autoWhisperBtn:SetBackdropColor(0.1, 0.3, 0.1, 1)
+          SetBtnTint(f.autoWhisperBtn, 0.1, 0.3, 0.1, 1)
         else
           f.autoWhisperBtn:SetText("|cffEB5E4FAUTO-WHISPER: OFF|r")
-          f.autoWhisperBtn:SetBackdropColor(0.3, 0.1, 0.1, 1)
+          SetBtnTint(f.autoWhisperBtn, 0.3, 0.1, 0.1, 1)
         end
       end
       if f.announceSayBtn then f.announceSayBtn:SetEnabled(true) end
@@ -7821,23 +7832,15 @@ end
 -- ============================================================================
 -- Load the Show Engine after the addon has initialized
 -- This runs after ADDON_LOADED in the live client
-function ShowEngineBootstrap()
-  -- No need for dofile; the TOC ensures it is loaded before ADDON_LOADED completes
-  if not ShowEngine then
-    print("|cffFFAA00Show Engine|r ShowEngine not available yet, retrying...")
-    return false
-  end
-
-  -- Initialize the Show Engine
-  local initOk = ShowEngine:Initialize()
-  if not initOk then
-    print("|cffEB5E4FShow Engine|r Failed to initialize")
-    return false
-  end
-
-  -- Canonical show slash command: /cbs <show> (alias /cbshow).
-  -- Single registration: ShowEngine.lua registers none (hash_SlashCmdList collision guard).
-  -- Normalize ONCE: membership check and StartShow must use the same casing.
+-- Canonical show slash command: /cbs <show> (alias /cbshow).
+-- Single registration: ShowEngine.lua registers none (hash_SlashCmdList collision guard).
+-- Normalize ONCE: membership check and StartShow must use the same casing.
+--
+-- FILE-SCOPE registration is REQUIRED: WoW captures SLASH_* globals when addon
+-- files finish loading (before/during ADDON_LOADED). Registering inside the
+-- C_Timer.After(2) bootstrap below is TOO LATE: the client never learns that
+-- "/cbs" exists and the keystroke dies silently (the reported bug).
+if SlashCmdList then
   SlashCmdList["CASINOBAE_SHOW_ENGINE"] = function(cmd)
     local showName = (cmd or ""):match("^(%S+)")
     if not showName or showName == "" then
@@ -7864,6 +7867,25 @@ function ShowEngineBootstrap()
   end
   SLASH_CASINOBAE_SHOW_ENGINE1 = "/cbs"
   SLASH_CASINOBAE_SHOW_ENGINE2 = "/cbshow"
+end
+
+function ShowEngineBootstrap()
+  -- No need for dofile; the TOC ensures it is loaded before ADDON_LOADED completes
+  if not ShowEngine then
+    print("|cffFFAA00Show Engine|r ShowEngine not available yet, retrying...")
+    return false
+  end
+
+  -- Initialize the Show Engine
+  local initOk = ShowEngine:Initialize()
+  if not initOk then
+    print("|cffEB5E4FShow Engine|r Failed to initialize")
+    return false
+  end
+
+  -- Slash commands /cbs + /cbshow are registered at FILE SCOPE above.
+  -- Do NOT register them here: C_Timer.After(2) runs after WoW's slash
+  -- discovery, so a registration here would never be bound by the client.
 
   -- Print initialization summary
   local showCount = 0
