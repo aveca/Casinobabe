@@ -312,19 +312,9 @@ NativeEmoteHandler = {
       return false
     end
 
-    -- Try C_ChatInfo.PerformEmote first (modern WoW)
-    if C_ChatInfo and C_ChatInfo.PerformEmote then
-      local success = pcall(function()
-        C_ChatInfo.PerformEmote(token)
-      end)
-      if success then
-        print("|cff78EB96NativeEmote|r Performed via C_ChatInfo.PerformEmote: " .. token)
-        return true
-      end
-      print("|cffFFAA00NativeEmote|r C_ChatInfo.PerformEmote failed, trying DoEmote")
-    end
-
-    -- Fallback to DoEmote (deprecated but still works on many clients)
+    -- Classic d'abord : DoEmote(token-string) est l'API prouvee sur Anniversary/TBC.
+    -- C_ChatInfo.PerformEmote attend un emoteID numerique sur retail et peut
+    -- reussir son pcall SANS jouer l'animation avec un token string (bug "elle bouge pas").
     if DoEmote then
       local success = pcall(function()
         DoEmote(token)
@@ -333,10 +323,13 @@ NativeEmoteHandler = {
         print("|cff78EB96NativeEmote|r Performed via DoEmote: " .. token)
         return true
       end
-      print("|cffFFAA00NativeEmote|r DoEmote failed for: " .. token)
+      print("|cffFFAA00NativeEmote|r DoEmote failed for: " .. tostring(token) .. ", trying PerformEmote")
     else
       print("|cffEB5E4FNativeEmote|r DoEmote not available on this client")
     end
+
+    -- Fallback moderne (emoteID numerique uniquement)
+    if C_ChatInfo and C_ChatInfo.PerformEmote and tonumber(token) then
 
     -- If we get here, try sending the slash as text emote fallback
     -- This is NOT the same as executing the emote - it's just text
