@@ -7655,6 +7655,11 @@ function DealerDemoCommand(arg)
     print("|cffFFD700Casinobabe|r Usage: /cb demo | /cb demo win | /cb demo loss | /cb demo next | /cb demo stop | /cb demo status | /cb demo verify")
   end
 end
+-- Slash binding: SANS ces globales SLASH_*, le client ne route jamais "/cb"
+-- vers le handler ci-dessous (erreur "Type '/help'" constatee en jeu le
+-- 2026-10-09 : handler SlashCmdList["CASINOBABE"] present mais injoignable).
+SLASH_CASINOBABE1 = "/cb"
+SLASH_CASINOBABE2 = "/casinobabe"
 SlashCmdList["CASINOBABE"]=function(msg)
   msg=(msg or ""):gsub("^%s+",""):gsub("%s+$","")
   local cmd,arg=msg:match("^(%S*)%s*(.-)$"); cmd=(cmd or ""):lower()
