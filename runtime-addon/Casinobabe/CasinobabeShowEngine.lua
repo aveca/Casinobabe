@@ -281,6 +281,7 @@ ShowEngine = {
   -- Cancel current show
   CancelShow = function(self)
     self.isRunning = false
+    self.megaLoop = false
     self.currentShow = nil
     self.stepIndex = 1
     print("|cffFFAA00Show Engine|r Show cancelled")
@@ -665,7 +666,55 @@ function ShowEngine:StartMegaShow()
     end
   end
   if self.isRunning then self:CancelShow() end
+  self.megaLoop = false
   next()
+  return true
+end
+
+-- ===== MEGA LOOP : rejoue la playlist en boucle jusqu'a /cbs stop =====
+-- Shows uniquement (emotes + SAY + ASCII). Le dealer reste au clavier :
+-- /cbs stop ou n'importe quel CancelShow coupe la boucle (timers orphelins neutres).
+function ShowEngine:StartMegaLoop()
+  if self.megaLoop then
+    print("|cffFFAA00Show Engine|r MEGA LOOP deja actif - /cbs stop pour arreter")
+    return true
+  end
+  if self.isRunning then self:CancelShow() end
+  self.megaLoop = true
+  print("|cffFFD700Show Engine|r MEGA LOOP started - /cbs stop pour arreter")
+  local playlist = { "WELCOME", "SHOWGIRL", "DICE", "ROULETTE", "BLACKJACK", "JACKPOT", "FIRE", "FINALE" }
+  local idx = 0
+  local next
+  next = function()
+    if not self.megaLoop then return end
+    idx = idx + 1
+    local name = playlist[idx]
+    if not name then
+      idx = 0
+      print("|cffFFD700Show Engine|r MEGA LOOP cycle termine - on repart")
+      next()
+      return
+    end
+    if not self.shows[name] then
+      print("|cffFFAA00Show Engine|r MEGA LOOP skip missing: " .. tostring(name))
+      next()
+      return
+    end
+    self.lastShowTime = 0
+    print("|cff78EB96Show Engine|r MEGA LOOP: " .. name)
+    local ok, err = self:StartShow(name, next)
+    if not ok then
+      print("|cffEB5E4FShow Engine|r MEGA LOOP blocked on " .. name .. ": " .. tostring(err))
+    end
+  end
+  next()
+  return true
+end
+
+function ShowEngine:StopMegaLoop()
+  self.megaLoop = false
+  if self.isRunning then self:CancelShow() end
+  print("|cffFFD700Show Engine|r MEGA LOOP stopped")
   return true
 end
 

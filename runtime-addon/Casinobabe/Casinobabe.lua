@@ -7862,6 +7862,16 @@ if SlashCmdList then
       return
     end
 
+    if showName == "LOOP" then
+      ShowEngine:StartMegaLoop()
+      return
+    end
+
+    if showName == "STOP" then
+      ShowEngine:StopMegaLoop()
+      return
+    end
+
     if ShowEngine.shows[showName] then
       local ok, result = ShowEngine:StartShow(showName)
       if ok then
