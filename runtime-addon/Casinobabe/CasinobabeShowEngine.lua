@@ -616,7 +616,7 @@ end
 
 function ShowEngine:ShowHelp()
   print("|cffFFD700Casinobabe Show Engine Help|r")
-  print("Usage: /cbs <show_name>")
+  print("Usage: /cbs <show_name> | /cbs mega (playlist full-auto)")
   print("")
   print("Available shows:")
   for name in pairs(self.shows) do
@@ -636,6 +636,37 @@ function ShowEngine:ShowHelp()
   print("  /cbs dice - Dice show")
   print("  /cbs jackpot - Jackpot show")
   print("  /cbs finale - Finale show")
+  print("  /cbs mega - MEGA playlist full-auto (welcome>showgirl>dice>roulette>blackjack>jackpot>fire>finale)")
+end
+
+-- ===== MEGA playlist full-auto =====
+-- 1 commande = enchaine tous les shows fous via onComplete, sans toucher au throttle global.
+function ShowEngine:StartMegaShow()
+  local playlist = { "WELCOME", "SHOWGIRL", "DICE", "ROULETTE", "BLACKJACK", "JACKPOT", "FIRE", "FINALE" }
+  local idx = 0
+  local function next()
+    idx = idx + 1
+    local name = playlist[idx]
+    if not name then
+      print("|cffFFD700Show Engine|r MEGA complete - 8 shows joues")
+      return
+    end
+    if not self.shows[name] then
+      print("|cffFFAA00Show Engine|r MEGA skip missing: " .. tostring(name))
+      next()
+      return
+    end
+    -- reset throttle pour enchainer sans attendre 2s entre shows
+    self.lastShowTime = 0
+    print("|cff78EB96Show Engine|r MEGA " .. idx .. "/8: " .. name)
+    local ok, err = self:StartShow(name, next)
+    if not ok then
+      print("|cffEB5E4FShow Engine|r MEGA blocked on " .. name .. ": " .. tostring(err))
+    end
+  end
+  if self.isRunning then self:CancelShow() end
+  next()
+  return true
 end
 
 -- Make ShowEngine globally accessible (but controlled)

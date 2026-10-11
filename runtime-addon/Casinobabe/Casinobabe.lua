@@ -7856,6 +7856,12 @@ if SlashCmdList then
 
     showName = showName:upper()
 
+    if showName == "MEGA" then
+      ShowEngine:StartMegaShow()
+      print("|cff78EB96Show Engine|r Starting MEGA playlist full-auto")
+      return
+    end
+
     if ShowEngine.shows[showName] then
       local ok, result = ShowEngine:StartShow(showName)
       if ok then
