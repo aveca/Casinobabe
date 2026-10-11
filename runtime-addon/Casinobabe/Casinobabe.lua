@@ -7914,6 +7914,11 @@ if SlashCmdList then
       return
     end
 
+    if showName == "REFRESH" then
+      ShowEngine:RefreshShows()
+      return
+    end
+
     if showName == "LOOP" then
       ShowEngine:StartMegaLoop()
       return
