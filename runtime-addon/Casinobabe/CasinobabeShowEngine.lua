@@ -330,6 +330,12 @@ NativeEmoteHandler = {
 
     -- Fallback moderne (emoteID numerique uniquement)
     if C_ChatInfo and C_ChatInfo.PerformEmote and tonumber(token) then
+      local ok = pcall(function() C_ChatInfo.PerformEmote(tonumber(token)) end)
+      if ok then
+        print("|cff78EB96NativeEmote|r Performed via C_ChatInfo.PerformEmote: " .. token)
+        return true
+      end
+    end
 
     -- If we get here, try sending the slash as text emote fallback
     -- This is NOT the same as executing the emote - it's just text
