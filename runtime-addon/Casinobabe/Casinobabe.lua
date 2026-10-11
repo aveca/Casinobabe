@@ -5814,9 +5814,61 @@ local function CreatePanel()
     dp.quickAdBtn:SetScript("OnClick", function() CasinoShow:StartQuickAd() end)
     
     -- Stop Show button
-    dp.stopBtn = MakeButton(dp, 80, 22, "â–  STOP", 0.12, 0.05, 0.05, 0.92, C.red)
+    dp.stopBtn = MakeButton(dp, 80, 22, "■ STOP", 0.12, 0.05, 0.05, 0.92, C.red)
     dp.stopBtn:SetPoint("LEFT", dp.quickAdBtn, "RIGHT", 8, 0)
     dp.stopBtn:SetScript("OnClick", function() CasinoShow:StopShow() end)
+
+    -- ===== SHOW ENGINE 1-click strip (dealer) =====
+    -- Tous les shows + MEGA + LOOP + STOP sur l'interface : 1 clic = 1 action.
+    -- Meme convention que les rangees TEST/DEMO : cale a droite, frame level
+    -- releve pour rester cliquable. Gardé : message clair si le moteur n'est
+    -- pas chargé (pas d'erreur muette).
+    local function PlayShowEngine(name)
+      if not _G.ShowEngine or type(_G.ShowEngine.StartShow) ~= "function" then
+        print("|cffEB5E4FShow Engine|r not loaded - /reload puis reessaye")
+        return
+      end
+      if name == "MEGA" then _G.ShowEngine:StartMegaShow() return end
+      if name == "LOOP" then _G.ShowEngine:StartMegaLoop() return end
+      if name == "STOP" then _G.ShowEngine:StopMegaLoop() return end
+      local ok, err = _G.ShowEngine:StartShow(name)
+      if ok then
+        if dp.statusText then dp.statusText:SetText("|cffFFD700SHOW: " .. name .. "|r") end
+      else
+        print("|cffEB5E4FShow Engine|r " .. tostring(err or "blocked"))
+      end
+    end
+    local function seBtn(label, action, r, g, bl, a, txtColor)
+      local b = MakeButton(dp, 64, 18, label, r or 0.10, g or 0.08, bl or 0.04, a or 0.95, txtColor or C.gold)
+      b:SetFrameLevel((dp:GetFrameLevel() or 1) + 6)
+      b:SetScript("OnClick", function() PlayShowEngine(action) end)
+      return b
+    end
+    -- Rangee 1 : 4 shows
+    dp.seRouletteBtn = seBtn("ROULETTE", "ROULETTE")
+    dp.seRouletteBtn:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -136)
+    dp.seJackpotBtn = seBtn("JACKPOT", "JACKPOT")
+    dp.seJackpotBtn:SetPoint("RIGHT", dp.seRouletteBtn, "LEFT", -4, 0)
+    dp.seDiceBtn = seBtn("DICE", "DICE")
+    dp.seDiceBtn:SetPoint("RIGHT", dp.seJackpotBtn, "LEFT", -4, 0)
+    dp.seWelcomeBtn = seBtn("WELCOME", "WELCOME")
+    dp.seWelcomeBtn:SetPoint("RIGHT", dp.seDiceBtn, "LEFT", -4, 0)
+    -- Rangee 2 : 4 shows
+    dp.seFinaleBtn = seBtn("FINALE", "FINALE")
+    dp.seFinaleBtn:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -158)
+    dp.seShowgirlBtn = seBtn("SHOWGIRL", "SHOWGIRL")
+    dp.seShowgirlBtn:SetPoint("RIGHT", dp.seFinaleBtn, "LEFT", -4, 0)
+    dp.seFireBtn = seBtn("FIRE", "FIRE")
+    dp.seFireBtn:SetPoint("RIGHT", dp.seShowgirlBtn, "LEFT", -4, 0)
+    dp.seBlackjackBtn = seBtn("BLACKJACK", "BLACKJACK")
+    dp.seBlackjackBtn:SetPoint("RIGHT", dp.seFireBtn, "LEFT", -4, 0)
+    -- Rangee 3 : MEGA + LOOP + STOP
+    dp.seStopBtn = seBtn("STOP", "STOP", 0.12, 0.05, 0.05, 0.92, C.red)
+    dp.seStopBtn:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -180)
+    dp.seLoopBtn = seBtn("LOOP", "LOOP")
+    dp.seLoopBtn:SetPoint("RIGHT", dp.seStopBtn, "LEFT", -4, 0)
+    dp.seMegaBtn = seBtn("MEGA", "MEGA")
+    dp.seMegaBtn:SetPoint("RIGHT", dp.seLoopBtn, "LEFT", -4, 0)
 
     -- Attractor: ONE click = ONE real channel announcement (hardware event).
     -- Cooldowns only decide what the next click may send; nothing auto-sends.
