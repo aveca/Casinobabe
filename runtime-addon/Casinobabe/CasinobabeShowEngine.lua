@@ -19,8 +19,8 @@ SHOW_TYPE = {
 
 -- ===== Show Step Structure =====
 -- { type = SHOW_TYPE.NATIVE_EMOTE, token = "DANCE" }
--- { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Le croupier frappe la table." }
--- { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Faites vos jeux !" }
+-- { type = SHOW_TYPE.CUSTOM_EMOTE, text = "The dealer slams the table." }
+-- { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Place your bets!" }
 -- { type = SHOW_TYPE.ASCII, template = "JACKPOT" }
 -- { type = SHOW_TYPE.WAIT, duration = 1.2 }
 
@@ -48,49 +48,49 @@ ShowEngine = {
     self:RegisterShow("WELCOME", {
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "WAVE" },
       { type = SHOW_TYPE.WAIT, duration = 0.8 },
-      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Bienvenue à la table." },
-      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Faites vos jeux !" },
+      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "sweeps her arm wide as the lanterns dim over the table." },
+      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Welcome to Casinobabe, darlings - the night is young and the table is hot!" },
       { type = SHOW_TYPE.WAIT, duration = 0.5 },
       { type = SHOW_TYPE.ASCII, template = "CASINO" },
     })
 
     self:RegisterShow("DICE", {
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "POINT" },
-      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Les dés sont lancés." },
+      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "shakes the dice high above her head as the crowd leans in." },
       { type = SHOW_TYPE.ASCII, template = "BIG_DICE" },
-      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "TOTAL : 7" },
+      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "The dice are flying - call your lucky total!" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "CHEER" },
     })
 
     self:RegisterShow("JACKPOT", {
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "DANCE" },
       { type = SHOW_TYPE.WAIT, duration = 1.2 },
-      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Le croupier reste immobile... puis relève lentement les bras." },
+      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "freezes mid-step... then slowly raises both arms to the chandelier." },
       { type = SHOW_TYPE.WAIT, duration = 0.8 },
       { type = SHOW_TYPE.ASCII, template = "JACKPOT" },
-      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "🎰 JACKPOT !" },
+      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "JACKPOT! The house rains gold tonight!" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "CHEER" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "VICTORY" },
     })
 
     self:RegisterShow("ROULETTE", {
-      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "La roue ralentit..." },
-      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Rien ne va plus !" },
+      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "spins the wheel as the silver ball dances around the rim..." },
+      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "No more bets, ladies and gentlemen... watch the wheel!" },
       { type = SHOW_TYPE.ASCII, template = "ROULETTE" },
-      -- Résultat réel sera injecté plus tard
-      { type = SHOW_TYPE.NATIVE_EMOTE, token = "GASP" }, -- ou CHEER/CRY/VICTORY selon résultat
+      -- Real result will be injected later
+      { type = SHOW_TYPE.NATIVE_EMOTE, token = "GASP" }, -- or CHEER/CRY/VICTORY depending on result
     })
 
     self:RegisterShow("BLACKJACK", {
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "BOW" },
-      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Le croupier ajuste ses cartes." },
+      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "fans the cards across the velvet with a practiced flick of the wrist." },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "POINT" },
-      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Faites vos jeux !" },
+      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Place your bets - twenty-one awaits the bold!" },
     })
 
     self:RegisterShow("FIRE", {
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "ROAR" },
-      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Les flammes s'élèvent autour de la scène..." },
+      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "flames erupt around the stage as she strides through the firelight..." },
       { type = SHOW_TYPE.ASCII, template = "FIRE" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "DANCE" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "CHEER" },
@@ -98,7 +98,7 @@ ShowEngine = {
 
     self:RegisterShow("SHOWGIRL", {
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "CURTSEY" },
-      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Une artiste entre sur scène..." },
+      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "a spotlight cuts through the smoke as the showgirl takes the stage..." },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "DANCE" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "WAVE" },
     })
@@ -109,8 +109,8 @@ ShowEngine = {
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "CLAP" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "VICTORY" },
       { type = SHOW_TYPE.ASCII, template = "CASINO" },
-      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Le spectacle touche à sa fin." },
-      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Merci d'avoir joué !" },
+      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "takes one final bow as golden confetti rains over the tables." },
+      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Thank you for playing at Casinobabe - good night, and good luck!" },
     })
 
     self:RegisterShow("POKER", {
@@ -118,10 +118,10 @@ ShowEngine = {
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "FLEX" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "VICTORY" },
       { type = SHOW_TYPE.WAIT, duration = 0.5 },
-      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Le croupier distribue les cartes." },
+      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "lays the river card face-up with a slow, deliberate turn of the wrist." },
       { type = SHOW_TYPE.WAIT, duration = 0.5 },
       { type = SHOW_TYPE.ASCII, template = "TROPHY" },
-      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Full house!" },
+      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Full house! The table erupts!" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "GASP" },
     })
 
@@ -129,9 +129,9 @@ ShowEngine = {
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "GASP" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "CRY" },
       { type = SHOW_TYPE.NATIVE_EMOTE, token = "DRINK" },
-      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "Le silence tombe sur la table." },
+      { type = SHOW_TYPE.CUSTOM_EMOTE, text = "a hush falls over the table as the losing hand is turned over." },
       { type = SHOW_TYPE.ASCII, template = "LOSS" },
-      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "Better luck next time." },
+      { type = SHOW_TYPE.CHAT, channel = "SAY", text = "A brutal bad beat... better luck on the next hand." },
     })
 
     print("|cffFFD700Casinobabe|r Show Engine initialized with " .. #self.shows .. " show definitions")
@@ -649,7 +649,7 @@ function ShowEngine:StartMegaShow()
     idx = idx + 1
     local name = playlist[idx]
     if not name then
-      print("|cffFFD700Show Engine|r MEGA complete - 8 shows joues")
+      print("|cffFFD700Show Engine|r MEGA complete - all 8 shows played, what a night!")
       return
     end
     if not self.shows[name] then
@@ -676,12 +676,12 @@ end
 -- /cbs stop ou n'importe quel CancelShow coupe la boucle (timers orphelins neutres).
 function ShowEngine:StartMegaLoop()
   if self.megaLoop then
-    print("|cffFFAA00Show Engine|r MEGA LOOP deja actif - /cbs stop pour arreter")
+    print("|cffFFAA00Show Engine|r MEGA LOOP already running - /cbs stop to end the night")
     return true
   end
   if self.isRunning then self:CancelShow() end
   self.megaLoop = true
-  print("|cffFFD700Show Engine|r MEGA LOOP started - /cbs stop pour arreter")
+  print("|cffFFD700Show Engine|r MEGA LOOP started - the night never ends! /cbs stop to take a bow")
   local playlist = { "WELCOME", "SHOWGIRL", "DICE", "ROULETTE", "BLACKJACK", "JACKPOT", "FIRE", "FINALE" }
   local idx = 0
   local next
@@ -691,7 +691,7 @@ function ShowEngine:StartMegaLoop()
     local name = playlist[idx]
     if not name then
       idx = 0
-      print("|cffFFD700Show Engine|r MEGA LOOP cycle termine - on repart")
+      print("|cffFFD700Show Engine|r MEGA LOOP cycle complete - encore! Back to the top")
       next()
       return
     end
