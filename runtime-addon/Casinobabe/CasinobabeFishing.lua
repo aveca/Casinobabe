@@ -128,6 +128,10 @@ F.STATES = {
   MORT       = "PERSONNAGE MORT",
 }
 
+-- État initial défini AVANT toute construction UI : jamais nil, même si
+-- l'init de la barre échoue partiellement côté client réel.
+F.state = F.state or F.STATES.INACTIF
+
 local function setState(s)
   F.state = s
   if F.UI then pcall(function() F.UI.Refresh() end) end
@@ -434,6 +438,7 @@ F.Toggle = function()
 end
 
 F.GetStatus = function()
+  F.state = F.state or F.STATES.INACTIF -- garde anti-nil (client réel)
   local fdb = DB()
   local dur = 0
   if F.state ~= F.STATES.INACTIF then
@@ -788,21 +793,21 @@ end
 -- ---------------------------------------------------------------------------
 -- Init : UI + événements, ancrage sur le panneau Casinobabe si présent
 -- ---------------------------------------------------------------------------
-local ok, err = pcall(function()
-  buildUI()
-  installEvents()
-  local panel = Gv("Casinobabe_Panel")
-  local fdb = DB()
-  if panel and not fdb.barPos then
-    pcall(function()
-      F.UI.frame:ClearAllPoints()
-      F.UI.frame:SetPoint("TOPLEFT", panel, "TOPRIGHT", 8, -8)
-    end)
-  end
-  F.state = F.state or F.STATES.INACTIF
-end)
+  local ok, err = pcall(function()
+    buildUI()
+    installEvents()
+    local panel = Gv("Casinobabe_Panel")
+    local fdb = DB()
+    if panel and not fdb.barPos then
+      pcall(function()
+        F.UI.frame:ClearAllPoints()
+        F.UI.frame:SetPoint("TOPLEFT", panel, "TOPRIGHT", 8, -8)
+      end)
+    end
+  end)
+F.state = F.state or F.STATES.INACTIF -- réaffirmé après init (aucune dépendance à la réussite UI)
 if not ok then
-  Log("Erreur d'initialisation du mode pêche : " .. tostring(err))
+  Log("Erreur d'initialisation du mode pêche (l'état et les compteurs restent fonctionnels) : " .. tostring(err))
   if seterrorhandler and geterrorhandler then
     pcall(function()
       local prev = geterrorhandler()

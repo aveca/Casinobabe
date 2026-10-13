@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "spots": {
+    "Stagnant Oasis": {
+      "name": "Stagnant Oasis",
+      "zone": "The Barrens",
+      "source": "données publiques classiques (Wowhead)",
+      "confidence": "documenté, non vérifié localement",
+      "coords": null,
+      "observations": []
+    },
+    "Lushwater Oasis": {
+      "name": "Lushwater Oasis",
+      "zone": "The Barrens",
+      "source": "données publiques classiques (Wowhead)",
+      "confidence": "partiellement verifie (1 capture, 0 butin)",
+      "coords": null,
+      "observations": [
+        {
+          "ts": "2026-10-13T16:58:03",
+          "kind": "CAPTURE_VERIFIED",
+          "capture": "captures/wow-20261013-165803.png",
+          "zone": "The Barrens - Lushwater Oasis",
+          "confidence": "verifie visuellement (zone affichee a l ecran + panneau CASINOBAE LIVE)",
+          "lootEvents": 0,
+          "deviates": 0,
+          "note": "aucun evenement de butin observe a cet instant; compteurs in-game = 0 (non flushes)"
+        }
+      ]
+    },
+    "Forgotten Pools": {
+      "name": "Forgotten Pools",
+      "zone": "The Barrens",
+      "source": "données publiques classiques (Wowhead)",
+      "confidence": "documenté, non vérifié localement",
+      "coords": null,
+      "observations": []
+    }
+  }
+}

@@ -58,6 +58,7 @@ async function main() {
   // 1. Namespace + état initial
   await check("fishing_namespace", "return type(Casinobabe.Fishing)", v => v === "table");
   await check("fishing_state_inactive", "return Casinobabe.Fishing.state", v => v === "INACTIF");
+  await check("status_state_never_nil", "return type(Casinobabe.Fishing.GetStatus().state)", v => v === "string");
   await check("fishing_slash", "return type(SlashCmdList.CASINOBABEFISH)", v => v === "function");
 
   // 2. Activation via slash

@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "updatedAt": "2026-10-13T16:58:03",
+  "sessionConnected": true,
+  "sessionNote": "processus WoW détecté via EnumWindows (lecture seule, sans focus)",
+  "capture": "captures\\wow-20261013-165803.png",
+  "captureStatus": "OK, vérifiée frame WoW",
+  "spotObserved": "The Barrens (vérifié par capture 2026-10-13 16:47) — oasis précise inconnue",
+  "lastObservation": "captures\\wow-20261013-165803.png",
+  "confirmedCatches": "voir barre in-game (Prises: N) — non inventé ici",
+  "deviatesRecorded": "voir barre in-game (Cibles: N) — non inventé ici",
+  "lastError": "[\"message\"] = \"...TF/Account/103329567#1/SavedVariables/Casinobabe.lua:1: attempt to perform indexed assignment on global 'CasinoBaeDB' (a nil value)\",",
+  "spots": {
+    "Stagnant Oasis": {
+      "name": "Stagnant Oasis",
+      "zone": "The Barrens",
+      "source": "données publiques classiques (Wowhead)",
+      "confidence": "documenté, non vérifié localement",
+      "coords": null,
+      "observations": []
+    },
+    "Lushwater Oasis": {
+      "name": "Lushwater Oasis",
+      "zone": "The Barrens",
+      "source": "données publiques classiques (Wowhead)",
+      "confidence": "documenté, non vérifié localement",
+      "coords": null,
+      "observations": []
+    },
+    "Forgotten Pools": {
+      "name": "Forgotten Pools",
+      "zone": "The Barrens",
+      "source": "données publiques classiques (Wowhead)",
+      "confidence": "documenté, non vérifié localement",
+      "coords": null,
+      "observations": []
+    }
+  },
+  "limitations": [
+    "La touche (bite) n'est pas détectable par l'API des addons.",
+    "Les compteurs exacts ne sont lus qu'après /logout ou /reload (SavedVariables).",
+    "Aucune entrée clavier/souris n'est envoyée au jeu par cet observateur."
+  ]
+}
