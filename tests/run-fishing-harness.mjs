@@ -93,6 +93,22 @@ ck("itemid_resolved", CasinobabeDB.fishing.history[#CasinobabeDB.fishing.history
 WoWMock.fireEvent('CHAT_MSG_LOOT','Pescado: |Hitem:1234:0|h[Xyz]|h')
 ck("unknown_kind", CasinobabeDB.fishing.totals.unknownKind == 1, tostring(CasinobabeDB.fishing.totals.unknownKind))
 
+-- 8b. SÉPARATION STRICTE des compteurs (anti-confusion poisson/butin/plat) :
+-- un plat cuisiné "Vous créez : [Délice déviant]" n'est NI une prise NI une cible
+WoWMock.fireEvent('CHAT_MSG_LOOT','Vous créez : '..DEV)
+ck("create_not_catch", CasinobabeDB.fishing.totals.catches == 2, tostring(CasinobabeDB.fishing.totals.catches))
+ck("create_not_target", CasinobabeDB.fishing.totals.targets == 1, tostring(CasinobabeDB.fishing.totals.targets))
+ck("create_counted_as_crafted", (CasinobabeDB.fishing.totals.crafted or 0) == 1, tostring(CasinobabeDB.fishing.totals.crafted or 0))
+-- un butin en langue inconnue apparié à une cible reste "possible", jamais confirmé
+WoWMock.fireEvent('CHAT_MSG_LOOT','Mystere incompris: '..DEV)
+ck("unknown_target_possible_only", (CasinobabeDB.fishing.totals.possibleTargets or 0) == 1,
+   tostring(CasinobabeDB.fishing.totals.possibleTargets or 0))
+ck("unknown_target_not_confirmed", CasinobabeDB.fishing.totals.targets == 1, tostring(CasinobabeDB.fishing.totals.targets))
+-- un butin "recevoir" apparié compte comme cible mais PAS comme prise de pêche
+WoWMock.fireEvent('CHAT_MSG_LOOT','Vous recevez un butin : '..DEV)
+ck("receive_target_counted", CasinobabeDB.fishing.totals.targets == 2, tostring(CasinobabeDB.fishing.totals.targets))
+ck("receive_not_a_catch", CasinobabeDB.fishing.totals.catches == 2, tostring(CasinobabeDB.fishing.totals.catches))
+
 -- 9. Échec de lancer
 WoWMock.fireEvent('UNIT_SPELLCAST_SUCCEEDED','player','Fishing')
 WoWMock.fireEvent('UI_ERROR_MESSAGE',"Le poisson s'est échappé.")
@@ -206,8 +222,10 @@ async function main() {
     let parsed = null;
     try { parsed = JSON.parse(json); } catch { /* parse failed */ }
     record("export_json_valid", !!parsed && typeof parsed === "object");
-    record("export_json_totals", !!parsed && parsed.totals && parsed.totals.catches === 2 && parsed.totals.targets === 1,
-      parsed ? "catches=" + parsed.totals.catches : "parse failed");
+    record("export_json_totals", !!parsed && parsed.totals && parsed.totals.catches === 2 && parsed.totals.targets === 2
+      && parsed.totals.crafted === 1 && parsed.totals.possibleTargets === 1,
+      parsed ? "catches=" + parsed.totals.catches + " targets=" + parsed.totals.targets
+        + " crafted=" + parsed.totals.crafted + " possible=" + parsed.totals.possibleTargets : "parse failed");
     record("export_json_history", !!parsed && Array.isArray(parsed.history) && parsed.history.length >= 4,
       parsed ? "history=" + (parsed.history || []).length : "parse failed");
 

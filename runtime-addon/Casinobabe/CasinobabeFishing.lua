@@ -67,7 +67,8 @@ local function DB()
   end
   if type(fdb.totals) ~= "table" then
     fdb.totals = { catches = 0, targets = 0, lostCasts = 0, dups = 0,
-                   unknownKind = 0, combats = 0, deaths = 0, castObserved = 0 }
+                   unknownKind = 0, combats = 0, deaths = 0, castObserved = 0,
+                   crafted = 0, possibleTargets = 0 }
   end
   if type(fdb.spots) ~= "table" then fdb.spots = {} end
   if type(fdb.history) ~= "table" then fdb.history = {} end
@@ -219,6 +220,9 @@ end
 local function classifyLoot(msg)
   local m = norm(msg)
   if m:find("attrap") or m:find("catch") then return "catch" end
+  -- Transformation/craft (ex. cuisiner un Délice déviant) : JAMAIS compté
+  -- comme une prise ni comme un butin de pêche (règle anti-confusion).
+  if m:find("creez") or m:find("cree") or m:find("create") or m:find("fabriq") then return "create" end
   if m:find("recev") or m:find("receive loot") or m:find("butin") then return "receive" end
   return "unknown" -- langue inconnue → enregistré honnêtement comme inconnu
 end
@@ -254,12 +258,27 @@ local function recordLoot(kind, name, itemId, qty)
   qty = qty or 1
   local isT = isTarget(name, itemId)
 
+  -- Compteurs STRICTEMENT séparés (jamais confondus) :
+  --   catch   = prise de pêche confirmée (CHAT_MSG_LOOT "Vous attrapez")
+  --   receive = butin ramassé (mob/coffre) — compté comme cible SI apparié,
+  --             mais jamais comme une prise de pêche
+  --   create  = objet fabriqué/transformé (ex. plat cuisiné) — jamais cible
+  --   unknown = langue non reconnue — possible cible, en attente de confirmation
   if kind == "catch" then
     t.totals.catches = t.totals.catches + 1
+    if isT then t.totals.targets = t.totals.targets + qty end
+  elseif kind == "receive" then
+    if isT then t.totals.targets = t.totals.targets + qty end
+  elseif kind == "create" then
+    t.totals.crafted = (t.totals.crafted or 0) + qty
+    isT = false -- un plat transformé n'est jamais compté comme cible
   elseif kind == "unknown" then
     t.totals.unknownKind = t.totals.unknownKind + 1
+    if isT then
+      isT = false
+      t.totals.possibleTargets = (t.totals.possibleTargets or 0) + qty
+    end
   end
-  if isT then t.totals.targets = t.totals.targets + qty end
 
   local zone, x, y = zoneInfo()
   pushHistory({ ev = "LOOT", kind = kind, item = name, itemId = itemId,
@@ -520,7 +539,8 @@ F.Reset = function(confirmed)
   end
   local fresh = DB()
   fresh.totals = { catches = 0, targets = 0, lostCasts = 0, dups = 0,
-                   unknownKind = 0, combats = 0, deaths = 0, castObserved = 0 }
+                   unknownKind = 0, combats = 0, deaths = 0, castObserved = 0,
+                   crafted = 0, possibleTargets = 0 }
   fresh.history = {}
   fresh.spots = {}
   F.dedup = {}
@@ -565,6 +585,8 @@ F.ExportJSON = function()
   table.insert(parts, '"totals":{' ..
     '"catches":' .. fdb.totals.catches ..
     ',"targets":' .. fdb.totals.targets ..
+    ',"crafted":' .. (fdb.totals.crafted or 0) ..
+    ',"possibleTargets":' .. (fdb.totals.possibleTargets or 0) ..
     ',"lostCasts":' .. fdb.totals.lostCasts ..
     ',"dups":' .. fdb.totals.dups ..
     ',"unknownKind":' .. fdb.totals.unknownKind ..
