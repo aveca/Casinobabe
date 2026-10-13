@@ -79,6 +79,13 @@ local function DB()
                           "deviate delight", "deviate fish" }
   end
   if type(fdb.targets.ids) ~= "table" then fdb.targets.ids = {} end
+  if type(fdb.spotsDocumented) ~= "table" then
+    -- Spots documentés publiquement (oasis des Tarides, données classiques
+    -- publiques). Étiquetés : non vérifiés localement tant qu'aucun butin
+    -- confirmé ne leur est associé.
+    fdb.spotsDocumented = { ["Lushwater Oasis"] = true, ["Stagnant Oasis"] = true,
+                            ["Forgotten Pools"] = true }
+  end
   return fdb
 end
 
@@ -137,9 +144,22 @@ local function setState(s)
   if F.UI then pcall(function() F.UI.Refresh() end) end
 end
 
+-- ---------------------------------------------------------------------------
+-- Journal de diagnostic (aucune erreur avalée silencieusement)
+-- ---------------------------------------------------------------------------
 local function nowISO()
   return os.date("!%Y-%m-%dT%H:%M:%SZ")
 end
+
+local function pushDiag(event, note)
+  local fdb = DB()
+  fdb.diag = fdb.diag or {}
+  table.insert(fdb.diag, { ts = nowISO(), ev = tostring(event or "?"),
+                           from = tostring(F.state or F.STATES.INACTIF),
+                           note = tostring(note or "") })
+  while #fdb.diag > 20 do table.remove(fdb.diag, 1) end
+end
+F.pushDiag = pushDiag
 
 local function zoneInfo()
   local z = Safe(G("GetZoneText")) or "INCONNU"
@@ -343,10 +363,12 @@ F.OnEvent = function(self, event, ...)
     if F.state == F.STATES.EN_COURS or F.state == F.STATES.A_RECUPERER then
       if isFailureText(msg) then
         DB().totals.lostCasts = DB().totals.lostCasts + 1
+        pushDiag("LOST_CAST", tostring(msg))
         pushHistory({ ev = "LOST", item = tostring(msg), zone = zoneInfo(),
                       conf = "confirmé (UI_ERROR_MESSAGE)" })
         setState(F.STATES.PRET)
       else
+        pushDiag("ERROR_UNCLASSIFIED", tostring(msg))
         pushHistory({ ev = "ERROR_UNKNOWN", item = tostring(msg), zone = zoneInfo(),
                       conf = "non classé" })
       end
@@ -394,6 +416,7 @@ F.Activate = function()
   F.pausedAccum = 0
   local fdb = DB()
   fdb.enabled = true
+  pushDiag("ACTIVATE", "activation manuelle (bouton ou /cbfish on)")
   Log("MODE PÊCHE — ASSISTANT ACTIVÉ. État : " .. F.state)
   for _, l in ipairs(INSTRUCTIONS) do Log(l) end
   if F.UI then pcall(function() F.UI.Refresh() end) end
@@ -405,6 +428,7 @@ F.Pause = function()
   F.pausedAt = GetTime()
   setState(F.STATES.PAUSE)
   DB().enabled = false
+  pushDiag("PAUSE", "pause manuelle (bouton PAUSE ou /cbfish pause)")
   Log("PAUSE — analyse suspendue. Vos compteurs sont conservés.")
   return F.state
 end
@@ -415,6 +439,7 @@ F.Resume = function()
   F.pausedAt = nil
   setState(F.STATES.PRET)
   DB().enabled = true
+  pushDiag("RESUME", "reprise après pause")
   Log("REPRISE — analyse réactivée. État : " .. F.state)
   return F.state
 end
@@ -423,7 +448,7 @@ F.Stop = function()
   setState(F.STATES.INACTIF)
   local fdb = DB()
   fdb.enabled = false
-  F.castStart = nil
+  pushDiag("STOP", "arrêt manuel (bouton ARRÊT ou /cbfish off)")
   Log("ARRÊT — mode pêche désactivé. Journal conservé.")
   if F.UI then pcall(function() F.UI.Refresh() end) end
   return F.state
@@ -458,6 +483,12 @@ F.GetStatus = function()
     lastLoot = F.lastLoot,
     lastCombat = F.lastCombat,
     lastDeath = F.lastDeath,
+    selectedSpot = F.selectedSpot,
+    lastDiag = (function()
+      local db2 = rawget(_G, "CasinobabeDB")
+      local d = type(db2) == "table" and type(db2.fishing) == "table" and db2.fishing.diag or nil
+      return d and d[#d] or nil
+    end)(),
     cbErrors = (function()
       local db = rawget(_G, "CasinobabeDB")
       local j = type(db) == "table" and db.liveErrorJournal or nil
@@ -602,12 +633,102 @@ F.RecommendNext = function()
     if (s.targets or 0) < bestTargets then best, bestTargets = s, s.targets or 0 end
   end
   if not best then
+    -- fallback : 1er spot du registre documenté non encore observé
+    for name in pairs(fdb.spotsDocumented or {}) do
+      Log("Recommandation (données publiques, non vérifiées localement) : " .. name)
+      return name
+    end
     Log("Recommandation indisponible : aucune donnée de spot observée.")
     return nil
   end
   Log("Prochain spot recommandé (le moins productif en cibles) : " ..
     best.zone .. " — à vérifier manuellement.")
   return best.zone
+end
+
+-- ---------------------------------------------------------------------------
+-- Checklist de préparation (API gardées : connu / inconnu — jamais inventé)
+-- ---------------------------------------------------------------------------
+local ROD_PATTERNS = { "canne a peche", "fishing rod", "fishing pole", "strong fishing pole",
+                       "big iron fishing pole", "blump family fishing pole" }
+local BAITS = { "amorce brillante", "shiny bauble", "vers", "nightcrawlers",
+                "ver de terre", "appat", "flesh eating worm", "aquadynamic fish attractor" }
+
+F.ChecklistText = function()
+  local lines = {}
+  -- 1) Compétence Pêche connue ?
+  local gsi = G("GetSpellInfo")
+  local skill = "inconnu (API indisponible)"
+  if gsi then
+    local known = gsi("Pêche") or gsi("Fishing")
+    skill = known and ("connue (" .. tostring(known) .. ")") or "NON connue"
+  end
+  table.insert(lines, "Compétence: " .. skill)
+  -- 2) Canne équipée (slot à distance #18 en 2.5.x) ?
+  local gil = G("GetInventoryItemLink")
+  local rod = "inconnu (API indisponible)"
+  if gil then
+    local link = gil("player", 18)
+    if not link then
+      rod = "NON équipée (emplacement à distance vide)"
+    else
+      local name = tostring(link):match("\124h%[(.-)%]\124h") or ""
+      local nm = norm(name)
+      local ok = false
+      for _, p in ipairs(ROD_PATTERNS) do
+        if nm:find(p, 1, true) then ok = true break end
+      end
+      rod = ok and ("équipée (" .. name .. ")") or "autre arme: " .. name .. " (canne NON équipée)"
+    end
+  end
+  table.insert(lines, "Canne: " .. rod)
+  -- 3) Appât dans les sacs ?
+  local gic = G("GetItemCount")
+  local bait = "inconnu (API indisponible)"
+  if gic then
+    local total, found = 0, nil
+    for _, b in ipairs(BAITS) do
+      local n = gic(b) or 0
+      if n > total then total, found = n, b end
+    end
+    bait = total > 0 and ("prêt: " .. found .. " x" .. total) or "AUCUN détecté (appliquez-le manuellement)"
+  end
+  table.insert(lines, "Appât: " .. bait)
+  return lines
+end
+
+-- Sélecteur de spots : cycle parmi les spots enregistrés + documentés
+F.spotIdx = 0
+F.SelectNextSpot = function()
+  local names = {}
+  local fdb = DB()
+  for _, s in pairs(fdb.spots) do table.insert(names, s.zone or "?") end
+  for name in pairs(fdb.spotsDocumented or {}) do table.insert(names, name) end
+  if #names == 0 then
+    F.selectedSpot = nil
+    Log("Aucun spot enregistré. Données insuffisantes.")
+    return nil
+  end
+  table.sort(names)
+  F.spotIdx = (F.spotIdx % #names) + 1
+  F.selectedSpot = names[F.spotIdx]
+  Log("SPOT sélectionné: " .. F.selectedSpot .. " (déplacement manuel)")
+  if F.UI then pcall(function() F.UI.Refresh() end) end
+  return F.selectedSpot
+end
+
+F.CurrentSpotName = function()
+  local z = Safe(G("GetZoneText"))
+  return z or nil
+end
+
+-- Recommandation eau libre (données publiques documentées — JAMAIS une action)
+F.OpenWaterAdvice = function()
+  local z = norm(Safe(G("GetZoneText")) or "")
+  if z:find("barrens", 1, true) or z:find("tarides", 1, true) then
+    return "Eau libre OK pour Poisson-dévie dans les oasis (données publiques) — recommandation, pas une action effectuée."
+  end
+  return nil
 end
 
 -- ---------------------------------------------------------------------------
@@ -632,7 +753,7 @@ local function buildUI()
   local BackdropTemplate = Gv("BackdropTemplateMixin")
   local fb = CreateFrame("Frame", "Casinobabe_FishingBar", UIParent,
     BackdropTemplate and "BackdropTemplate" or nil)
-  fb:SetSize(300, 216)
+  fb:SetSize(300, 262)
   fb:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMRIGHT", -12, 180)
   fb:SetFrameStrata("MEDIUM")
   fb:SetMovable(true); fb:EnableMouse(true); fb:RegisterForDrag("LeftButton")
@@ -678,7 +799,7 @@ local function buildUI()
   rowBtn("PAUSE",    8,  function() F.Pause() end)
   rowBtn("ARRÊT",    78, function() F.Stop() end)
   rowBtn("EXPORT",  148, function() F.ExportJSON() end)
-  rowBtn("SPOTS",   218, function() F.ListSpots() end)
+  rowBtn("SPOTS",   218, function() F.SelectNextSpot() end)
 
   local resetBtn = makeButton(fb, 284, 20, "RESET (compteurs)", function()
     local r = F.Reset(nil)
@@ -688,7 +809,15 @@ local function buildUI()
 
   local info = fb:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   info:SetPoint("TOP", 0, -172)
-  info:SetText("Touche non détectable par l'API : observez le flotteur, cliquez-le.")
+  info:SetText("BITE NOT AUTOMATICALLY DETECTABLE — WATCH THE BOBBER / observez le flotteur, cliquez-le.")
+
+  local checklist = fb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  checklist:SetPoint("TOP", 0, -188)
+  checklist:SetText("")
+
+  local spotLine = fb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  spotLine:SetPoint("TOP", 0, -236)
+  spotLine:SetText("")
 
   F.UI = {
     frame = fb,
@@ -703,7 +832,20 @@ local function buildUI()
       alert:SetText(last and ("Dernier butin : " .. tostring(last.item) ..
         (last.target and " |cffffd700★ CIBLE|r" or "")) or "Aucun butin enregistré.")
       toggle.text:SetText((F.state == F.STATES.INACTIF or F.state == F.STATES.PAUSE)
-        and "MODE PÊCHE — ASSISTANT : ACTIVER" or "MODE PÊCHE — ASSISTANT : ACTIF")
+        and "FISHING ASSISTANT — START" or "FISHING ASSISTANT — STOP")
+      -- checklist (connu vs inconnu, jamais inventé)
+      local cl = F.ChecklistText and F.ChecklistText() or nil
+      if cl then checklist:SetText(table.concat(cl, "\n")) end
+      -- ligne spot : sélection manuelle + recommandation eau libre
+      local spotTxt = "SPOT: --"
+      if F.selectedSpot then spotTxt = "SPOT sélectionné: " .. F.selectedSpot
+      else
+        local z = F.CurrentSpotName()
+        if z then spotTxt = "SPOT actuel (zone): " .. z end
+      end
+      local ow = F.OpenWaterAdvice and F.OpenWaterAdvice()
+      if ow then spotTxt = spotTxt .. "\n" .. ow end
+      spotLine:SetText(spotTxt)
     end,
   }
 
