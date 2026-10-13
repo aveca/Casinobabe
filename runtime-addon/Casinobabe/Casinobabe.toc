@@ -2,7 +2,7 @@
 ## Title: |cffFFD700Casinobabe|r
 ## Notes: Interactive customer panel for the Casinobabe gold casino - live balance, one-click bets, cashback, and a center action pop-up.
 ## Author: Casinobabe
-## Version: 1.0.38
+## Version: 1.0.39
 ## SavedVariables: CasinobabeDB, CasinobabeErrorBus
 ## X-Website: https://discord.gg/Casinobabetbc
 ## X-Category: Roleplay
@@ -15,4 +15,5 @@ CasinobabeShowEngine.lua
 
 LiveErrorCapture.lua
 Casinobabe.lua
+CasinobabeFishing.lua
 CasinobabeSelfTest.lua
