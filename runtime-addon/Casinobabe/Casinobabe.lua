@@ -41,7 +41,7 @@ end
 local function LiveErrorBusAppend(message, stack)
   CasinobabeDB = CasinobabeDB or {}
   CasinobabeDB.liveErrorBusVersion = 1
-  local timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  local timestamp = date("!%Y-%m-%dT%H:%M:%SZ")
   local file = tostring(message or ""):match("([%w_]+%.lua)")
   local line = tonumber(tostring(message or ""):match("%.lua:(%d+)")) or 0
   local phase = "WOW_ERROR"
