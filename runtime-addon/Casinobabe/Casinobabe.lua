@@ -2901,7 +2901,12 @@ function DealerStake(playerName, amountStr)
   end
 
   -- Parse amount (e.g., "50g" or "50")
-  local amount = tonumber(amountStr:match("(%d+%.?%d*)"))
+  local amount
+  if type(amountStr) == "number" then
+    amount = amountStr
+  else
+    amount = tonumber(tostring(amountStr):match("(%d+%.?%d*)"))
+  end
   if not amount then return false, DEALER_ERRORS.ERR_BAD_STAKE end
   
   local ok, err = ValidateStake(session.game, amount)
@@ -3096,7 +3101,12 @@ function DealerPayout(playerName, amountStr)
   if session.payoutCompleted then return false, DEALER_ERRORS.ERR_DOUBLE_PAYOUT end
   
   local expectedPayout = session.payout
-  local amount = tonumber(amountStr and amountStr:match("(%d+%.?%d*)") or expectedPayout)
+  local amount
+  if type(amountStr) == "number" then
+    amount = amountStr
+  elseif type(amountStr) == "string" then
+    amount = tonumber(amountStr:match("(%d+%.?%d*)"))
+  end
   if not amount then amount = expectedPayout end
   
   if amount ~= expectedPayout then
