@@ -1,0 +1,19 @@
+{
+  "castKey": "2",
+  "castSettleSec": 3.0,
+  "maxBiteWaitSec": 32.0,
+  "clickAfterBiteMs": 150,
+  "bobberMinConf": 0.55,
+  "biteDiffThresh": 5.0,
+  "biteWhiteFrac": 0.03,
+  "biteMotionThresh": 3.5,
+  "biteMotionStreak": 4,
+  "biteGraceSec": 7.0,
+  "biteStrongDiff": 10.0,
+  "biteStrongWhite": 0.08,
+  "biteConsecutive": 2,
+  "manualSuspendSec": 120,
+  "manualSuspendMaxSec": 1800,
+  "captureIntervalSec": 0.15,
+  "detectScale": 1.0
+}
