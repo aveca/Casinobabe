@@ -31,6 +31,44 @@ Usage :
   python scripts/fishing_bot.py --cli      # boucle console
   python scripts/fishing_bot.py --detect   # une frame : rapport détection
   python scripts/fishing_bot.py --calibrate --casts 1
+
+================================================================================
+MÉMO MULTI-AGENTS (plusieurs sessions travaillent sur ce fichier) — À LIRE
+AVANT TOUTE MODIFICATION. Invariants posés par le fix 2026-10-15, tous
+validés EN JEU à l'oasis des Tarides (Lushwater Oasis) — ne pas casser :
+
+1. DÉTECTION : la voie JOUR `detect_bobber` (validée 11/11 sur captures
+   Lushwater, centroïde exact) doit TOUJOURS être tentée en premier.
+   L'ambiance lumineuse (amb) de l'oasis de JOUR mesure 82-94 : ce N'EST PAS
+   de la nuit. Utiliser exclusivement `detect_bobber_hybrid()` — ne JAMAIS
+   router directement vers `_night_peak` sur un seuil amb (l'eau verte fait
+   échouer son test d'anneau non-vert -> détecteur aveugle, séries de 100+
+   WATCH_MISS observées le 15/10 avant fix).
+
+2. `_verify_click` : une SEULE définition doit exister. Un doublon
+   écrase silencieusement la première version en Python (bug réel du
+   15/10 : la version sans repositionnement du curseur écrasait la bonne ->
+   clics de récupération ratés). Avant d'ajouter/modifier une méthode,
+   grep "def _verify_click" : doit retourner UNE ligne.
+
+3. `_click(self, x, y)` : contrat FIXE — la méthode résout elle-même
+   hwnd/rect via find_wow_window() et repositionne le curseur. Les
+   appelants doivent l'appeler avec 2 args (x, y) — PAS de threading de
+   rect (cause du NameError qui a tué le bot à chaque touche le 15/10 :
+   `rect` n'existe pas dans le scope de _wait_bite).
+
+4. TOUCHES : les portes d'écume (whiteFrac) sont RELATIVES à la baseline
+   du spot (médiane glissante `self._wf_hist`, réapprise à chaque lancer
+   et re-verrouillage). Les reflets du soleil maintiennent wf ~0.035
+   CONSTANT sur certains spots — au-dessus du seuil absolu 0.03 : tout
+   retour à une comparaison 100% absolue recrée les fausses touches
+   (clics dans l'eau, ligne ramenée, zéro poisson).
+
+5. TESTER AVANT DE COMMITTER : `python -m py_compile scripts/fishing_bot.py`,
+   puis `--detect` (1 frame, sans input) sur fenêtre WoW vivante, et si
+   possible un cycle live complet (cast -> verrou -> touche -> click ->
+   VERIFY_OK) en surveillant reports/fishing-bot-log.jsonl.
+================================================================================
 """
 import argparse
 import ctypes
@@ -1095,7 +1133,7 @@ class FishingBot:
                      whiteFrac=round(wf, 3), counters=self.counters)
             shot = self.snapshot("bite")
             time.sleep(self.config["clickAfterBiteMs"] / 1000.0)
-            ok = self._click(bx, by)
+            ok = self._click(bx, by)  # 2 args : _click résout rect lui-même (mémo multi-agents)
             img.save(shot)
             self._cycle_summary("bite", ok)
             return
@@ -1215,6 +1253,12 @@ class FishingBot:
         # P0 : l'interaction de récupération sur un flotteur WoW est le CLIC
         # DROIT (le clic gauche ne fait que cibler). Bouton droit explicite,
         # relâchement propre, vérification du résultat avant de poursuivre.
+        #
+        # CONTRAT MULTI-AGENTS (cf. mémo en tête de fichier) : signature
+        # FIXE (self, x, y). La méthode résout elle-même hwnd/rect via
+        # find_wow_window() — ne PAS passer rect en argument (le rect n'est
+        # pas défini dans le scope des appelants : NameError à chaque
+        # touche, bug 2026-10-15) et ne PAS dupliquer cette méthode.
         hwnd, _t, rect = find_wow_window()
         if not hwnd or user32.GetForegroundWindow() != hwnd:
             self.log("CLICK_ABORTED", reason="WoW perdu le premier plan")
@@ -1242,7 +1286,13 @@ class FishingBot:
         disparu (récupéré... ou échappé — le butin lui-même n'est confirmable
         que par les compteurs addon). S'il est toujours là, UN seul second
         clic à la NOUVELLE position du flotteur (pas de spam).
-        Retourne True si interaction confirmée (flotteur disparu ou dérivé > 60px)."""
+        Retourne True si interaction confirmée (flotteur disparu ou dérivé > 60px).
+
+        CONTRAT MULTI-AGENTS (cf. mémo en tête de fichier) : ceci est la
+        SEULE définition de _verify_click. Un doublon plus bas dans la
+        classe l'écraserait silencieusement (bug 2026-10-15 : la vieille
+        version sans repositionnement du curseur reprenait la main et les
+        clics de récupération tombaient à côté du flotteur)."""
         time.sleep(1.0)
         img, err = capture_window(hwnd)
         if img is None:
