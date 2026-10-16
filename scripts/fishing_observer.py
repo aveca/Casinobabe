@@ -160,6 +160,54 @@ def is_wow_frame(img):
     return max(_region_color_count(img, r) for r in WOW_REGIONS) > WOW_MIN_COLORS
 
 
+# ---------------------------------------------------------------------------
+# Détection « perso EN JEU » (HUD) — fix 2026-10-16.
+# Cause racine : is_wow_frame laisse passer l'écran de login/char-select
+# (artwork très riche en couleurs). Or le bot envoie castKey dès que WoW est
+# au premier plan : un « 2 » tapé pendant le login peut atterrir dans le
+# champ mot de passe. Signature HUD utilisée : les barres du cadre joueur en
+# haut à gauche — vie (vert saturé, mesuré y 0.071-0.080, teinte PIL 80) +
+# ressource en dessous (mana bleu teinte PIL 168 / énergie jaune / rage rouge,
+# mesuré y 0.084-0.097) — présentes en jeu, absentes du login.
+# ---------------------------------------------------------------------------
+_HUD_HEALTH = (0.050, 0.069, 0.175, 0.082)   # bande verte du cadre joueur
+_HUD_SECOND = (0.050, 0.084, 0.175, 0.098)   # bande ressource sous la vie
+_HUD_MIN_FRAC = 0.20                         # barres partiellement vides OK
+
+
+def _hud_bar_frac(img, frac, hue_lo=None, hue_hi=None):
+    """Fraction de pixels saturés et lumineux dans la région fractionnaire.
+    Si hue_lo/hue_hi donnés (échelle PIL 0-255), filtre en plus sur la teinte."""
+    w, h = img.size
+    crop = img.crop((int(w * frac[0]), int(h * frac[1]),
+                     int(w * frac[2]), int(h * frac[3])))
+    try:
+        hsv = crop.convert("HSV")
+    except Exception:
+        return 0.0
+    data = list(hsv.getdata())
+    if not data:
+        return 0.0
+    n = sum(1 for (hh, ss, vv) in data
+            if ss > 110 and vv > 90
+            and (hue_lo is None or hue_lo <= hh <= hue_hi))
+    return n / float(len(data))
+
+
+def is_ingame_frame(img):
+    """Vrai si le HUD du cadre joueur est visible (perso EN JEU, pas login).
+    Convertit via PIL (pas de numpy ici) : coût ~1 ms sur les 2 petits crops.
+    Vie = vert spécifique ; ressource = n'importe quelle teinte saturée
+    (mana bleu / énergie jaune / rage rouge — compatible toutes classes).
+    Seuil bas (_HUD_MIN_FRAC) : accepte une vie/ressource partielle."""
+    if img is None or img.size[0] < 200 or img.size[1] < 200:
+        return False
+    # Teinte PIL (H = degré * 255 / 360) : vert ~ 75-100 (mesuré 80).
+    health = _hud_bar_frac(img, _HUD_HEALTH, 70, 105)
+    resource = _hud_bar_frac(img, _HUD_SECOND)
+    return health >= _HUD_MIN_FRAC and resource >= _HUD_MIN_FRAC
+
+
 def load_spots():
     """Charge le registre. En cas d'erreur retourne None : JAMAIS de registre
     par défaut vide — ce défaut (fallback silencieux) a effacé toutes les

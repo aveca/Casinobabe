@@ -85,7 +85,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fishing_observer import find_wow_window, capture_window, is_wow_frame  # noqa: E402
+from fishing_observer import find_wow_window, capture_window, is_wow_frame, is_ingame_frame  # noqa: E402
 try:
     import fishing_memory as memory  # mémoire persistante (jamais bloquante)
 except Exception:  # pragma: no cover
@@ -669,13 +669,20 @@ class FishingBot:
             # Vérification d'écran avec réessais (un glitch PrintWindow ou un
             # changement de zone au démarrage ne doit pas tuer le bot : la
             # boucle principale attendrait sinon indéfiniment un thread mort).
+            # Fix 2026-10-16 : porte « perso EN JEU » (is_ingame_frame : HUD
+            # du cadre joueur) au lieu de is_wow_frame — l'écran de login est
+            # chromatiquement riche et passait l'ancien test ; or envoyer
+            # castKey pendant le login peut taper dans le champ mot de passe.
+            # Patience portée à 30 x 10 s (5 min) : le joueur peut lancer le
+            # bot AVANT de se logger, plus aucune coordination nécessaire.
             img, err, ok_frame = None, "non tenté", False
-            for attempt in range(6):
+            for attempt in range(30):
                 img, err = capture_window(hwnd)
-                if img is not None and is_wow_frame(img):
+                if img is not None and is_wow_frame(img) and is_ingame_frame(img):
                     ok_frame = True
                     break
-                self.log("STARTUP_RETRY", attempt=attempt + 1, error=err)
+                self.log("STARTUP_RETRY", attempt=attempt + 1, error=err,
+                         note="attente perso en jeu (HUD) - jamais de touche pendant le login")
                 time.sleep(10)
                 hwnd, title, rect = find_wow_window()
                 if not hwnd:

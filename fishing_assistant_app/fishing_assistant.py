@@ -219,7 +219,7 @@ def bot_worker():
         import subprocess
         proc = subprocess.Popen(
             [sys.executable, "-u",
-             os.path.join(ROOT, "scripts", "fishing_bot.py", "--cli")],
+             os.path.join(ROOT, "scripts", "fishing_bot.py"), "--cli"],
             cwd=ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -287,7 +287,7 @@ def run_gui():
                         command=lambda: stop_assistant_gui(), state=tk.DISABLED, **btn_style)
     btn_stop.grid(row=3, column=0, columnspan=2, padx=5, pady=8)
 
-    metrics_frame = ttk.LabelFrame(main_frame, text "Metriques", padding=(5, 5))
+    metrics_frame = ttk.LabelFrame(main_frame, text="Metriques", padding=(5, 5))
     metrics_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=5)
 
     casts_var = tk.StringVar(value="Lances: 0")
@@ -298,7 +298,7 @@ def run_gui():
     ttk.Label(metrics_frame, textvariable=bites_var).grid(row=0, column=1, sticky="w", padx=(10, 0))
     ttk.Label(metrics_frame, textvariable=errors_var).grid(row=0, column=2, sticky="w", padx=(10, 0))
 
-    log_frame = ttk.LabelFrame(main_frame, text "Journaux", padding=(5, 5))
+    log_frame = ttk.LabelFrame(main_frame, text="Journaux", padding=(5, 5))
     log_frame.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=5)
 
     log_text = tk.Text(log_frame, height=8, width=40, state=tk.DISABLED)
