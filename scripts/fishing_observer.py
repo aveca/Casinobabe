@@ -148,14 +148,31 @@ def find_wow_window(instance=None):
 
 
 def capture_window(hwnd):
-    """PrintWindow sans focus → PIL.Image (RGB) ou None avec raison."""
+    """PrintWindow sans focus → PIL.Image (RGB) ou None avec raison.
+
+    FENETRE RÉDUITE (minimized) : GetWindowRect renvoie alors
+    (-32000,-32000,-31972,-31840), soit une surface de 28x160 px. PrintWindow
+    y met une image minuscule et illisible : le détecteur de flotteur ne peut
+    RIEN voir et le bot accumule des WATCH_MISS en boucle sans jamais
+    comprendre pourquoi (constaté le 2026-10-17 : "il ne pêche pas" alors que
+    la cause était une WoW minimisée). On refuse donc explicitement, avec une
+    raison exploitable, au lieu de renvoyer une image poubelle.
+    """
     user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+    if user32.IsIconic(hwnd):
+        return None, "FENETRE_REDUITE: WoW est minimisee, capture impossible " \
+                     "(restaurer la fenetre avec ShowWindow SW_RESTORE)"
     r = wintypes.RECT()
     if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
         return None, "GetWindowRect failed"
     w, h = r.right - r.left, r.bottom - r.top
     if w <= 0 or h <= 0:
         return None, "invalid window size"
+    # Une fenetre reduite a l'ecran (pas WM_SIZE mais rect collaapse) est
+    #Detectee de meme : sous 320x200 il ne peut pas s'agir du jeu.
+    if w < 320 or h < 200:
+        return None, ("FENETRE_TROP_PETITE: %dx%d - capture impossible "
+                      "(fenetre WoW restauree ?)" % (w, h))
     hdc = user32.GetWindowDC(hwnd)
     mem = gdi32.CreateCompatibleDC(hdc)
     bmp = gdi32.CreateCompatibleBitmap(hdc, w, h)
