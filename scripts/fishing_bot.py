@@ -85,7 +85,8 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from fishing_observer import find_wow_window, capture_window, is_wow_frame, is_ingame_frame  # noqa: E402
+from fishing_observer import (find_wow_window, capture_window, is_wow_frame,  # noqa: E402
+                             is_ingame_frame, list_wow_windows, get_wow_instance)
 try:
     import fishing_memory as memory  # mémoire persistante (jamais bloquante)
 except Exception:  # pragma: no cover
@@ -663,6 +664,12 @@ class FishingBot:
         self._mem_action = None
         try:
             hwnd, title, rect = find_wow_window()
+            # Trace explicite de la fenêtre ciblée : avec 2 clients ouverts les
+            # deux ont le titre "World of Warcraft", un ciblage faux se voyait
+            # seulement par un cast dans le mauvais jeu (symptôme, pas cause).
+            self.log("WIN_TARGET", hwnd=hwnd, rect=rect,
+                     instance=get_wow_instance() or "first",
+                     wowWindows=len(list_wow_windows()))
             if not hwnd:
                 self._fail("WoW introuvable : fenêtre 'World of Warcraft' absente.")
                 return
@@ -1076,8 +1083,10 @@ class FishingBot:
             hist = self._wf_hist = deque(maxlen=24)
         hist.append(wf)
         wf_floor = statistics.median(hist)
+        # Use biteWhiteFrac as hard floor; spot baseline addsitively on top
+        # so the gate never exceeds what the config considers a valid bite signal.
         wf_gate_std = max(self.config["biteWhiteFrac"],
-                          wf_floor * 2.0, wf_floor + 0.015)
+                          wf_floor + self.config["biteWhiteFrac"])
         wf_gate_hard = max(self.config["biteStrongWhite"], wf_floor * 3.0)
         wf_gate_move = max(0.02, wf_floor * 1.8)
         # Déplacement du centroïde depuis la frame précédente : le flotteur
@@ -1451,18 +1460,38 @@ def build_gui(bot):
 
 
 def main():
+    global LOG_FILE
     ap = argparse.ArgumentParser()
     ap.add_argument("--cli", action="store_true", help="boucle sans GUI")
     ap.add_argument("--detect", action="store_true", help="une frame, rapport JSON")
     ap.add_argument("--calibrate", action="store_true")
     ap.add_argument("--casts", type=int, default=1)
+    ap.add_argument("--instance", default=None,
+                    help="fenetre WoW ciblee quand plusieurs clients sont "
+                         "ouverts : '1'/'first' (defaut), '2'/'second', "
+                         "'last', ou un index. Chaque instance a son PID et "
+                         "son journal pour ne pas se confondre.")
     args = ap.parse_args()
 
     # Verrou anti-doublon (même mécanisme que l'observateur) : deux bots qui
     # lancent en même temps = double lancer, fausses statistiques.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import fishing_observer  # local
-    _BOT_PID_PATH = os.path.join(ROOT, "state", "fishing-bot.pid")
+
+    # Multi-client : la cible de fenêtre est fixée UNE fois pour tout le
+    # process (helpers send_key/send_escape compris, qui re-résolvent la
+    # fenêtre à chaque appui — sans cela un bot 'us' peut taper dans 'eu').
+    instance = (args.instance or "").strip().lower() or None
+    if instance:
+        fishing_observer.set_wow_instance(instance)
+        # Fichiers par instance : le verrou PID et le journal JSONL sont
+        # partagés sinon (le 2e bot serait refusé, ou les lignes mélangées).
+        LOG_FILE = os.path.join(ROOT, "reports", "fishing-bot-log-%s.jsonl" % instance)
+        _safe_print("Instance ciblée : %s (journal %s)"
+                    % (instance, os.path.basename(LOG_FILE)))
+
+    _BOT_PID_PATH = os.path.join(ROOT, "state", "fishing-bot%s.pid"
+                                 % ("-" + instance if instance else ""))
     if not args.detect and not fishing_observer.acquire_single_instance(pid_path=_BOT_PID_PATH):
         sys.exit(2)
     if not args.detect:

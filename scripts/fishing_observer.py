@@ -67,8 +67,40 @@ PUBLIC_SPOTS = [
 ]
 
 
-def find_wow_window():
-    """Retourne (hwnd, title, rect) de la fenêtre principale WoW, sans focus."""
+# Sélecteur de fenêtre WoW,_valable pour tout le process.
+# CAUSE RACINE du multi-client : deux clients WoW ouverts (2 persos du même
+# compte bnet) partagent EXACTEMENT le titre "World of Warcraft". L'ancien
+# find_wow_window() renvoyait toujours found[0] : deux bots lancés en parallèle
+# visaient donc la même fenêtre, et pire, send_key()/send_escape() (helpers
+# module-level) ré-resolvent la fenêtre à chaque appui et pouvaient envoyer une
+# touche dans le MAUVAIS client. Ici la cible est fixée UNE fois au démarrage
+# (set_wow_instance) et tous les appelants la respectent.
+_INSTANCE = {"name": None}
+
+
+def set_wow_instance(name):
+    """Fixe la fenêtre WoW ciblée par tout le process.
+
+    name : None / "" / "1" / "first" -> 1re fenêtre (comportement historique)
+           "2" / "second" / "us" / "eu" -> index 1
+           "last" -> dernière fenêtre
+           "<n>" -> index n-1 (1-based)
+    """
+    _INSTANCE["name"] = (str(name).strip().lower() if name else None)
+    return _INSTANCE["name"]
+
+
+def get_wow_instance():
+    return _INSTANCE["name"]
+
+
+def list_wow_windows():
+    """Toutes les fenêtres WoW visibles : liste de (hwnd, title, rect).
+
+    L'ordre est celui d'ÉnumWindows des fenêtres (donc stable entre deux
+    appels tant que les clients ne sont pas (re)lancés) : c'est cet ordre qui
+    définit 'first'/'second'.
+    """
     user32 = ctypes.windll.user32
     found = []
 
@@ -87,7 +119,32 @@ def find_wow_window():
         return True
 
     user32.EnumWindows(cb, 0)
-    return found[0] if found else (None, None, None)
+    return found
+
+
+def find_wow_window(instance=None):
+    """(hwnd, title, rect) de la fenêtre WoW ciblée, sans focus.
+
+    instance=None -> la cible fixée par set_wow_instance() (défaut historique :
+    la 1re fenêtre). instance explicite -> prioritaire sur la cible globale.
+    """
+    found = list_wow_windows()
+    if not found:
+        return (None, None, None)
+    name = _INSTANCE["name"] if instance is None else str(instance).strip().lower()
+    name = name or None
+    idx = 0
+    if name and name not in ("1", "first", "premier"):
+        if name in ("last", "dernier", "-1"):
+            idx = len(found) - 1
+        else:
+            try:
+                idx = max(0, min(len(found) - 1, int(name) - 1))
+            except ValueError:
+                # alias libres (us/eu/eu1...) : on retombe sur la 1re fenêtre
+                # mais le BIO est explicite pour diagnostiquer un mauvais alias.
+                idx = 0
+    return found[idx]
 
 
 def capture_window(hwnd):
