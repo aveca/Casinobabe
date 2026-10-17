@@ -39,8 +39,10 @@ Ce qui est automatisable, et c'est suffisant :
   **plus aucune étape de login**.
 - **Passkey / Windows Hello** : le programme clique « Use passkey », l'OS
   authentifie via PIN/empreinte. Le secret ne quitte jamais l'OS. Vérifié le
-  2026-10-17 : le titre de la fenêtre passe de `Battle.net Login` à
-  `Battle.net`, ce qui est précisément le signal que le script attend.
+  2026-10-17 : la procédure atteint bien l'écran Windows Hello (« visage,
+  empreinte digitale, code PIN ou clé de sécurité »), **mais cette étape
+  demande la présence physique de l'utilisateur** — aucun script ne peut y
+  répondre à sa place.
 - **« Email a code »** : même principe, code lu par l'utilisateur.
 
 L'utilisateur valide donc **une fois** (PIN ou code). Ensuite le bouton fait
@@ -61,15 +63,25 @@ Règle codée dans le script : compter les fenêtres bnet, n'en démarrer **qu'u
 si 0, attendre sa fenêtre, envoyer `--launch` **une seule fois**, et refuser de
 continuer si deux fenêtres authentifiées coexistent.
 
-### 2. Détection de session = le titre de la fenêtre
+### 2. Détection de session : le titre seul ne suffit pas
 
 | Titre | Signification |
 |-------|---------------|
 | `Battle.net Login` | session **déconnectée** → le script s'arrête et le dit |
-| `Battle.net` | session **authentifiée** → on peut lancer WoW |
+| `Battle.net` | **nécessaire mais pas suffisant** |
 
-Une capture d'écran ne suffit pas à distinguer les deux (le formulaire de login
-est aussi « connectedness »), d'où le contrôle par titre.
+Le titre `Battle.net` apparaît dès la **tentative** de login (fenêtre de
+départ + Windows Hello), pas quand la session aboutit. Constaté le 2026-10-17 :
+après « Use passkey », le titre valait `Battle.net`, le script a cru être
+authentifié et envoyé `--launch` → une 2e instance s'est ouverte sur une fenêtre
+`Battle.net Login`, puis crash `Blizzard Error`.
+
+Règle codée : si une fenêtre `Battle.net Login` **réapparaît après** le
+`--launch`, c'est que l'authentification n'a pas abouti → message explicite
+(« termine la connexion, puis relance ») au lieu d'une attente de 240 s.
+
+Une capture d'écran ne distingue pas non plus les deux états (le formulaire de
+login est lui aussi « connectedness »), d'où le contrôle par titre.
 
 ### 3. `fishing_bot.py` ne compilait pas
 

@@ -312,6 +312,14 @@ try {
     if ($loginWins.Count -gt 0) {
       throw "Battle.net n'est PAS connecte (fenetre 'Battle.net Login'). Connecte-toi sur Battle.net (identifiants saisis par toi uniquement), puis relance ce script : le bot, lui, peut demarrer avant et attendra le login."
     }
+    # ATTENTION : le titre "Battle.net" apparait des la TENTATIVE de login
+    # (fenetre de depart + Windows Hello), pas quand la session aboutit. Le
+    # 2026-10-17 : apres "Use passkey" le titre valait "Battle.net", le
+    # script a cru etre authentifie et a envoye --launch -> une 2e instance
+    # s'est ouverte sur une fenetre "Battle.net Login" (puis crash Blizzard
+    # Error au 2e essai). Le seul signal fiable reste l'absence de toute
+    # fenetre Login ET l'apparition reelle du client WoW : on verifie donc
+    # aussi, apres le --launch, qu'aucune nouvelle fenetre Login n'apparait.
     $authWins = @($bnetWins | Where-Object { $_.MainWindowTitle -eq "Battle.net" })
     if ($authWins.Count -eq 0) {
       throw "Aucune fenetre Battle.net authentifiee (titres vus : $titles). Reconnecte-toi puis relance."
@@ -336,6 +344,13 @@ try {
         Start-Sleep -Seconds 2
       }
       if (@(Get-WowWindows).Count -lt $target) {
+        # Verifie si l'echec vient de l'auth : une fenetre Login apparue
+        # apres le --launch = la session n'etait pas aboutie.
+        $post = @(Get-Process -Name "Battle.net" -ErrorAction SilentlyContinue |
+                  Where-Object { $_.MainWindowTitle -like "*Login*" })
+        if ($post.Count -gt 0) {
+          throw "L'authentification Battle.net n'a pas abouti (fenetre 'Battle.net Login' reapparue apres --launch). Termine la connexion (passkey/Windows Hello ou code email) PUIS relance : ne relance pas pendant que la fenetre Windows Hello est ouverte."
+        }
         throw ("Fenetre 'World of Warcraft' {0}/{1} absente apres {2} s." -f $target, $Clients, $WowTimeoutSec)
       }
     }
