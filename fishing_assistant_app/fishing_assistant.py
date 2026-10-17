@@ -253,7 +253,7 @@ def run_gui():
 
     root = tk.Tk()
     root.title("Casinobabe - Assistant Peche")
-    root.geometry("420x320")
+    root.geometry("420x420")
     root.resizable(False, False)
     root.protocol("WM_DELETE_WINDOW", lambda: on_close_gui(root))
 
@@ -287,8 +287,18 @@ def run_gui():
                         command=lambda: stop_assistant_gui(), state=tk.DISABLED, **btn_style)
     btn_stop.grid(row=3, column=0, columnspan=2, padx=5, pady=8)
 
+    # --- 1 bouton : replay integral de la sequence lancee a la main -------
+    # sync addon -> lance WoW (Battle.net) -> positionne les fenetres ->
+    # lance le bot en arriere-plan -> attend la porte "perso en jeu".
+    # Rejouable : le script est idempotent (il detecte l'etat reel avant
+    # d'agir) et s'arrete proprement si Battle.net n'est pas connecte
+    # (identifiants saisis par l'utilisateur, jamais par le script).
+    btn_oneclick = ttk.Button(main_frame, text="1-CLIC : WoW + BOT",
+                              command=lambda: on_oneclick())
+    btn_oneclick.grid(row=4, column=0, columnspan=2, padx=5, pady=(4, 10))
+
     metrics_frame = ttk.LabelFrame(main_frame, text="Metriques", padding=(5, 5))
-    metrics_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=5)
+    metrics_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=5)
 
     casts_var = tk.StringVar(value="Lances: 0")
     bites_var = tk.StringVar(value="Morsures: 0")
@@ -299,7 +309,7 @@ def run_gui():
     ttk.Label(metrics_frame, textvariable=errors_var).grid(row=0, column=2, sticky="w", padx=(10, 0))
 
     log_frame = ttk.LabelFrame(main_frame, text="Journaux", padding=(5, 5))
-    log_frame.grid(row=5, column=0, columnspan=2, sticky="nsew", pady=5)
+    log_frame.grid(row=6, column=0, columnspan=2, sticky="nsew", pady=5)
 
     log_text = tk.Text(log_frame, height=8, width=40, state=tk.DISABLED)
     scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL, command=log_text.yview)
@@ -353,6 +363,41 @@ def run_gui():
         root.after(100, process_queue)
 
     root.after(100, process_queue)
+
+    def oneclick_worker():
+        """Rejoue la sequence complete via scripts/fishing-oneclick.ps1.
+
+        Le script fait tout le travail Rejouable : sync addon, lancement WoW,
+        focus fenetre, bot en arriere-plan, attente porte in-game. Aucun
+        identifiant n'est saisi ici : si Battle.net n'est pas connecte, le
+        script s'arrete et le dit (l'utilisateur se connecte lui-meme).
+        """
+        import subprocess
+        script = os.path.join(ROOT, "scripts", "fishing-oneclick.ps1")
+        if not os.path.isfile(script):
+            msg_queue.put("LOG:1-CLIC impossible : %s introuvable" % script)
+            return
+        args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", script, "-NoWait"]
+        msg_queue.put("LOG:=== 1-CLIC : %s ===" % " ".join(args[4:]))
+        try:
+            proc = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT)
+            for raw in proc.stdout:
+                # La console PowerShell sort en cp1252 : on decode comme le
+                # fait _safe_print() cote bot, sinon les accents Cassent.
+                msg_queue.put("LOG:" + raw.decode("cp1252", errors="replace").rstrip())
+            proc.wait()
+            msg_queue.put("LOG:=== 1-CLIC termine (code %d) ===" % proc.returncode)
+            if proc.returncode != 0:
+                msg_queue.put("LOG:voir logs et state/oneclick-last-run.json")
+        except Exception as exc:
+            msg_queue.put("LOG:1-CLIC erreur : %s" % exc)
+
+    def on_oneclick():
+        btn_oneclick.configure(state=tk.DISABLED)
+        threading.Thread(target=oneclick_worker, daemon=True).start()
+        root.after(2000, lambda: btn_oneclick.configure(state=tk.NORMAL))
 
     def start_assistant_gui():
         global app_state, observer_thread, bot_thread, stop_event
