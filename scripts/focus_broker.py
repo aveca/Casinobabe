@@ -42,7 +42,7 @@ user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
 MUTEX_NAME = "Global\\CasinobabeFocusLease"
-DEFAULT_IDLE_MS = 700          # utilisateur actif => on cede la main
+DEFAULT_IDLE_MS = 1500          # utilisateur actif => on cede la main
 DEFAULT_TIMEOUT_MS = 1500      # duree max d'attente du mutex
 
 # Flags de Fenetre / entrees
@@ -51,9 +51,14 @@ WAIT_OBJECT_0 = 0x00000000
 WAIT_TIMEOUT = 0x00000102
 WAIT_ABANDONED = 0x00000080
 
+# Seuil de deference : si l'utilisateur a tape ou bouge la souris il y a moins
+# de DEFAULT_IDLE_MS, on ne prend PAS le focus et l'action est differee.
+# 1500 ms : au-dela, on empiete sur une utilisation normale de l'ordi. Constat
+# 2026-10-17 : "ca reprend trop le focus" -> seuil releve de 700 a 1500 ms.
+
 # Duree de "repos" : apres l'envoi, on laisse le jeu consommer l'input
 # (SendInput est asynchrone cote application) AVANT de rendre la main.
-SETTLE_MS = 130
+SETTLE_MS = 110
 
 # Derniere duree de pret du focus (ms), pour MESURER et prouver que
 # l'interruption est courte. 0 = pas de pret.
@@ -94,16 +99,22 @@ def _force_foreground(hwnd):
     """SetForegroundWindow est refuse par l'OS quand le process appelant n'a
     pas le focus (cas normal d'un bot). On applique la technique officielle :
     on attache la file d'entree du thread courant a celle du thread au premier
-    plan, ce qui donne temporairement le droit de poser le focus."""
+    plan, ce qui donne temporairement le droit de poser le focus.
+
+    ATTENTION - fenetre REDUITE : on ne la restaure PAS. Restaurer une fenetre
+    que l'utilisateur a volontairement reduite reviendrait a lui voler son
+    bureau ; et de toute facon le jeu etant reduit il ne rend pas (28x160 px),
+    le bot ne peut donc rien voir. On refuse le pret : le cycle reste gele en
+    attendant que l'utilisateur remette la fenetre."""
     cur = kernel32.GetCurrentThreadId()
+    if user32.IsIconic(hwnd):
+        return False
     fg = user32.GetForegroundWindow()
     fg_thread = user32.GetWindowThreadProcessId(fg, None) if fg else None
     attached = False
     try:
         if fg_thread and fg_thread != cur:
             attached = bool(user32.AttachThreadInput(cur, fg_thread, True))
-        if user32.IsIconic(hwnd):
-            user32.ShowWindow(hwnd, SW_RESTORE)
         user32.BringWindowToTop(hwnd)
         user32.SetForegroundWindow(hwnd)
         user32.SetActiveWindow(hwnd)

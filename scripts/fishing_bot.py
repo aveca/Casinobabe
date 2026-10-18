@@ -92,9 +92,29 @@ try:
     # premier plan). Optionnel par construction : sans lui le bot retombe sur
     # l'ancien modèle "focus tenu en continu" et se met en PAUSED au premier
     # alt-tab. Toutes les fonctions utilisées ici existent au import.
-    from focus_broker import focus_lease
+    from focus_broker import focus_lease, user_idle_ms, should_yield_to_user
 except Exception:  # pragma: no cover
     focus_lease = None
+    user_idle_ms = None
+
+    def should_yield_to_user(_idle, _threshold=0):  # noqa: D401
+        return False
+
+
+# L'utilisateur est-il en train d'utiliser la machine ? Sert à ne JAMAIS lui
+# voler la souris ni le focus quand il tape ou bouge la souris.
+USER_IDLE_MS = 1200
+
+
+def focus_broker_is_user_active():
+    """True si l'utilisateur vient d'appuyer/bouger (< USER_IDLE_MS).
+
+    Volontairement plus severe que le seuil du bail : on peut voler le focus
+    pour envoyer une touche, mais PAS deplacer le curseur de quelqu'un qui
+    travaille (constat 2026-10-17 : "ca reprend trop le focus")."""
+    if user_idle_ms is None:
+        return False
+    return bool(should_yield_to_user(user_idle_ms(), USER_IDLE_MS))
 try:
     import fishing_memory as memory  # mémoire persistante (jamais bloquante)
 except Exception:  # pragma: no cover
@@ -108,6 +128,8 @@ LOG_FILE = os.path.join(ROOT, "reports", "fishing-bot-log.jsonl")
 SHOTS_DIR = os.path.join(ROOT, "captures", "fishing-bot")
 
 VK_F9 = 0x78
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
 user32 = ctypes.windll.user32
 
 DEFAULT_CONFIG = {
@@ -237,66 +259,61 @@ _NO_LEASE = _NullLease(False)
 
 
 def send_key(vk):
-    """Envoie une touche UNIQUEMENT si le focus WoW est confirmé à l'instant
-    même de l'envoi.
+    """Envoie une touche à WoW via WM_KEYDOWN (SendMessage).
 
-    Deux modes, même garantie :
-      - bail indisponible : WoW doit être au premier plan (ancien modèle) ;
-      - bail disponible : on l'acquiert (focus prêté ~100 ms), ce qui permet
-        l'arrière-plan.
-    Dans les deux cas le focus est REVÉRIFIÉ juste avant l'appui et après : le
-    focus peut être volé entre-temps (AnyDesk/alt-tab) et la touche partirait
-    alors dans une autre application. Retourne True si envoyée, False sinon.
+    Cette méthode fonctionne MÊME quand WoW n'est pas au premier plan
+    (constaté le 2026-10-17 : le flotteur apparaît bien après envoi).
+    Aucun vol de focus n'est nécessaire : le curseur de l'utilisateur n'est
+    jamais déplacé et sa fenêtre reste au premier plan.
+
+    Règle de sécurité : si l'utilisateur est actif (taque ou bouge la souris
+    depuis < USER_IDLE_MS), on n'envoie rien et on renvoie False.
     """
     hwnd, _t, _r = find_wow_window()
     if not hwnd:
         return False
-    if focus_lease is None:
-        if user32.GetForegroundWindow() != hwnd:
-            return False
-        return _key_down_up(vk)
-    with _lease(hwnd) as got:
-        if not got or user32.GetForegroundWindow() != hwnd:
-            return False
-        return _key_down_up(vk)
+    if focus_broker_is_user_active():
+        return False
+    return _key_down_up_wm(hwnd, vk)
 
 
-def _key_down_up(vk):
-    """Envoi effectif. L'appelant a DÉJÀ confirmé le focus."""
-    scan = user32.MapVirtualKeyW(vk, 0)
-    user32.keybd_event(vk, scan, 0, 0)
+def _key_down_up_wm(hwnd, vk):
+    """Envoi effectif via WM_KEYDOWN/WM_KEYUP (SendMessage). Fonctionne en
+    arrière-plan sans voler le focus.
+
+    Même paramétrage que le test validé le 2026-10-17 :
+    wParam = vk (0x32 pour '2'), lparam = repeat=1 | scan<<16 | prev_state bit.
+
+    NOTE : MapVirtualKeyW(VK_2, 0) renvoie 0x03, or le scan code qui declenche
+    une peche est 0x32 (constat par diag_bg_input.py). On utilise donc
+    scan = vk, pas le resultat de MapVirtualKeyW.
+    """
+    scan = vk
+    # WM_KEYDOWN : repeat=1, scan code, context=0, prev=0, transition=0
+    lparam_down = 0x00000001 | (scan << 16) | (1 << 30)
+    user32.SendMessageW(hwnd, WM_KEYDOWN, scan, lparam_down)
     time.sleep(0.05)
-    user32.keybd_event(vk, scan, 2, 0)  # KEYEVENTF_KEYUP
+    # WM_KEYUP : même lparam + bit de transition (bit 31)
+    lparam_up = lparam_down | (1 << 31)
+    user32.SendMessageW(hwnd, WM_KEYUP, scan, lparam_up)
     time.sleep(0.05)
     return True
 
 
 def send_escape():
-    """Ferme une éventuelle zone de saisie chat ouverte (qui avalerait la
-    touche de lancer). Appelé UNIQUEMENT sur le chemin timeout-recast : aucun
-    butin ne peut être ouvert à cet instant (rien n'a été cliqué), donc Échap
-    ne peut pas fermer une fenêtre de butin non pillée. Jamais après un clic.
-    Retourne True si envoyé."""
+    """Ferme une éventuelle zone de saisie chat ouverte via WM_KEYDOWN.
+
+    Appelé UNIQUEMENT sur le chemin timeout-recast : aucun butin ne peut
+    être ouvert à cet instant (rien n'a été cliqué), donc Échap ne peut pas
+    fermer une fenêtre de butin non pillée. Jamais après un clic.
+    Retourne True si envoyé, False si l'utilisateur est actif.
+    """
     hwnd, _t, _r = find_wow_window()
     if not hwnd:
         return False
-    if focus_lease is None:
-        if user32.GetForegroundWindow() != hwnd:
-            return False
-        return _escape_down_up()
-    with _lease(hwnd) as got:
-        if not got or user32.GetForegroundWindow() != hwnd:
-            return False
-        return _escape_down_up()
-
-
-def _escape_down_up():
-    vk, scan = 0x1B, user32.MapVirtualKeyW(0x1B, 0)
-    user32.keybd_event(vk, scan, 0, 0)
-    time.sleep(0.05)
-    user32.keybd_event(vk, scan, 2, 0)
-    time.sleep(0.05)
-    return True
+    if focus_broker_is_user_active():
+        return False
+    return _key_down_up_wm(hwnd, 0x1B)  # VK_ESCAPE
 
 
 def emergency_stop_pressed():
@@ -535,14 +552,13 @@ def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
     if h < 200 or w < 200:
         return None, None, 0.0
     best, best_score = None, 0.0
-    r_in, r_out = max(3, int(10 * scale)), max(8, int(42 * scale))
+    best_fallback, best_fb_score = None, 0.0  # repli quand le bobber est
+    r_in, r_out = max(3, int(10 * scale)), max(8, int(42 * scale))          # près du rivage/pêcheur (water_ratio < 0.88)
     prefer = getattr(detect_bobber, "_prefer_near", None)
     for bx, by, area, circ in _red_blobs(
             img_bgr, area_min=12 * scale * scale, area_max=2000 * scale * scale,
             v_floor=v_floor):
         wr = _water_ratio(img_bgr, bx, by, r_in=r_in, r_out=r_out, img_hsv=img_hsv)
-        if wr < 0.88:  # seuil validé sur captures stockées (voir docstring module)
-            continue
         score = wr + min(0.05, area / (2000.0 * scale * scale))
         # Continuité temporelle : à score comparable, on garde le candidat
         # proche du verrou précédent (anti-saut vers un leurre du rivage).
@@ -550,11 +566,19 @@ def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
             d = ((bx - prefer[0]) ** 2 + (by - prefer[1]) ** 2) ** 0.5
             if d < 80:
                 score += 0.03
-        if score > best_score:
-            best, best_score = (bx, by), score
+        if wr >= 0.88:  # seuil validé sur captures stockées (eau autour du bobber)
+            if score > best_score:
+                best, best_score = (bx, by), score
+        elif score > best_fb_score:
+            # Repli : meilleur blob « forme de flotteur » même si l'anneau
+            # n'est pas 88 % eau (bobber près du rivage ou du personnage).
+            best_fallback, best_fb_score = (bx, by), score
     if best:
         detect_bobber._prefer_near = best
         return best[0], best[1], float(min(1.0, best_score))
+    if best_fallback:
+        detect_bobber._prefer_near = best_fallback
+        return best_fallback[0], best_fallback[1], float(min(1.0, best_fb_score * 0.9))
     return None, None, 0.0
 
 
@@ -1018,12 +1042,13 @@ class FishingBot:
             self.counters["casts"] += 1
             self.log("CAST", key=self.config["castKey"], counters=self.counters)
         else:
-            # Touche NON envoyée (focus perdu au moment de l'appui) : ce n'est
-            # PAS un lancer — on ne compte rien et on attend le retour focus.
-            self._mem_end_cycle("unknown", {"note": "touche non envoyee (focus perdu a l appui)"})
+            # Touche NON envoyee : l'utilisateur est actif (taque ou bouge la
+            # souris depuis < USER_IDLE_MS). Ce n'est pas un lancer, on ne
+            # compte rien et on attend qu'il libere le poste (deference).
+            self._mem_end_cycle("unknown", {"note": "touche non envoyee (utilisateur actif)"})
             self.state = PAUSED
             self.log("CAST_NOT_SENT", key=self.config["castKey"],
-                     note="focus perdu au moment de l'appui - aucun lancer compte")
+                     note="touche non envoyee (utilisateur actif)")
 
     def _wait_bite(self, hwnd, rect):
         """Surveille le flotteur jusqu'à touche ou expiration du canal de pêche.
@@ -1268,56 +1293,54 @@ class FishingBot:
     #    d'inactivité. Voir _manual_suspend().
     # ------------------------------------------------------------------
     def _track_cursor(self, bx, by):
-        """Suit le flotteur avec le curseur pendant la surveillance : au moment
-        de la touche, le curseur est DÉJÀ sur le flotteur, le clic est instantané
-        (pas de trajet souris au moment critique). Ne bouge que si WoW est au
-        premier plan et que le flotteur a bougé de > 4 px (anti-tremblement).
-        P0.9.2 : si le curseur a été déplacé loin de la dernière position
-        posée PAR LE BOT (divergence > cursorDivergePx), c'est l'humain qui
-        utilise la souris → retourne "SUSPEND" au lieu de bouger (ne jamais
-        arracher le curseur des mains de l'utilisateur)."""
+        """Surveille le flotteur et PRÉ-POSITIONNE le curseur pour que le clic
+        soit instantané (pas de trajet souris au moment critique).
+
+        CHOIX VOLUME : cette surveillance NE PREND PAS LE BAIL DE FOCUS. Le
+        suivi du flotteur revient toutes les ~150 ms : prendre le focus a chaque
+        fois rendait l' experience inutilisable (constat 2026-10-17, "ca reprend
+        trop le focus"). SetCursorPos est global a l'ecran et n'a PAS besoin du
+        focus ; le seul risque est de tirer la souris des mains de l'utilisateur,
+        ce qui est gere par la detection de divergence ci-dessous.
+
+        P0.9.2 : si le curseur a ete deplace loin de la derniere position posee
+        PAR LE BOT (divergence > cursorDivergePx), c'est l'humain qui utilise la
+        souris → retourne "SUSPEND" au lieu de bouger (ne jamais arracher le
+        curseur des mains de l'utilisateur)."""
         import win32api
         hwnd, _t, rect = find_wow_window()
         if not hwnd:
             return False
         sx, sy = rect[0] + bx, rect[1] + by
-
-        def _place():
-            """Déplacement réel du curseur. Focus déjà confirmé par l'appelant."""
-            try:
-                cx, cy = win32api.GetCursorPos()
-            except Exception:
-                cx, cy = -9999, -9999
-            prev = getattr(self, "_cursor_set", None)
-            if prev is not None:
-                div = ((cx - prev[0]) ** 2 + (cy - prev[1]) ** 2) ** 0.5
-                if div > self.config["cursorDivergePx"]:
-                    # La souris a été reprise par l'humain : on ne l'arrache
-                    # JAMAIS des mains de l'utilisateur (P0.9.2), même en
-                    # arrière-plan.
-                    return "SUSPEND"
-            if abs(cx - sx) > 4 or abs(cy - sy) > 4:
-                win32api.SetCursorPos((sx, sy))
-                self._cursor_set = (sx, sy)
-                if not getattr(self, "_cursor_announced", False):
-                    self.log("CURSOR_TRACK", bobber=(bx, by),
-                             note="curseur pré-positionné sur le flotteur")
-                    self._cursor_announced = True
-            else:
-                self._cursor_set = (sx, sy)
-            return True
-
-        if focus_lease is None:
-            if user32.GetForegroundWindow() != hwnd:
-                return False
-            return _place()
-        # ARRIÈRE-PLAN : le repositionnement du curseur passe par le bail
-        # (SetCursorPos est global à l'écran, il agit donc même sans focus —
-        # mais on ne vole la souris que si l'utilisateur est inactif).
-        with _lease(hwnd) as got:
-            if not got:
-                return False
-            return _place()
+        try:
+            cx, cy = win32api.GetCursorPos()
+        except Exception:
+            cx, cy = -9999, -9999
+        prev = getattr(self, "_cursor_set", None)
+        if prev is not None:
+            div = ((cx - prev[0]) ** 2 + (cy - prev[1]) ** 2) ** 0.5
+            if div > self.config["cursorDivergePx"]:
+                # L'utilisateur utilise sa souris : on ne prend pas le controle
+                # de son curseur. On saute le pre-positionnement pour ce cycle
+                # mais le bot continue a pecher (le clic se fera a la derniere
+                # position connue du flotteur).
+                self.log("CURSOR_SKIP",
+                         reason="utilisateur actif - curseur non deplace",
+                         bobber=(bx, by))
+                return True
+        # L'utilisateur tape/bouge → on ne touche pas a sa souris.
+        if focus_broker_is_user_active():
+            return False
+        if abs(cx - sx) > 4 or abs(cy - sy) > 4:
+            win32api.SetCursorPos((sx, sy))
+            self._cursor_set = (sx, sy)
+            if not getattr(self, "_cursor_announced", False):
+                self.log("CURSOR_TRACK", bobber=(bx, by),
+                         note="curseur pre-positionne sur le flotteur (sans bail)")
+                self._cursor_announced = True
+        else:
+            self._cursor_set = (sx, sy)
+        return True
 
     def _manual_suspend(self):
         """P0.9.2 : suspension temporaire sur activité manuelle. Le processus
@@ -1409,45 +1432,48 @@ class FishingBot:
         # find_wow_window() — ne PAS passer rect en argument (le rect n'est
         # pas défini dans le scope des appelants : NameError à chaque
         # touche, bug 2026-10-15) et ne PAS dupliquer cette méthode.
+        #
+        # EN ARRIÈRE-PLAN : mouse_event est global à l'écran et fonctionne
+        # sans focus. SetCursorPos de même. Seul le clic de récupération
+        # après une morsure est concerné.
         hwnd, _t, rect = find_wow_window()
         if not hwnd:
             self.log("CLICK_ABORTED", reason="pas de fenetre WoW")
             self.state = PAUSED
             return False
 
-        def _do_click():
-            """Envoi effectif du clic. Focus DÉJÀ confirmé par l'appelant."""
-            import win32api
-            import win32con
-            sx, sy = rect[0] + x, rect[1] + y
-            win32api.SetCursorPos((sx, sy))  # repositionnement final
-            self._cursor_set = (sx, sy)  # P0.9.2 : position connue du bot
-            time.sleep(0.05)
-            self._click_pos = (sx, sy)
-            win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-            time.sleep(0.05)
-            win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
-            return sx, sy
+        if focus_broker_is_user_active():
+            self.log("CLICK_DEFERRED",
+                     reason="utilisateur actif (pas de clic en background)",
+                     counters=dict(self.counters))
+            self.state = PAUSED
+            return False
 
-        if focus_lease is None:
-            if user32.GetForegroundWindow() != hwnd:
-                self.log("CLICK_ABORTED", reason="WoW perdu le premier plan")
+        import win32api
+        import win32con
+        sx, sy = rect[0] + x, rect[1] + y
+        try:
+            cx, cy = win32api.GetCursorPos()
+        except Exception:
+            cx, cy = -9999, -9999
+        prev = getattr(self, "_cursor_set", None)
+        if prev is not None:
+            div = ((cx - prev[0]) ** 2 + (cy - prev[1]) ** 2) ** 0.5
+            if div > self.config["cursorDivergePx"]:
+                # La souris a ete reprise par l'humain : on ne l'arrache
+                # JAMAIS des mains de l'utilisateur (P0.9.2).
+                self.log("CLICK_DEFERRED",
+                         reason="souris reprise par l'humain (divergence)",
+                         counters=dict(self.counters))
                 self.state = PAUSED
                 return False
-            sx, sy = _do_click()
-        else:
-            # BAIL : permet le clic même si une autre fenêtre est au premier
-            # plan (arrière-plan). Refus = l'utilisateur tape OU focus non
-            # obtenu -> AUCUN clic n'est envoyé.
-            with _lease(hwnd) as got:
-                if not got or user32.GetForegroundWindow() != hwnd:
-                    self.log("CLICK_DEFERRED",
-                             reason="bail non obtenu (utilisateur actif ou focus refuse)",
-                             counters=dict(self.counters))
-                    self.state = PAUSED
-                    return False
-                sx, sy = _do_click()
-
+        win32api.SetCursorPos((sx, sy))
+        self._cursor_set = (sx, sy)  # P0.9.2 : position connue du bot
+        time.sleep(0.05)
+        self._click_pos = (sx, sy)
+        win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+        time.sleep(0.05)
+        win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
         self.counters["clicks"] += 1
         self._mem_end_cycle("success", {"bobber": (x, y),
                            "button": "right",
