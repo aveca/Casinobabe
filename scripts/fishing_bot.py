@@ -1116,11 +1116,12 @@ class FishingBot:
                              note="nuit : flotteur invisible, cycle patient maintenu")
             else:
                 self._failed_casts = 0
-            # Echap uniquement si le focus a ete perdu pendant CE cycle
-            # (chat possiblement ouvert). Jamais sur simple retour focus (P0 2).
+            # Echap supprime : envoyer Echap automatiquement ferme des fenetres
+            # ou ouvre le menu systeme "pour rien" (le focus peut avoir ete perdu
+            # puis revenu, ou l'utilisateur est sur une autre application).
+            # Le cycle se termine par timeout : on recast simplement.
             if getattr(self, "_cycle_focus_lost", False):
-                send_escape()
-                self.log("PRECAST_ESCAPE", note="focus perdu pendant le cycle - chat possiblement ouvert")
+                self.log("FOCUS_LOST_CYCLE", note="focus perdu pendant le cycle - pas d'echap envoye (securite)")
             self._cycle_summary("timeout", False)
             return
         img_np = to_bgr(img)
