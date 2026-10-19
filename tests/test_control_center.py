@@ -180,11 +180,17 @@ def test_etat_erreur_de_configuration(workspace):
     assert lock["status"] == "UNREADABLE"
 
 
-def test_etat_absent_composant_casino():
+def test_etat_casino_arrete_sans_processus():
+    """Le moteur casino est un composant reel pilotable. Quand aucun processus
+    ne tourne, son etat est ARRETE (pas ABSENT : il existe, il est juste
+    arrete)."""
     st = core.component_status(core.COMPONENTS_BY_KEY["casino_bot"])
-    assert st["state"] == core.ABSENT
-    assert "Aucun processus" in st["detail"]
-    assert st["controls"] == []
+    assert st["available"] is True
+    assert set(st["controls"]) == {"start", "stop", "pause", "resume", "restart"}
+    assert st["pause_mode"] == "suspend_os"
+    assert st["state"] in (core.STOPPED, core.BLOCKED)
+    assert st["pid"] == 0
+    assert st["lock"]["status"] in ("ABSENT", "STALE", "UNREADABLE")
 
 
 def test_etat_pause_interne_du_bot_remonte(workspace):
@@ -622,14 +628,23 @@ def test_snapshot_mentionne_tous_les_composants_de_production():
     snap = core.ControlCenter().snapshot()
     keys = {c["key"] for c in snap["components"]}
     assert keys == {c.key for c in core.COMPONENTS}
-    assert snap["casino_state"] == core.ABSENT
+    # Le casino est un composant reel : son etat n'est plus ABSENT mais un
+    # etat reel (ARRETE, ACTIF, BLOQUE...) selon qu'un processus tourne.
+    assert snap["casino_state"] in (core.STOPPED, core.ACTIVE, core.BLOCKED,
+                                    core.STARTING, core.PAUSED, core.ERROR,
+                                    core.UNVERIFIABLE)
+    assert isinstance(snap.get("casino_detail"), dict)
 
 
 def test_rapport_de_diagnostic_est_du_json_serialisable(workspace):
     rep = core.ControlCenter().diagnostic_report()
     json.dumps(rep, ensure_ascii=False)          # ne doit pas lever
     assert rep["schema"] == 1
-    assert rep["casino"]["state"] == core.ABSENT
+    # La section casino doit etre presente et reelle (moteur autonome).
+    assert "casino" in rep
+    assert "engine" in rep["casino"]
+    assert "detail" in rep["casino"]
+    assert rep["casino"]["detail"]["reachable"] in (True, False)
 
 
 def test_journal_filtre_par_niveau_et_erreur(workspace):
@@ -690,3 +705,157 @@ def test_panne_du_garde_fou_refuse_bien(workspace, monkeypatch):
     ok, detail = window_guard.safe_call("read_state", lambda: "fait")
     assert not ok
     assert "GARDE_FOU_ERREUR" in detail
+
+
+# ===========================================================================
+# Tests d'integration reelle sur le moteur casino autonome
+# Ces tests lancent le VRAI processus scripts/casino_bot.py et dialoguent
+# avec lui par le named pipe authentifie. Aucun WoW n'est touche.
+# ===========================================================================
+
+import subprocess as _subprocess
+import time as _time
+
+
+def _start_real_casino(tmp_path, clean_state=True):
+    """Lance le moteur casino en service et retourne (process, token)."""
+    import casino_ipc as _ipc
+    # Nettoyer l'etat persistant precedentsauf si demande contraire, pour que
+    # chaque test parte d'une feuille blanche.
+    state_file = os.path.join(ROOT, "state", "casino-bot-state.json")
+    if clean_state and os.path.isfile(state_file):
+        os.remove(state_file)
+    pid_file = os.path.join(ROOT, "state", "casino-bot.pid")
+    proc = _subprocess.Popen(
+        [sys.executable, "scripts/casino_bot.py", "--cli"],
+        cwd=ROOT,
+        stdout=_subprocess.DEVNULL,
+        stderr=_subprocess.DEVNULL,
+        creationflags=getattr(_subprocess, "CREATE_NO_WINDOW", 0)
+        if os.name == "nt" else 0,
+    )
+    # Attendre que le pipe reponde
+    deadline = _time.time() + 15
+    while _time.time() < deadline:
+        if _ipc.ping(timeout=0.5):
+            return proc, _ipc.load_token()
+        if proc.poll() is not None:
+            raise RuntimeError("moteur casino arrete tot : code %s" % proc.returncode)
+        _time.sleep(0.3)
+    proc.kill()
+    raise RuntimeError("moteur casino n'a pas repondu sur son pipe")
+
+
+def _stop_real_casino(proc):
+    """Arret propre via IPC, puis fallback kill."""
+    import casino_ipc as _ipc
+    try:
+        _ipc.request("shutdown", timeout=5.0)
+    except Exception:
+        pass
+    deadline = _time.time() + 20
+    while _time.time() < deadline and proc.poll() is None:
+        _time.sleep(0.3)
+    if proc.poll() is None:
+        proc.kill()
+
+
+class TestMoteurCasinoReel:
+    """Tests sur le VRAI moteur casino (processus autonome)."""
+
+    def test_demarrage_arret_reel(self, tmp_path):
+        """Le moteur demarre, repond sur son pipe, s'arrete proprement."""
+        proc, _tok = _start_real_casino(tmp_path)
+        try:
+            import casino_ipc as ipc
+            assert ipc.ping() is True
+            st = ipc.request("status")["status"]
+            assert st["pid"] == proc.pid
+            assert st["state"] == "ACTIF"
+        finally:
+            _stop_real_casino(proc)
+        assert proc.poll() is not None
+        assert not ipc.ping(timeout=0.5)
+
+    def test_anti_doublon_reel(self, tmp_path):
+        """Une deuxieme instance est refusee (code 2)."""
+        proc, _ = _start_real_casino(tmp_path)
+        try:
+            p2 = _subprocess.Popen(
+                [sys.executable, "scripts/casino_bot.py", "--cli"],
+                cwd=ROOT,
+                stdout=_subprocess.DEVNULL,
+                stderr=_subprocess.DEVNULL,
+            )
+            rc = p2.wait(timeout=15)
+            assert rc == 2, "code de sortie attendu 2, obtenu %s" % rc
+        finally:
+            _stop_real_casino(proc)
+
+    def test_cycle_jeu_reel(self, tmp_path):
+        """Un cycle de jeu complet passe par le moteur reel : session, jeu,
+        mise, verification de trade (simulee), lancement, resolution,
+        paiement, fermeture."""
+        proc, tok = _start_real_casino(tmp_path)
+        try:
+            import casino_ipc as ipc
+            assert ipc.request("create_session", player="Alice", token=tok)["ok"]
+            assert ipc.request("game", player="Alice", game="roulette",
+                               extra="red", token=tok)["ok"]
+            assert ipc.request("stake", player="Alice", amount="50g",
+                               token=tok)["ok"]
+            # La mise arme le trade (TRADE_PENDING). Le lanceur WoW doit
+            # verifier le trade : on simule cette verification.
+            assert ipc.request("confirm_trade", player="Alice",
+                               player_money=0, target_money=500000,
+                               token=tok)["ok"]
+            assert ipc.request("mark_stake_confirmed", player="Alice",
+                               token=tok)["ok"]
+            # Re-selection du jeu pour passer en GAME_SELECTED
+            assert ipc.request("game", player="Alice", game="roulette",
+                               extra="red", token=tok)["ok"]
+            r = ipc.request("roll", player="Alice", roll=30, token=tok)
+            assert r["ok"] is True, r.get("error")
+            assert r["session"]["result"] == "WIN"
+            assert r["session"]["payout"] == 50
+            # Pour un jeu single_roll (roulette), le paiement est deja arme
+            # automatiquement par record_roll. Pas besoin d'arm_payout.
+            assert ipc.request("mark_paid", player="Alice", token=tok)["ok"]
+            assert ipc.request("close", player="Alice", token=tok)["ok"]
+            st = ipc.request("status")["status"]
+            assert st["active_session"] is None
+        finally:
+            _stop_real_casino(proc)
+
+    def test_persistence_apres_redemarrage(self, tmp_path):
+        """Une session en cours survit a un arret/redemarrage du processus."""
+        proc, tok = _start_real_casino(tmp_path)
+        try:
+            import casino_ipc as ipc
+            ipc.request("create_session", player="Diane", token=tok)
+            ipc.request("game", player="Diane", game="normal", token=tok)
+            ipc.request("stake", player="Diane", amount="100g", token=tok)
+            ipc.request("confirm_trade", player="Diane",
+                        player_money=0, target_money=1000000, token=tok)
+            ipc.request("mark_stake_confirmed", player="Diane", token=tok)
+            ipc.request("game", player="Diane", game="normal", token=tok)
+            ipc.request("roll", player="Diane", roll=70, token=tok)
+            # Arret propre
+            ipc.request("shutdown", token=tok, timeout=5.0)
+            deadline = _time.time() + 20
+            while _time.time() < deadline and proc.poll() is None:
+                _time.sleep(0.3)
+            assert proc.poll() is not None, "le moteur ne s'est pas arrete"
+            # Redemarrage : la session doit etre restauree
+            proc2, _ = _start_real_casino(tmp_path, clean_state=False)
+            try:
+                st = ipc.request("status")["status"]
+                assert "Diane" in st["sessions"], str(st["sessions"])
+                # normal est un jeu single_roll : le roll arme directement le
+                # paiement, donc l'etat est PAYOUT_PENDING (pas ROLLING).
+                assert st["sessions"]["Diane"]["state"] == "PAYOUT_PENDING", str(st["sessions"]["Diane"])
+            finally:
+                _stop_real_casino(proc2)
+        finally:
+            if proc.poll() is None:
+                proc.kill()

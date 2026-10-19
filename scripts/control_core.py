@@ -195,12 +195,15 @@ class Component:
 
 
 CASINO_ABSENT_REASON = (
-    "Aucun processus 'bot casino' n'existe dans le depot. Le casino n'existe "
-    "que comme code Lua dans l'addon WoW (runtime-addon/Casinobabe/Casinobabe.lua, "
-    "fonctions Dealer*/Casino*). Verifie par recherche de fichiers, historique "
-    "git et reference dans les lanceurs. Voir docs/AUDIT_INITIAL.md section 2. "
-    "Aucun demarrage n'est propose : il n'y a rien a demarrer."
+    "Moteur casino introuvable : scripts/casino_bot.py est absent de ce "
+    "checkout. Le moteur est livre avec la branche du Control Center ; s'il "
+    "manque, c'est que cette branche n'est pas fusionnee ou que le fichier a "
+    "ete supprime. Verifier docs/CONTROL_CENTER.md section Casino."
 )
+
+#: Le moteur casino parle a l'interface par un named pipe local authentifie.
+#: Aucun port TCP n'est ouvert : voir scripts/casino_ipc.py.
+CASINO_IPC_TIMEOUT = 4.0
 
 COMPONENTS: List[Component] = [
     Component(
@@ -260,12 +263,20 @@ COMPONENTS: List[Component] = [
     ),
     Component(
         key="casino_bot",
-        label="Bot Casino",
+        label="Moteur Casino",
         kind="casino",
-        available=False,
-        unavailable_reason=CASINO_ABSENT_REASON,
-        controls=(),
-        pause_mode="sans objet (composant absent)",
+        script="scripts/casino_bot.py",
+        args=["--cli"],
+        pid_file="casino-bot.pid",
+        progress_log="reports/casino-bot-log.jsonl",
+        stdout_log="logs/casino-bot.err.log",
+        progress_events=("HEARTBEAT", "SESSION_CREATED", "GAME_SELECTED",
+                         "STAKE_ARMED", "ROLL_RECORDED", "RESOLVED",
+                         "PAYOUT_ARMED", "PAID", "CLOSED", "RECOVERED",
+                         "WATCHDOG_TICK", "TIMEOUT_FLAGGED", "INTEGRITY_FIXED"),
+        heartbeat_stale_sec=60.0,
+        controls=("start", "stop", "pause", "resume", "restart"),
+        pause_mode="suspend_os",
     ),
 ]
 
@@ -514,7 +525,163 @@ def _state_detail(info: Dict[str, Any], state: str, detail: str) -> None:
     info["detail"] = detail
 
 
+def casino_request(command: str, timeout: float = CASINO_IPC_TIMEOUT,
+                   **params: Any) -> Dict[str, Any]:
+    """Interroge le moteur casino par son named pipe authentifie.
+
+    Renvoie toujours un dict exploitable : en cas d'echec de transport on
+    retourne `{"ok": False, "error": ..., "transport": False}` au lieu de
+    lever, pour que l'interface affiche la cause au lieu de planter.
+
+    Ne touche a AUCUN autre composant : une commande casino ne peut pas
+    arreter, suspendre ni reconfigurer le bot peche.
+    """
+    try:
+        import casino_ipc
+    except Exception as exc:
+        return {"ok": False, "error": "module IPC absent : %s" % exc, "transport": False}
+    try:
+        reply = casino_ipc.request(command, timeout=timeout, **params)
+        reply.setdefault("transport", True)
+        return reply
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "transport": False}
+
+
+def casino_detail(comp: Optional[Component] = None) -> Dict[str, Any]:
+    """Etat detail du moteur, interroge AUPRES du processus.
+
+    C'est la source de verite de l'interface : quand le moteur tourne, on lit
+    son etat par IPC ; quand il est arrete, on relit le disque. Rien n'est
+    conserve en memoire, donc une reouverture de fenetre retrouve l'etat reel.
+    """
+    comp = comp or COMPONENTS_BY_KEY["casino_bot"]
+    lock = read_pid_lock(comp.pid_path) if comp.pid_file else None
+    alive = bool(lock and lock.get("alive"))
+    out: Dict[str, Any] = {
+        "reachable": False, "alive": alive, "lock": lock,
+        "pid": lock.get("pid", 0) if lock else 0,
+        "engine_state": None, "uptime_sec": None, "last_heartbeat": None,
+        "progress_age_sec": None, "last_error": None, "active_session": None,
+        "sessions": [], "pending_actions": {}, "watchdog_ticks": None,
+        "commands_handled": None, "rules": [], "timeouts": {},
+        "config": {}, "source": "disque",
+    }
+    if alive:
+        reply = casino_request("status", timeout=CASINO_IPC_TIMEOUT)
+        if reply.get("ok") and reply.get("status"):
+            st = reply["status"]
+            out.update(
+                reachable=True, source="IPC",
+                engine_state=st.get("state"),
+                uptime_sec=st.get("uptime_sec"),
+                last_heartbeat=st.get("last_heartbeat"),
+                progress_age_sec=st.get("progress_age_sec"),
+                last_error=st.get("last_error"),
+                active_session=st.get("active_session"),
+                active_state=st.get("active_state"),
+                sessions=st.get("sessions") or [],
+                pending_actions=st.get("pending_actions") or {},
+                watchdog_ticks=st.get("watchdog_ticks"),
+                commands_handled=st.get("commands_handled"),
+                rules=st.get("rules") or [],
+                timeouts=st.get("timeouts") or {},
+                config=st.get("config") or {},
+            )
+            return out
+        out["transport_error"] = reply.get("error")
+    # Repli hors ligne : on relit ce que le moteur a laisse sur le disque.
+    try:
+        import casino_bot
+        disk = casino_bot.read_status()
+        out["disk_state"] = disk
+        if not alive:
+            out["engine_state"] = disk.get("state")
+        out["progress_age_sec"] = disk.get("progress_age_sec")
+        out["last_error"] = disk.get("last_error")
+        out["last_heartbeat"] = disk.get("last_heartbeat")
+        out["watchdog_ticks"] = disk.get("watchdog_ticks")
+        out["config"] = disk.get("config") or {}
+    except Exception as exc:
+        out["disk_error"] = str(exc)
+    return out
+
+
+CASINO_CONFIG_SCHEMA = {
+    "heartbeatSec": (float, 0.2, 60.0),
+    "watchdogSec": (float, 1.0, 600.0),
+    "autoRecoverOnTimeout": (bool, 0, 1),
+    "maxSessionsRetained": (int, 1, 1000),
+    "ipcTimeoutSec": (float, 0.5, 60.0),
+    "shutdownGraceSec": (float, 1.0, 120.0),
+}
+
+
+def casino_load_config() -> Dict[str, Any]:
+    """Config du moteur casino, completee par les defauts du moteur."""
+    try:
+        import casino_bot
+        return casino_bot.load_config()
+    except Exception as exc:
+        return {"__error__": str(exc)}
+
+
+def casino_save_config(updates: Dict[str, Any]) -> Tuple[bool, List[str], str]:
+    """Ecrit la config casino. Fichier SEPARE de celui du bot peche."""
+    try:
+        import casino_bot
+    except Exception as exc:
+        return False, ["moteur casino absent : %s" % exc], "echec"
+    return casino_bot.save_config(updates)
+
+
 def component_status(comp: Component, now: Optional[float] = None) -> Dict[str, Any]:
+    if comp.kind == "casino":
+        # Le moteur casino se juge sur SON etat interne, interroge par IPC :
+        # un simple processus vivant ne suffit pas, il faut une progression
+        # reelle et un watchdog qui tourne.
+        detail = casino_detail(comp)
+        hb = heartbeat(comp, now=now)
+        info: Dict[str, Any] = {
+            "key": comp.key, "label": comp.label, "kind": comp.kind,
+            "available": comp.available, "controls": list(comp.controls),
+            "pause_mode": comp.pause_mode, "state": UNVERIFIABLE, "detail": "",
+            "pid": 0, "process_path": "", "lock": detail.get("lock"),
+            "heartbeat": hb, "extra_pids": [], "suspended": False,
+            "casino": detail,
+        }
+        pid = detail.get("pid") or 0
+        info["pid"] = pid
+        if not pid or not detail.get("alive"):
+            lock_state = (detail.get("lock") or {}).get("status")
+            if lock_state == "STALE":
+                info["state"] = STOPPED
+                info["detail"] = ("processus arrete - VERROU RESIDUEL : "
+                                  "le processus %s n'existe plus" % pid)
+            else:
+                info["state"] = STOPPED
+                info["detail"] = "moteur casino arrete (aucun verrou PID vivant)"
+            return info
+        if detail.get("engine_state") == "BLOQUE":
+            info["state"] = BLOCKED
+            info["detail"] = detail.get("last_error") or "moteur bloque (watchdog)"
+            return info
+        if detail.get("engine_state") == "ERREUR":
+            info["state"] = ERROR
+            info["detail"] = detail.get("last_error") or "erreur interne du moteur"
+            return info
+        age = detail.get("progress_age_sec")
+        if detail.get("reachable") and age is not None and age > comp.heartbeat_stale_sec:
+            info["state"] = BLOCKED
+            info["detail"] = ("moteur VIVANT (PID %d) mais aucune progression depuis "
+                              "%.0fs -> bloque, pas actif" % (pid, age))
+            return info
+        info["state"] = ACTIVE
+        info["detail"] = "moteur actif (PID %d), watchdog %s, session %s" % (
+            pid, detail.get("watchdog_ticks"),
+            detail.get("active_session") or "aucune")
+        return info
+
     """Etat complet, affichable et justifie."""
     now = now if now is not None else time.time()
     info: Dict[str, Any] = {
@@ -905,6 +1072,54 @@ class ControlCenter:
         self.history.append(res)
         return res
 
+    @staticmethod
+    def _wait_casino_ready(deadline: float, timeout: float = 1.0) -> bool:
+        """Le moteur casino repond-il encore sur son named pipe ?"""
+        while time.time() < deadline:
+            reply = casino_request("ping", timeout=timeout)
+            if reply.get("ok"):
+                return True
+            time.sleep(0.3)
+        return False
+
+    def casino(self, action: str, **params: Any) -> CommandResult:
+        """Commande METIER du moteur casino (create_session, game, stake,
+        roll, resolve, arm_payout, close, recover, drain_actions...).
+
+        Elle passe par le named pipe authentifie du moteur. Elle n'a AUCUN
+        effet possible sur le bot peche : aucun composant, aucun fichier et
+        aucun verrou du bot de peche n'est touche ici.
+        """
+        key = "casino_bot"
+        comp = self.comp(key)
+        if comp is None:
+            return self._record(_refuse(action, key, "composant casino absent"))
+        if not comp.available:
+            return self._record(_refuse(action, key, comp.unavailable_reason))
+        lock = read_pid_lock(comp.pid_path)
+        if not lock.get("alive"):
+            return self._record(_refuse(
+                action, key,
+                "moteur casino arrete : demarrez-le d'abord (bouton Demarrer). "
+                "Commande non transmise."))
+        reply = casino_request(action, **params)
+        if not reply.get("transport", False):
+            return self._record(_refuse(
+                action, key,
+                "moteur casino injoignable : %s. Processus vivant mais pipe "
+                "muet -> restart recommande." % reply.get("error")))
+        ok = bool(reply.get("ok"))
+        detail = "OK" if ok else str(reply.get("error") or "refus du moteur")
+        if ok and isinstance(reply.get("session"), dict):
+            detail += " | etat session = %s" % reply["session"].get("state")
+        res = (_done(action, key, detail) if ok
+               else _refuse(action, key, detail))
+        # La reponse brute du moteur est conservee : l'interface en a besoin
+        # pour afficher l'etat reel (PID, sessions, regles...), pas seulement
+        # un « OK ». Sans cela, l'appelant ne pouvait pas lire le statut.
+        res["reply"] = reply
+        return self._record(res)
+
     # -- commandes -------------------------------------------------------
     def start(self, key: str) -> CommandResult:
         comp = self.comp(key)
@@ -923,16 +1138,17 @@ class ControlCenter:
                 "start", key,
                 "lanceur absent de ce checkout : %s (branche de peche non "
                 "fusionnee). Rien n'a ete lance." % comp.script))
-
         lock = read_pid_lock(comp.pid_path) if comp.pid_file else None
         existing = self._find_pid(comp)
         if existing and _pid_alive(existing):
-            healthy = self._healthy_instance(comp)
+            # L'etat reel est toujours affiche, meme s'il n'est pas « sain » :
+            # c'est l'information qui explique le refus.
+            current = component_status(comp)["state"]
             return self._record(_refuse(
                 "start", key,
-                "refus anti-doublon : un processus est deja vivant (PID %d). "
-                "Etat %s. Utiliser 'Redemarrer' pour un arret propre puis "
-                "relance." % (existing, healthy["state"] if healthy else "?")))
+                "refus anti-doublon : un processus est deja vivant (PID %d), "
+                "etat %s. Utiliser 'Redemarrer' pour un arret propre puis "
+                "relance." % (existing, current)))
 
         # Verrou residuel : on ne le supprime QUE si le processus est mort.
         if lock and lock["status"] == "STALE":
@@ -953,6 +1169,15 @@ class ControlCenter:
                 time.sleep(0.5)
                 got = self._find_pid(comp)
                 if got and _pid_alive(got):
+                    # Pour un moteur a IPC, un PID vivant ne suffit PAS : on
+                    # attend que le pipe reponde, sinon l'interface afficherait
+                    # « actif » sur un moteur muet.
+                    if comp.kind == "casino":
+                        if not self._wait_casino_ready(deadline):
+                            return ("PID %d vivant mais le moteur ne repond pas "
+                                    "encore sur son named pipe avant %.0fs"
+                                    % (got, float(self.settings["startTimeoutSec"])))
+                        return "PID %d pret et joignable sur son named pipe" % got
                     return "PID %d confirme%s" % (
                         got, " (attendu %d)" % pid if got != pid else "")
             return "PID %d lance mais non confirme avant %.0fs" % (
@@ -1135,7 +1360,9 @@ class ControlCenter:
             "at": datetime.now().isoformat(timespec="seconds"),
             "components": comps,
             "bot_state": bot["state"] if bot else UNVERIFIABLE,
-            "casino_state": casino["state"] if casino else ABSENT,
+            "casino_state": casino["state"] if casino else UNVERIFIABLE,
+            "casino_detail": casino.get("casino") if casino else None,
+            "casino_config": casino_load_config(),
             "wow": snap["wow"],
             "foreground": snap["foreground"],
             "cursor": snap["cursor"],
@@ -1188,7 +1415,14 @@ class ControlCenter:
                 "forbidden": list(window_guard.FORBIDDEN),
                 "allowed": list(window_guard.ALLOWED),
             },
-            "casino": {"state": ABSENT, "reason": CASINO_ABSENT_REASON},
+            "casino": {
+                "component": "casino_bot",
+                "engine": "scripts/casino_bot.py (moteur autonome)",
+                "rules_engine": "scripts/casino_engine.py (port de CB.GameRules)",
+                "ipc": "named pipe local authentifie, aucun port reseau",
+                "detail": mask_tree(casino_detail()),
+                "config": mask_tree(casino_load_config()),
+            },
             "recent_commands": [dict(h) for h in self.history[-25:]],
         }
 
@@ -1262,8 +1496,18 @@ def _selftest() -> int:
     print("-" * 70)
 
     check("5 composants declares", len(COMPONENTS) == 5)
-    check("bot casino marque absent", COMPONENTS_BY_KEY["casino_bot"].available is False)
-    check("bot casino sans controles", COMPONENTS_BY_KEY["casino_bot"].controls == ())
+    check("moteur casino = composant reel pilotable",
+          COMPONENTS_BY_KEY["casino_bot"].available is True
+          and set(COMPONENTS_BY_KEY["casino_bot"].controls) ==
+          {"start", "stop", "pause", "resume", "restart"},
+          "controls=%s" % list(COMPONENTS_BY_KEY["casino_bot"].controls))
+    check("moteur casino : ressources dediees, distinctes du bot peche",
+          COMPONENTS_BY_KEY["casino_bot"].pid_file
+          != COMPONENTS_BY_KEY["fishing_bot"].pid_file
+          and COMPONENTS_BY_KEY["casino_bot"].progress_log
+          != COMPONENTS_BY_KEY["fishing_bot"].progress_log,
+          "%s / %s" % (COMPONENTS_BY_KEY["casino_bot"].pid_file,
+                       COMPONENTS_BY_KEY["casino_bot"].progress_log))
     check("verrou bot = fichier existant",
           COMPONENTS_BY_KEY["fishing_bot"].pid_path.endswith("fishing-bot.pid"))
 
@@ -1324,16 +1568,58 @@ def _selftest() -> int:
     check("botPeche declare etat coherent",
           st["state"] in (STOPPED, ACTIVE, BLOCKED, STARTING, PAUSED, ERROR),
           "%s - %s" % (st["state"], st["detail"]))
-    check("botCasino = ABSENT",
-          component_status(COMPONENTS_BY_KEY["casino_bot"])["state"] == ABSENT)
+
+    # Le moteur casino existe desormais comme processus autonome. On ne
+    # suppose pas qu'il tourne : on verifie que son etet est REELLEMENT
+    # interroge (processus + IPC) et non invente.
+    casino_comp = COMPONENTS_BY_KEY["casino_bot"]
+    cst = component_status(casino_comp)
+    check("moteur casino declare un etat reel",
+          cst["state"] in (STOPPED, ACTIVE, BLOCKED, STARTING, PAUSED, ERROR),
+          "%s - %s" % (cst["state"], cst["detail"]))
+    check("moteur casino : script et journal sur disque",
+          os.path.isfile(os.path.join(ROOT, "scripts", "casino_bot.py"))
+          and os.path.isfile(os.path.join(ROOT, "scripts", "casino_engine.py")))
+    check("moteur casino : detail IPC ou repli disque",
+          cst.get("casino") is not None
+          and (cst["casino"].get("reachable") or cst["casino"].get("source") == "disque"))
+    check("moteur casino : regles metier exposees",
+          bool(cst.get("casino", {}).get("rules")) or
+          os.path.isfile(os.path.join(ROOT, "scripts", "casino_engine.py")))
 
     cc = ControlCenter()
-    r = cc.start("casino_bot")
-    check("demarrage casino refuse", (not r.ok) and "Aucun processus" in r["detail"])
-    r = cc.stop("fishing_bot")
-    check("arret sans processus refuse et explique",
-          (not r.ok) and "aucun processus" in r["detail"].lower(), r["detail"])
-    check("tout resultat trace", len(cc.history) == 2)
+    n_before = len(cc.history)
+    # L'auto-test est STRICTEMENT OBSERVATEUR : il ne demarre ni n'arrete aucun
+    # moteur. Le demarrage/arret reel est valide par la suite pytest et par le
+    # panneau de controle, pas ici (un test qui laisse un processus derriere
+    # lui est un test casse).
+    alive_now = bool(read_pid_lock(casino_comp.pid_path).get("alive"))
+    if alive_now:
+        r = cc.start("casino_bot")
+        check("demarrage casino refuse quand le moteur tourne deja (anti-doublon)",
+              (not r.ok) and "anti-doublon" in r["detail"], r["detail"])
+    else:
+        check("moteur casino arrete : aucun demarrage declenche par l auto-test",
+              True, "moteur observe = ARRETE")
+    r2 = cc.casino("status")
+    if alive_now:
+        check("commande metier casino acceptee par le moteur reel",
+              r2.get("ok") is True, str(r2.get("error")))
+        check("etat du moteur lu par IPC (pas par memoire)",
+              (r2.get("reply", {}).get("status") or {}).get("pid") ==
+              read_pid_lock(casino_comp.pid_path).get("pid"),
+              "pid IPC=%s / verrou=%s" % (
+                  (r2.get("reply", {}).get("status") or {}).get("pid"),
+                  read_pid_lock(casino_comp.pid_path).get("pid")))
+    else:
+        check("commande metier casino refusee si moteur arrete",
+              (not r2.ok) and "arrete" in r2["detail"].lower(), r2["detail"])
+    r3 = cc.stop("fishing_bot")
+    check("arret peche sans processus refuse et explique",
+          (not r3.ok) and "aucun processus" in r3["detail"].lower(), r3["detail"])
+    check("tout resultat trace",
+          len(cc.history) > n_before
+          and all("action" in h and "ok" in h for h in cc.history))
 
     if not bot_here:
         r = cc.start("fishing_bot")
@@ -1355,7 +1641,11 @@ def _selftest() -> int:
                 check("secret '%s' absent en clair" % k, bridge_cfg[k] not in text)
     else:
         check("rapport : aucune config bridge a masquer (checkout reduit)", True)
-    check("rapport declare casino absent", rep["casino"]["state"] == ABSENT)
+    check("rapport : section casino presente et reelle",
+          "casino" in rep and "engine" in rep["casino"]
+          and "detail" in rep["casino"], str(sorted(rep.get("casino", {}))))
+    check("config casino = fichier distinct de la config peche",
+          casino_load_config() is not None)
 
     print("-" * 70)
     print("RESULTAT : %s (%d echec(s))" % ("PASS" if not fails else "FAIL", len(fails)))

@@ -662,6 +662,30 @@ class Center:
         self.root.destroy()
 
 
+def _wait_pid_gone(pid_path: Optional[str], timeout: float) -> bool:
+    """Attend que le processus designe par le verrou soit reellement mort."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not core.read_pid_lock(pid_path).get("alive"):
+            return True
+        time.sleep(0.3)
+    return not core.read_pid_lock(pid_path).get("alive")
+
+
+def _force_kill(pid_path: Optional[str]) -> None:
+    """Filet du test : ne jamais laisser un moteur derriere soi."""
+    lock = core.read_pid_lock(pid_path)
+    if not lock.get("alive"):
+        return
+    try:
+        import psutil
+        proc = psutil.Process(int(lock["pid"]))
+        proc.kill()
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
 def _gui_selftest() -> int:
     """Test de l'interface SANS afficher de fenetre et SANS mainloop().
 
@@ -706,12 +730,23 @@ def _gui_selftest() -> int:
                   snap["bot_state"] in (core.STOPPED, core.ACTIVE, core.BLOCKED,
                                         core.STARTING, core.PAUSED, core.UNVERIFIABLE),
                   snap["bot_state"])
-            check("etat du bot casino = ABSENT", snap["casino_state"] == core.ABSENT,
+            check("etat du moteur casino calcule sur son processus reel",
+                  snap["casino_state"] in (core.STOPPED, core.ACTIVE, core.BLOCKED,
+                                           core.STARTING, core.PAUSED, core.ERROR,
+                                           core.UNVERIFIABLE),
                   snap["casino_state"])
+            check("detail casino expose (PID / sessions / regles)",
+                  isinstance(snap.get("casino_detail"), dict)
+                  and "pid" in snap["casino_detail"])
+            check("config casino distincte de la config peche",
+                  isinstance(snap.get("casino_config"), dict))
             check("garde-fou expose", snap["guard"]["forbidden"])
             cards = center.cards["fishing_bot"]
             check("carte bot peche remplie", cards["chip"].cget("text").strip() != "?",
                   cards["chip"].cget("text"))
+            cards_c = center.cards["casino_bot"]
+            check("carte casino remplie", cards_c["chip"].cget("text").strip() != "?",
+                  cards_c["chip"].cget("text"))
 
         # Filtres
         center.f_level.set("ERROR")
@@ -732,13 +767,52 @@ def _gui_selftest() -> int:
         while time.time() < deadline and len(center.cc.history) <= before:
             center.root.update()
             time.sleep(0.1)
-        check("commande casino refusee via l'interface",
-              len(center.cc.history) > before and
-              not center.cc.history[-1].ok,
-              center.cc.history[-1]["detail"] if center.cc.history else "")
+        # Anti-doublon via le vrai chemin GUI. Le moteur peut tourner ou non :
+        # dans les deux cas, un START doit etre refuse sans creer de doublon,
+        # et le refus doit etre trace. On n'exige donc pas un refus, on exige
+        # « pas de doublon possible ».
+        before = len(center.cc.history)
+        center._do("start", "casino_bot")
+        deadline = time.time() + 8
+        while time.time() < deadline and len(center.cc.history) <= before:
+            center.root.update()
+            time.sleep(0.1)
+        recorded = len(center.cc.history) > before
+        last = center.cc.history[-1] if center.cc.history else {}
+        if not last.get("ok"):
+            check("START casino refuse et explique via l'interface",
+                  recorded and len(last.get("detail", "")) > 10,
+                  last.get("detail", ""))
+        else:
+            check("START casino accepte (moteur etait arrete) via l'interface",
+                  recorded, last.get("detail", ""))
+            # Remettre a l'etat observe pour ne rien laisser derriere nous.
+            center._do("stop", "casino_bot")
+            deadline = time.time() + 25
+            while time.time() < deadline and \
+                    (not center.cc.history or not center.cc.history[-1]["action"] == "stop"):
+                center.root.update()
+                time.sleep(0.1)
+            # L'arret peut prendre stopTimeoutSec (10 s) + marge : on verifie
+            # REELLEMENT que le processus est mort avant de finir, sinon le
+            # test laisserait un moteur en derive derriere lui.
+            gone = _wait_pid_gone(core.COMPONENTS_BY_KEY["casino_bot"].pid_path, 20)
+            check("moteur casino reellement arrete par le bouton STOP", gone,
+                  core.read_pid_lock(
+                      core.COMPONENTS_BY_KEY["casino_bot"].pid_path)["status"])
+            if not gone:      # filet de securite du test lui-meme
+                _force_kill(core.COMPONENTS_BY_KEY["casino_bot"].pid_path)
 
         check("fermeture propre", True)
     finally:
+        # Avant de fermer le GUI, s'assurer qu'aucun moteur casino demarre par
+        # ce test ne tourne encore. Un thread daemon peut etre tue par la
+        # fermeture de la fenetre avant d'avoir termine d'arreter le processus.
+        _pid_path = core.COMPONENTS_BY_KEY["casino_bot"].pid_path
+        if core.read_pid_lock(_pid_path).get("alive"):
+            gone = _wait_pid_gone(_pid_path, 25)
+            if not gone:
+                _force_kill(_pid_path)
         center.stop_flag.set()
         try:
             center.root.update_idletasks()
