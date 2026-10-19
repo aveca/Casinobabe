@@ -39,6 +39,7 @@ import argparse
 import atexit
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -305,8 +306,149 @@ TUPLE_PROGRESS = PROGRESS_EVENTS
 
 
 # ---------------------------------------------------------------------------
-# Le moteur
+# Pont vers SavedVariables de l'addon WoW (desktop -> addon)
+# Ecrit des commandes dans CasinobabeDB.casinoCommand que l'addon lit et execute.
 # ---------------------------------------------------------------------------
+
+WOW_ROOT_CANDIDATES = [
+    os.path.expandvars(r"%ProgramFiles(x86)%\World of Warcraft\_anniversary_"),
+    os.path.expandvars(r"%ProgramFiles%\World of Warcraft\_anniversary_"),
+    os.path.expandvars(r"%ProgramFiles(x86)%\World of Warcraft"),
+    os.path.expandvars(r"%ProgramFiles%\World of Warcraft"),
+]
+
+
+def find_wow_sv_file() -> Optional[str]:
+    """Trouve le fichier SavedVariables Casinobabe.lua de WoW."""
+    import glob
+    for root in WOW_ROOT_CANDIDATES:
+        if not os.path.isdir(root):
+            continue
+        wtf = os.path.join(root, "WTF")
+        if not os.path.isdir(wtf):
+            continue
+        # Parcours : WTF/Account/*/*/SavedVariables/Casinobabe.lua
+        for account_dir in glob.glob(os.path.join(wtf, "Account", "*")):
+            if not os.path.isdir(account_dir):
+                continue
+            for realm_dir in glob.glob(os.path.join(account_dir, "*")):
+                if not os.path.isdir(realm_dir):
+                    continue
+                sv_dir = os.path.join(realm_dir, "SavedVariables")
+                sv_file = os.path.join(sv_dir, "Casinobabe.lua")
+                if os.path.isfile(sv_file):
+                    return sv_file
+    return None
+
+
+def read_sv_value(sv_file: str, key: str) -> Optional[Any]:
+    """Lit une valeur simple depuis le fichier SavedVariables Lua."""
+    try:
+        with open(sv_file, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return None
+    # CasinobabeDB.casinoCommand = { ... }
+    m = re.search(r'CasinobabeDB\.%s\s*=\s*(\{.*?\})' % re.escape(key), content, re.DOTALL)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except ValueError:
+        return None
+
+
+def write_casino_command(command: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """Ecrit une commande dans CasinobabeDB.casinoCommand des SavedVariables WoW.
+    L'addon lira et executera cette commande au prochain chargement/evenement.
+    """
+    sv_file = find_wow_sv_file()
+    if not sv_file:
+        return False, "fichier SavedVariables Casinobabe.lua introuvable"
+
+    try:
+        with open(sv_file, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError as exc:
+        return False, "lecture SV impossible: %s" % exc
+
+    cmd_entry = {
+        "action": command.get("action"),
+        "player": command.get("player"),
+        "params": command.get("params", {}),
+        "requestId": command.get("requestId", str(int(time.time() * 1000))),
+        "timestamp": time.time(),
+        "processed": False,
+    }
+
+    # Sérialise en format Lua valide (clés string avec guillemets, true/false,
+    # nombres, chaînes échappées) - compatible avec le parseur Lua de WoW.
+    new_block = 'CasinobabeDB.casinoCommand = %s' % _lua_serialize(cmd_entry)
+    if "CasinobabeDB.casinoCommand" in content:
+        content = re.sub(
+            r'CasinobabeDB\.casinoCommand\s*=\s*\{.*?\}(\s*\n|\s*$)',
+            new_block + "\n",
+            content,
+            flags=re.DOTALL
+        )
+    else:
+        # Ajoute avant la derniere ligne ou a la fin
+        content = content.rstrip() + "\n" + new_block + "\n"
+
+    try:
+        with open(sv_file, "w", encoding="utf-8") as f:
+            f.write(content)
+    except OSError as exc:
+        return False, "ecriture SV impossible: %s" % exc
+
+    return True, "commande ecrite dans SavedVariables"
+
+
+def _lua_serialize(value: Any) -> str:
+    """Sérialise une valeur Python en code Lua valide."""
+    if value is None:
+        return "nil"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+        return '"%s"' % escaped
+    if isinstance(value, dict):
+        items = []
+        for k, v in value.items():
+            ks = _lua_serialize(k)
+            vs = _lua_serialize(v)
+            items.append("[%s]=%s" % (ks, vs))
+        return "{%s}" % ",".join(items)
+    if isinstance(value, (list, tuple)):
+        items = [_lua_serialize(v) for v in value]
+        return "{%s}" % ",".join(items)
+    return "nil"
+
+
+def read_casino_result(sv_file: str) -> Optional[Dict[str, Any]]:
+    """Lit le résultat de la dernière commande depuis CasinobabeDB.casinoResult.
+    L'addon écrit ce champ après avoir exécuté une commande desktop.
+    """
+    try:
+        with open(sv_file, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return None
+
+    # CasinobabeDB.casinoResult = { ... }
+    m = re.search(r'CasinobabeDB\.casinoResult\s*=\s*(\{.*?\})', content, re.DOTALL)
+    if not m:
+        return None
+    try:
+        lua_str = m.group(1)
+        # Conversion simple Lua -> Python : true->True, false->False, nil->None
+        py_str = lua_str.replace("true", "True").replace("false", "False").replace("nil", "None")
+        return eval(py_str, {"__builtins__": {}})
+    except Exception:
+        return None
 
 class CasinoBot:
     def __init__(self, config: Optional[Dict[str, Any]] = None):
@@ -554,6 +696,15 @@ class CasinoBot:
             return {"ok": True, "problems": problems}
         if cmd == "check_timeouts":
             return {"ok": True, "flagged": self.store.check_timeouts()}
+        if cmd == "write_command":
+            ok, err = write_casino_command(p)
+            return {"ok": ok, "error": err}
+        if cmd == "read_result":
+            sv_file = find_wow_sv_file()
+            if not sv_file:
+                return {"ok": False, "error": "fichier SavedVariables introuvable"}
+            result = read_casino_result(sv_file)
+            return {"ok": True, "result": result}
         if cmd == "shutdown":
             self.stop_flag.set()
             return {"ok": True, "stopping": True, "grace_sec":

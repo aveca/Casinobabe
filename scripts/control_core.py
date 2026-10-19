@@ -602,6 +602,14 @@ def casino_detail(comp: Optional[Component] = None) -> Dict[str, Any]:
         out["last_heartbeat"] = disk.get("last_heartbeat")
         out["watchdog_ticks"] = disk.get("watchdog_ticks")
         out["config"] = disk.get("config") or {}
+        # Lire aussi le dernier resultat de commande depuis les SV WoW
+        try:
+            sv_file = casino_bot.find_wow_sv_file()
+            if sv_file:
+                result = casino_bot.read_casino_result(sv_file)
+                out["casino_result"] = result
+        except Exception:
+            pass
     except Exception as exc:
         out["disk_error"] = str(exc)
     return out
