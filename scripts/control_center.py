@@ -617,11 +617,20 @@ class Center:
             ent.delete(0, "end")
             ent.insert(0, "" if val is None else str(val))
             ent.configure(state="normal")
+        notes = []
         unknown = cfg.get("__unknown__") or {}
         if unknown:
-            self.cfg_status.configure(
-                text="Cles inconnues conservees dans le fichier : %s"
-                     % ", ".join(sorted(unknown)))
+            notes.append("Cles inconnues conservees dans le fichier : %s"
+                         % ", ".join(sorted(unknown)))
+        # Annonce honnete de la source des valeurs : sur `main`,
+        # `fishing_bot.py` est absent et les defauts viennent du schema interne.
+        source = cfg.get("__config_source__") or ""
+        if source and "schema integre" in source:
+            notes.append("ATTENTION : %s" % source)
+            notes.append("Le lanceur du bot est absent de ce checkout : "
+                         "Demarrer sera refuse tant qu'il n'est pas present.")
+        if notes:
+            self.cfg_status.configure(text=" | ".join(notes))
 
     def _save_settings(self):
         updates = {}

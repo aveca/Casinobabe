@@ -141,10 +141,21 @@ Garantie d'ecriture : lecture-modification-ecriture du JSON existant, donc
   (aucune fonction IA n'est necessaire).
 - **`window_guard`** (`scripts/window_guard.py`) est cree par cette mission :
   il n'existait pas (audit, section 3). Toute commande passe par
-  `safe_call()`, qui echantillonne le bureau et **prouve** qu'aucun invariant
-  n'a ete rompu. Sont interdites : le vol de focus, la minimisation ou la
-  fermeture de WoW, l'injection clavier/sourie, le deplacement du curseur de
-  l'utilisateur.
+  `safe_call()`, sur trois piliers :
+  1. **Refus deterministe avant execution** : une action interdite par la
+     politique (vol de focus, minimisation/fermeture de WoW, injection
+     clavier/souris, deplacement du curseur) n'est **jamais executee**.
+  2. **Preuve statique** : `assert_no_mutating_api()` analyse l'AST de
+     `window_guard.py`, `control_core.py` et `control_center.py` et prouve
+     qu'aucune API Win32 mutante (`SetCursorPos`, `SetForegroundWindow`,
+     `ShowWindow`, `SendInput`, ...) n'y est appelee. Ce test est dans la
+     suite pytest.
+  3. **Observations** : ce qui bouge sur le bureau pendant une commande
+     (souris deplacee, focus WoW, fenetre deplacee) est consigne et affiche,
+     mais **ne bloque jamais**. Un echantillonnage avant/apres ne peut pas
+     attribuer un changement a l'application : traiter cela comme une
+     violation produisait des refus a tort (constate le 2026-10-19 :
+     « Demarrer » refuse en boucle tant que l'utilisateur bougeait sa souris).
 - **Aucune action en jeu.** Le Control Center n'envoie aucune entree a WoW et
   ne ferme jamais WoW. A noter : sur cette machine, WoW est actuellement
   **minimisee** et le Control Center le laisse dans cet etat.
@@ -156,10 +167,10 @@ Garantie d'ecriture : lecture-modification-ecriture du JSON existant, donc
 ## 5. Tests
 
 ```powershell
-python -m pytest tests\test_control_center.py -v   # 42 tests
-python scripts\window_guard.py     --selftest       # 15 assertions
-python scripts\control_core.py     --selftest       # 30 assertions
-python scripts\control_center.py   --selftest       # 14 assertions, fenetre NON mappee
+python -m pytest tests\test_control_center.py -v   # 48 tests + 1 skip
+python scripts\window_guard.py     --selftest       # garde-fou
+python scripts\control_core.py     --selftest       # logique + modes complet/reduit
+python scripts\control_center.py   --selftest       # fenetre NON mappee
 ```
 
 Regression des suites existantes :
@@ -219,7 +230,7 @@ scripts/
   create_control_center_shortcut.py
 tests/
   fake_bot_target.py           processus de test inoffensif
-  test_control_center.py       42 tests
+  test_control_center.py       48 tests
 docs/
   AUDIT_INITIAL.md             etat initial avant modification
   CONTROL_CENTER.md            ce document

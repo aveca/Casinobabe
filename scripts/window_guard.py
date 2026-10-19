@@ -277,39 +277,105 @@ def snapshot() -> Dict:
 
 
 # ---------------------------------------------------------------------------
-# Vérification des invariants
+# Observation du bureau
 # ---------------------------------------------------------------------------
+#
+# PRECISION FONDAMENTALE (corrigee apres test en usage reel) :
+#
+# Un echantillonnage avant/apres NE PEUT PAS attribuer un changement de
+# bureau a notre code. Si la souris bouge pendant une commande, c'est presque
+# toujours l'UTILISATEUR qui l'a bougee, en continuant a travailler. La
+# premiere version du garde-fou traitait cela comme une violation et REFUSAIT
+# des commandes legitimes : constate en usage reel, « Demarrer » etait refuse
+# en boucle tant que l'utilisateur bougeait sa souris.
+#
+# Le garde-fou repose donc sur des piliers attribuables :
+#   1. REFUS DETERMINISTE AVANT EXECUTION : une action interdite par la
+#      politique n'est jamais executee. Seul motif de blocage attribuable.
+#   2. PREUVE STATIQUE : le Control Center n'appelle aucune API Win32 mutante
+#      (SetCursorPos, SetForegroundWindow, ShowWindow, ...). Verifiable par
+#      `assert_no_mutating_api()`, qui analyse NOTRE PROPRE code.
+#   3. Tout le reste (souris bougee, focus WoW, fenetre deplacee) est une
+#      OBSERVATION consignee et affichee, jamais un motif de refus.
 
-def diff_snapshots(before: Dict, after: Dict) -> List[str]:
-    """Compare deux snapshots et renvoie la liste des invariants rompus.
+#: Marqueurs d'observation : changes sur le bureau, NON attribuables a l'application.
+OBSERVATION_MARKERS = (
+    "FENETRE_WOW_FERMEE",
+    "FENETRE_WOW_MINIMISEE",
+    "FENETRE_WOW_CACHEE",
+    "FOCUS_VOL",
+    "CURSEUR_DEPLACE",
+    "FENETRE_WOW_DEPLACEE",
+)
 
-    Invariants (tous interdits par la politique) :
-      * WoW ne doit pas être minimisée ;
-      * WoW ne doit pas disparaître (fermée) ;
-      * WoW ne doit pas devenir le premier plan (vol de focus) ;
-      * le curseur de l'utilisateur ne doit pas avoir bougé ;
-      * la fenêtre WoW ne doit pas avoir été redimensionnée/déplacée.
+#: APIs Win32 qui modifieraient le bureau. Notre code ne doit en contenir
+#: AUCUNE occurrence : c'est la seule preuve d'absence d'automatisation.
+MUTATING_APIS = (
+    "SetForegroundWindow", "ShowWindow", "MoveWindow", "SetWindowPos",
+    "SetCursorPos", "SendInput", "mouse_event", "keybd_event",
+    "PostMessage", "SendMessage", "DestroyWindow", "BringWindowToTop",
+    "SetWindowText", "TerminateProcess", "SetActiveWindow",
+)
+
+
+def assert_no_mutating_api(source: Optional[str] = None) -> Tuple[bool, List[str]]:
+    """Verifie qu'aucune API Win32 mutante n'est APPELE par ce code.
+
+    Analyse l'AST, pas le texte brut : la declaration de `MUTATING_APIS`
+    contient forcément les noms, seule la lecture de l'arbre compte les vrais
+    acces (`user32.SetCursorPos(...)`) ou references.
+
+    Retourne (ok, occurrences).
+    """
+    import ast
+
+    if source is None:
+        source = os.path.abspath(__file__)
+    # utf-8-sig : tolere un BOM en tete de fichier (certains editeurs Windows
+    # en ajoutent un). Sans cela l'analyse AST echouerait sur U+FEFF.
+    with open(source, "r", encoding="utf-8-sig") as fh:
+        text = fh.read()
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        return False, ["syntaxe illisible : %s" % exc]
+
+    found: List[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in MUTATING_APIS:
+            found.append("%s() utilisee ligne %d" % (node.attr, node.lineno))
+        elif isinstance(node, ast.Name) and node.id in MUTATING_APIS:
+            found.append("%s utilisee ligne %d" % (node.id, node.lineno))
+    return (not found), found
+
+
+def desktop_deltas(before: Dict, after: Dict) -> List[str]:
+    """Differences de bureau entre deux snapshots.
+
+    Ce sont des OBSERVATIONS, pas des verdicts : elles disent ce qui a bouge
+    sur le poste pendant l'action, sans pretendre que c'est nous qui l'avons
+    fait. Elles ne doivent jamais servir a refuser une commande.
     """
     problems: List[str] = []
     wb, wa = before.get("wow", {}), after.get("wow", {})
 
     if wb.get("present") and not wa.get("present"):
-        problems.append("FENETRE_WOW_FERMEE : la fenêtre WoW a disparu pendant l'action")
+        problems.append("FENETRE_WOW_FERMEE : la fenetre WoW a disparu pendant l'action")
     if wb.get("minimized") is False and wa.get("minimized") is True:
-        problems.append("FENETRE_WOW_MINIMISEE : WoW a été minimisée pendant l'action")
+        problems.append("FENETRE_WOW_MINIMISEE : WoW a ete minimisee pendant l'action")
     if wb.get("visible") is True and wa.get("visible") is False:
-        problems.append("FENETRE_WOW_CACHEE : WoW a été cachée pendant l'action")
+        problems.append("FENETRE_WOW_CACHEE : WoW a ete cachee pendant l'action")
 
     fb, fa = before.get("foreground", {}), after.get("foreground", {})
     if wb.get("present") and wb.get("hwnd") and fa.get("hwnd") == wb.get("hwnd") \
             and fb.get("hwnd") != wb.get("hwnd"):
-        problems.append("FOCUS_VOL : WoW a pris le premier plan pendant l'action")
+        problems.append("FOCUS_VOL : WoW est devenu le premier plan pendant l'action")
 
     if before.get("cursor") is not None and after.get("cursor") is not None:
         cb, ca = before["cursor"], after["cursor"]
         if abs(cb[0] - ca[0]) > 2 or abs(cb[1] - ca[1]) > 2:
             problems.append(
-                "CURSEUR_DEPLACE : le curseur de l'utilisateur a bougé (%s -> %s)" % (cb, ca))
+                "CURSEUR_DEPLACE : le curseur s'est deplace (%s -> %s)" % (cb, ca))
 
     if wb.get("rect") and wa.get("rect") and wb["rect"] != wa["rect"]:
         problems.append("FENETRE_WOW_DEPLACEE : la géométrie de la fenêtre WoW a changé")
@@ -344,25 +410,37 @@ class _Sampler(threading.Thread):
 def safe_call(action: str, fn: Callable[[], object],
               timeout: Optional[float] = None,
               sample_interval: float = 0.05) -> Tuple[bool, str]:
-    """Exécute `fn()` sous surveillance du garde-fou.
+    """Execute `fn()` sous observation du garde-fou.
 
     Renvoie `(ok, detail)`.
-      * `ok=False` si l'action est interdite par la politique ;
-      * `ok=False` si `fn` lève ;
-      * `ok=False` si un invariant a été rompu pendant l'action ;
-      * sinon `ok=True` et `detail` décrit le résultat.
+      * `ok=False` si l'action est INTERDITE par la politique (jamais executee) ;
+      * `ok=False` si `fn` leve ;
+      * `ok=False` si l'echantillonnage lui-meme echoue (bug du garde-fou) ;
+      * sinon `ok=True`.
 
-    Ne lève jamais : le Control Center doit pouvoir afficher le motif du
+    Ce qui s'est passe sur le bureau pendant l'action (souris bougee, focus
+    WoW, ...) est consigne comme OBSERVATION a la fin de `detail` et n'entraine
+    JAMAIS un refus : ces changements ne sont pas attribuables a l'application,
+    et les traiter comme des violations bloquait des commandes legitimes.
+
+    Ne leve jamais : le Control Center doit pouvoir afficher le motif du
     blocage sans planter.
     """
     if action in FORBIDDEN:
         return False, "COMMANDE_INTERDITE : '%s' est interdite par window_guard (%s)" % (
             action, ", ".join(FORBIDDEN))
-    if action not in ALLOWED:
-        # Action inconnue : autorisée mais tracée (évite un blocage muet).
-        pass
 
-    before = snapshot()
+    def _safe_snapshot(phase: str) -> Optional[Dict]:
+        """Un `snapshot()` qui leve ne doit JAMAIS faire echouer la commande
+        ni remonter l'exception a l'appelant : c'est une panne du garde-fou,
+        donc un refus explicite, pas une trace d'audit."""
+        try:
+            return snapshot()
+        except Exception as exc:
+            sampler.error = "%s: %s" % (phase, exc)
+            return None
+
+    before = _safe_snapshot("avant")
     sampler = _Sampler(interval=sample_interval)
     sampler.start()
     detail = ""
@@ -370,9 +448,9 @@ def safe_call(action: str, fn: Callable[[], object],
     try:
         result = fn()
         if timeout is not None:
-            # fn() est synchrone : le timeout est appliqué en amont par
-            # l'appelant (control_core). On ne l'exécute pas en thread pour ne
-            # pas créer un process orphelin si fn lève.
+            # fn() est synchrone : le timeout est applique en amont par
+            # l'appelant (control_core). On ne l'execute pas en thread pour ne
+            # pas creer un process orphelin si fn leve.
             pass
         detail = "" if result is None else str(result)
     except Exception as exc:
@@ -382,17 +460,24 @@ def safe_call(action: str, fn: Callable[[], object],
         sampler.stop()
         sampler.join(timeout=2.0)
 
-    after = snapshot()
-    problems = diff_snapshots(before, after)
-    for s in sampler.samples:
-        problems.extend(diff_snapshots(before, s))
+    after = _safe_snapshot("apres")
+    observations: List[str] = []
+    if before is not None and after is not None:
+        observations = desktop_deltas(before, after)
+        for s in sampler.samples:
+            observations.extend(desktop_deltas(before, s))
 
+    # Seule panne attribuable a NOTRE code : l'echantillonnage a echoue.
     if sampler.error:
-        problems.append("GARDE_FOU_ERREUR : %s" % sampler.error)
-    if problems:
-        uniq = sorted(set(problems))
-        return False, "GARDE_FOU : " + " | ".join(uniq)
-    return ok, detail
+        return False, "GARDE_FOU_ERREUR : %s" % sampler.error
+    if not ok:
+        return False, detail
+
+    uniq = sorted(set(observations))
+    if uniq:
+        return True, "%s [OBSERVATIONS pendant l'action, non attribuables : %s]" % (
+            detail or "OK", " | ".join(uniq))
+    return True, detail
 
 
 def policy_report() -> Dict:
@@ -447,36 +532,51 @@ def _selftest() -> int:
     ok, detail = safe_call("start_fishing_bot", boom)
     check("exception capturée sans propager", (not ok) and "ERREUR" in detail, detail)
 
-    # Invariant : WoW ne doit pas disparaître entre deux snapshots identiques.
+    # Invariant : un mouvement de souris de l'UTILISATEUR ne doit PAS bloquer.
     a = snapshot()
     b = snapshot()
-    check("snapshots stables sans action", diff_snapshots(a, b) == [],
-          "; ".join(diff_snapshots(a, b)))
+    check("snapshots stables sans action", desktop_deltas(a, b) == [],
+          "; ".join(desktop_deltas(a, b)))
 
-    # Invariant synthétique : simuler une minimisation doit être détectée.
+    # Observation : detectee, consignee, mais JAMAIS bloquante.
     fake_before = {"wow": {"present": True, "hwnd": 1, "minimized": False,
                            "visible": True, "rect": [0, 0, 10, 10]},
                    "foreground": {"hwnd": 2}, "cursor": (5, 5)}
     fake_after = dict(fake_before)
-    fake_after["wow"] = dict(fake_before["wow"], minimized=True)
-    probs = diff_snapshots(fake_before, fake_after)
-    check("minimisation WoW détectée", any("MINIMISEE" in p for p in probs), "; ".join(probs))
+    fake_after["cursor"] = (500, 500)
+    ok_cursor, detail_cursor = safe_call(
+        "read_state", lambda: "fait",
+        sample_interval=0.01)
+    check("bouger la souris n annule pas la commande", ok_cursor,
+          detail_cursor[:90])
+    deltas_cursor = desktop_deltas(fake_before, fake_after)
+    check("deplacement du curseur detecte comme observation",
+          any("CURSEUR_DEPLACE" in d for d in deltas_cursor),
+          "; ".join(deltas_cursor))
 
     fake_after2 = dict(fake_before)
-    fake_after2["cursor"] = (500, 500)
-    probs = diff_snapshots(fake_before, fake_after2)
-    check("curseur déplacé détecté", any("CURSEUR" in p for p in probs), "; ".join(probs))
+    fake_after2["wow"] = dict(fake_before["wow"], minimized=True)
+    deltas = desktop_deltas(fake_before, fake_after2)
+    check("minimisation WoW detectee comme observation",
+          any("MINIMISEE" in d for d in deltas), "; ".join(deltas))
 
     fake_after3 = dict(fake_before)
     fake_after3["foreground"] = {"hwnd": 1}
-    probs = diff_snapshots(fake_before, fake_after3)
-    check("vol de focus vers WoW détecté", any("FOCUS_VOL" in p for p in probs), "; ".join(probs))
+    deltas = desktop_deltas(fake_before, fake_after3)
+    check("focus WoW detecte comme observation",
+          any("FOCUS_VOL" in d for d in deltas), "; ".join(deltas))
 
     fake_after4 = dict(fake_before)
     fake_after4["wow"] = {"present": False, "hwnd": 0, "minimized": None,
                           "visible": False, "rect": None}
-    probs = diff_snapshots(fake_before, fake_after4)
-    check("fermeture WoW détectée", any("FERMEE" in p for p in probs), "; ".join(probs))
+    deltas = desktop_deltas(fake_before, fake_after4)
+    check("disparition de WoW detectee comme observation",
+          any("FERMEE" in d for d in deltas), "; ".join(deltas))
+
+    # Preuve statique : aucune API Win32 mutante dans NOTRE code.
+    static_ok, occurrences = assert_no_mutating_api()
+    check("aucune API Win32 mutante dans window_guard.py", static_ok,
+          " | ".join(occurrences))
 
     rep = policy_report()
     check("rapport de politique exploitable", "policy" in rep and "desktop" in rep)

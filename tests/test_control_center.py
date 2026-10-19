@@ -190,9 +190,9 @@ def test_etat_absent_composant_casino():
 def test_etat_pause_interne_du_bot_remonte(workspace):
     """Le bot peut se mettre lui-meme en PAUSED (WoW sans focus) : l'interface
     doit le montrer comme EN PAUSE, pas comme un blocage."""
-    # mode « silent » : la cible n'ecrit AUCUN evenement de progression, la
-    # seule ligne de travail est donc celle injectee par le test -> pas de course.
-    comp = make_fake("autopause", "silent", workspace)
+    # mode « quiet » + injection d'une ligne de travail : la ligne injectee est
+    # la derniere de facon deterministe (pas de course avec un producteur).
+    comp = make_fake("autopause", "quiet", workspace)
     cc = core.ControlCenter(registry={comp.key: comp})
     assert cc.start("autopause").ok
     try:
@@ -210,7 +210,10 @@ def test_etat_pause_interne_du_bot_remonte(workspace):
 
 
 def test_etat_erreur_signalee_par_le_bot(workspace):
-    comp = make_fake("crash", "silent", workspace)
+    # mode « quiet » : la cible n'ecrit RIEN apres le demarrage, donc la ligne
+    # injectee ci-dessous est deterministiquement la derniere. Avec « silent »
+    # elle etait ecrasée par les HEARTBEAT_SEUL suivants -> test instable.
+    comp = make_fake("crash", "quiet", workspace)
     cc = core.ControlCenter(registry={comp.key: comp})
     assert cc.start("crash").ok
     try:
@@ -225,6 +228,81 @@ def test_etat_erreur_signalee_par_le_bot(workspace):
         assert st["state"] == core.ERROR, st["detail"]
     finally:
         cc.stop("crash")
+
+
+def test_config_lisible_meme_si_fishing_bot_est_absent(workspace, monkeypatch):
+    """`scripts/fishing_bot.py` n'existe PAS sur `main`. L'onglet Parametres
+    ne doit pas planter : il doit basculer sur le schema interne et le dire."""
+    monkeypatch.setattr(core, "bot_script_present", lambda: False)
+    monkeypatch.setitem(sys.modules, "fishing_bot", None)
+    cfg = core.load_fishing_config()
+    assert "castingSettle" not in cfg
+    assert cfg["__bot_present__"] is False
+    assert "fishing_bot.py absent" in cfg["__config_source__"]
+    # toutes les cles du schema restent accessibles
+    for key in core.FISHING_SCHEMA:
+        assert key in cfg, key
+
+
+def test_start_refuse_si_le_lanceur_est_absent(workspace, monkeypatch):
+    """Sur `main`, le lanceur n'est pas present : refus explicite, aucun
+    subprocess fantome."""
+    comp = make_fake("fantome", "progress", workspace)
+    monkeypatch.setattr(core, "ROOT", str(workspace["root"]))
+    cc = core.ControlCenter(registry={comp.key: comp})
+    res = cc.start("fantome")
+    assert not res.ok
+    assert "lanceur absent de ce checkout" in res["detail"]
+    assert res["action"] == "start"
+
+
+def test_secret_variantes_toutes_masquees():
+    for key in ("sessionToken", "session_token", "SessionToken", "SESSION-TOKEN",
+                "api_key", "apiKey", "API-KEY", "apikey", "ApiKey",
+                "CLIENT_SECRET", "client_secret", "clientSecret",
+                "Authorization", "password", "refreshToken", "accessToken"):
+        assert core.is_secret(key), key
+    for key in ("pollMs", "supabaseUrl", "eventFunctionPath", "sessionId",
+                "tokenCount", "secretariat"):
+        assert not core.is_secret(key), key
+
+
+def test_export_ne_fuit_aucune_variante_de_secret(workspace):
+    charge = {
+        "sessionToken": "S1", "session_token": "S2", "API-KEY": "S3",
+        "CLIENT_SECRET": "S4", "authorization": "Bearer S5", "password": "S6",
+        "nested": {"apiKey": "S7", "deep": [{"clientSecret": "S8", "ok": 1}]},
+        "pollMs": 1500,
+    }
+    texte = json.dumps(core.mask_tree(charge), ensure_ascii=False)
+    for i in range(1, 9):
+        assert "S%d" % i not in texte, "secret S%d fuite" % i
+    out = core.mask_tree(charge)
+    assert out["pollMs"] == 1500
+    assert out["nested"]["deep"][0]["clientSecret"] == core.MASK
+    assert out["nested"]["deep"][0]["ok"] == 1
+
+
+def test_cles_internes_jamais_persistees(workspace):
+    """Regression 2026-10-19 : une cle `__interne__` passait le controle
+    « parametre inconnu » et atterrissait dans la VRAIE configuration."""
+    path = workspace["state"] / "fishing-bot-config.json"
+    ok, errs, _ = core.save_fishing_config({"__none__": 1, "__config_source__": "x"})
+    assert not ok and errs
+    assert not path.exists(), "la configuration du bot a ete polluee"
+    clean, errs2 = core.validate_update({"__unknown__": 1})
+    assert not clean and errs2
+
+
+def test_auto_test_et_suite_ne_polluent_pas_le_depot(workspace, tmp_path):
+    """Les tests doivent travailler dans un dossier temporaire, jamais dans
+    le state/ du depot."""
+    disk = os.path.join(core.ROOT, "state", "fishing-bot-config.json")
+    before = os.path.exists(disk)
+    cc = core.ControlCenter(registry={})
+    core.load_fishing_config()
+    cc.diagnostic_report()
+    assert os.path.exists(disk) == before
 
 
 def ws_pid(ws, name):
@@ -473,7 +551,8 @@ def test_garde_fou_interdit_les_actions_danger():
         assert "division" not in detail.lower(), "l'action interdite a ete executee"
 
 
-def test_garde_fou_detecte_les_violations_de_snapshot():
+def test_garde_fou_detecte_les_observations_de_bureau():
+    """Les changements de bureau sont des OBSERVATIONS, pas des refus."""
     before = {"wow": {"present": True, "hwnd": 7, "minimized": False,
                       "visible": True, "rect": [0, 0, 100, 100]},
               "foreground": {"hwnd": 9}, "cursor": (10, 10)}
@@ -487,13 +566,46 @@ def test_garde_fou_detecte_les_violations_de_snapshot():
     for marker, patch in checks.items():
         after = dict(before)
         after.update(patch)
-        problems = window_guard.diff_snapshots(before, after)
+        problems = window_guard.desktop_deltas(before, after)
         assert any(marker in p for p in problems), (marker, problems)
+
+
+def test_bouger_la_souris_ne_bloque_pas_une_commande(monkeypatch):
+    """Regression du 2026-10-19 : l'utilisateur bougeait sa souris pendant une
+    commande et le garde-fou REFUSAIT l'action. C'est un faux positif : le
+    changement n'est pas attribuable a l'application."""
+    avant = {"wow": {"present": False, "hwnd": 0, "minimized": None,
+                     "visible": False, "rect": None},
+             "foreground": {"hwnd": 0, "title": "", "pid": 0, "process": "",
+                            "is_wow": False},
+             "cursor": (100, 100)}
+    apres = dict(avant, cursor=(900, 900))
+    etat = {"n": 0}
+
+    def snapshot_bouge():
+        etat["n"] += 1
+        snap = dict(avant)
+        if etat["n"] > 1:
+            snap = dict(apres)
+        return snap
+
+    monkeypatch.setattr(window_guard, "snapshot", snapshot_bouge)
+    ok, detail = window_guard.safe_call("read_state", lambda: "action effectuee")
+    assert ok, detail
+    assert "action effectuee" in detail
+
+
+def test_preuve_statique_aucune_api_win32_mutante():
+    """Le Control Center n'appelle AUCUNE API qui modifierait le bureau."""
+    for module in ("window_guard.py", "control_core.py", "control_center.py"):
+        path = os.path.join(ROOT, "scripts", module)
+        ok, occurrences = window_guard.assert_no_mutating_api(path)
+        assert ok, "%s : %s" % (module, occurrences)
 
 
 def test_garde_fou_ne_signale_rien_si_rien_ne_bouge():
     snap = window_guard.snapshot()
-    assert window_guard.diff_snapshots(snap, window_guard.snapshot()) == []
+    assert window_guard.desktop_deltas(snap, window_guard.snapshot()) == []
 
 
 def test_rapport_garde_fou_expose_la_politique():
@@ -541,22 +653,40 @@ def test_journal_filtre_par_niveau_et_erreur(workspace):
 
 
 def test_fenetre_de_bouton_refusee_si_wow_ferme_pendant_laction(workspace, monkeypatch):
-    """Le garde-fou doit transformer une violation reelle en refus de commande."""
-    real_snapshot = window_guard.snapshot          # capture AVANT le monkeypatch
+    """Le garde-fou NE doit PAS refuser : une disparition de WoW pendant une
+    commande n'est pas attribuable (l'utilisateur peut l'avoir fermee). Elle
+    doit etre consignee comme observation. Seule une panne du garde-fou refuse."""
+    real_snapshot = window_guard.snapshot
     calls = {"n": 0}
 
     def flaky_snapshot():
         calls["n"] += 1
         snap = real_snapshot()
-        if calls["n"] > 1:                         # WoW "disparait" apres le debut
+        if calls["n"] > 1:
             snap = dict(snap)
             snap["wow"] = {"present": False, "hwnd": 0, "minimized": None,
                            "visible": False, "rect": None}
-            snap["foreground"] = {"hwnd": 0, "title": "", "pid": 0,
-                                  "process": "", "is_wow": False}
         return snap
 
     monkeypatch.setattr(window_guard, "snapshot", flaky_snapshot)
     ok, detail = window_guard.safe_call("read_state", lambda: "fait")
+    assert ok, detail
+    assert "OBSERVATIONS" in detail
+    assert "FERMEE" in detail
+
+
+def test_panne_du_garde_fou_refuse_bien(workspace, monkeypatch):
+    """En revanche, si le garde-fou lui-meme tombe en panne, on refuse."""
+    real_snapshot = window_guard.snapshot
+    calls = {"n": 0}
+
+    def flaky_snapshot():
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("sampler casse")
+        return real_snapshot()
+
+    monkeypatch.setattr(window_guard, "snapshot", flaky_snapshot)
+    ok, detail = window_guard.safe_call("read_state", lambda: "fait")
     assert not ok
-    assert "GARDE_FOU" in detail
+    assert "GARDE_FOU_ERREUR" in detail

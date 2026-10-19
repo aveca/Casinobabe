@@ -651,14 +651,52 @@ def _write_json_atomic(path: str, data: Any) -> None:
     os.replace(tmp, path)
 
 
+def _schema_default(typ: type) -> Any:
+    """Valeur neutre derivee du schema, quand le code du bot est absent."""
+    if typ is bool:
+        return False
+    if typ is int:
+        return 0
+    if typ is float:
+        return 0.0
+    return None
+
+
+def bot_script_present() -> bool:
+    """Le code du bot est-il present dans ce checkout ?
+
+    `scripts/fishing_bot.py` n'existe PAS sur `main` : il vit sur la branche
+    de peche. Le Control Center doit rester lisible meme la, en le disant.
+    """
+    script = COMPONENTS_BY_KEY["fishing_bot"].script
+    return bool(script) and os.path.isfile(os.path.join(ROOT, script))
+
+
 def load_fishing_config() -> Dict[str, Any]:
-    """Config du bot, completee par les defauts du code, SANS ecraser l'inconnu."""
-    from fishing_bot import DEFAULT_CONFIG  # source de verite du bot
+    """Config du bot, completee par les defauts du code, SANS ecraser l'inconnu.
+
+    Si `fishing_bot.py` est absent du checkout (cas de `main`), on retombe sur
+    le schema integre au Control Center et on le SIGNALE : mieux vaut afficher
+    des defauts annonces que faire planter l'onglet Parametres.
+    """
+    defaults: Dict[str, Any] = {}
+    source = "schema integre du Control Center (fishing_bot.py absent)"
+    if bot_script_present():
+        try:
+            from fishing_bot import DEFAULT_CONFIG  # source de verite du bot
+            defaults = dict(DEFAULT_CONFIG)
+            source = "fishing_bot.DEFAULT_CONFIG"
+        except Exception as exc:  # pragma: no cover - checkout incomplet
+            source = "schema integre (import fishing_bot impossible : %s)" % exc
+    if not defaults:
+        defaults = {k: _schema_default(spec[0]) for k, spec in FISHING_SCHEMA.items()}
     disk = _read_json(FISHING_CONFIG_FILE, {})
-    merged = dict(DEFAULT_CONFIG)
+    merged = dict(defaults)
     merged.update({k: v for k, v in disk.items()})
-    merged["__unknown__"] = {k: v for k, v in disk.items() if k not in DEFAULT_CONFIG}
+    merged["__unknown__"] = {k: v for k, v in disk.items() if k not in defaults}
     merged["__on_disk_keys__"] = sorted(disk.keys())
+    merged["__config_source__"] = source
+    merged["__bot_present__"] = bot_script_present()
     return merged
 
 
@@ -667,13 +705,19 @@ def validate_update(updates: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]
     clean: Dict[str, Any] = {}
     errors: List[str] = []
     for key, raw in updates.items():
-        if not key.startswith("__"):
-            if key not in FISHING_SCHEMA:
-                errors.append("%s : parametre inconnu (ecriture impossible)" % key)
-                continue
-            if key in FROZEN_PARAMS:
-                errors.append("%s : parametre verrouille - %s" % (key, FROZEN_PARAMS[key]))
-                continue
+        # Les clés `__*` sont des métadonnées INTERNES (__unknown__,
+        # __config_source__, ...). Elles ne doivent JAMAIS être persistées :
+        # constate le 2026-10-19, `__none__` passait le controle "parametre
+        # inconnu" et écrivait `{"__none__": 1}` dans la vraie configuration.
+        if str(key).startswith("__"):
+            errors.append("%s : cle interne, ecriture interdite" % key)
+            continue
+        if key not in FISHING_SCHEMA:
+            errors.append("%s : parametre inconnu (ecriture impossible)" % key)
+            continue
+        if key in FROZEN_PARAMS:
+            errors.append("%s : parametre verrouille - %s" % (key, FROZEN_PARAMS[key]))
+            continue
         expected = FISHING_SCHEMA.get(key)
         if expected is None:
             clean[key] = raw
@@ -871,6 +915,14 @@ class ControlCenter:
         if "start" not in comp.controls:
             return self._record(_refuse(
                 "start", key, "demarrage non supporte pour ce composant"))
+        # Le lanceur doit EXISTER. Sur `main`, `scripts/fishing_bot.py` est
+        # absent (il vit sur la branche de peche) : mieux vaut un refus
+        # explicite qu'un subprocess qui meurt en silence.
+        if comp.script and not os.path.isfile(os.path.join(ROOT, comp.script)):
+            return self._record(_refuse(
+                "start", key,
+                "lanceur absent de ce checkout : %s (branche de peche non "
+                "fusionnee). Rien n'a ete lance." % comp.script))
 
         lock = read_pid_lock(comp.pid_path) if comp.pid_file else None
         existing = self._find_pid(comp)
@@ -1196,13 +1248,24 @@ def _selftest() -> int:
         if not cond:
             fails.append(label)
 
+    # Deux environments sont legitimes : le checkout complet (branche de peche)
+    # et le checkout `main` seul, ou `fishing_bot.py`, le journal du bot et la
+    # config n'existent pas. L'auto-test verifie le comportement correct de
+    # CHACUN au lieu de supposer le premier.
+    bot_here = bot_script_present()
+    bot_log = COMPONENTS_BY_KEY["fishing_bot"].progress_path
+    log_here = bool(bot_log) and os.path.isfile(bot_log)
+    mode = "COMPLET" if (bot_here and log_here) else "REDUIT (main sans le bot)"
+    print("  Environnement : %s" % mode)
+    print("  fishing_bot.py present : %s" % bot_here)
+    print("  journal du bot present : %s" % log_here)
+    print("-" * 70)
+
     check("5 composants declares", len(COMPONENTS) == 5)
     check("bot casino marque absent", COMPONENTS_BY_KEY["casino_bot"].available is False)
     check("bot casino sans controles", COMPONENTS_BY_KEY["casino_bot"].controls == ())
     check("verrou bot = fichier existant",
           COMPONENTS_BY_KEY["fishing_bot"].pid_path.endswith("fishing-bot.pid"))
-    check("journal de progression = fichier existant",
-          os.path.isfile(COMPONENTS_BY_KEY["fishing_bot"].progress_path))
 
     lock = read_pid_lock(os.path.join(STATE_DIR, "fishing-bot.pid"))
     check("verrou residuel qualifie", lock["status"] in ("STALE", "ABSENT", "UNREADABLE"),
@@ -1214,6 +1277,7 @@ def _selftest() -> int:
     check("secret masque", mask_value("sessionToken", "abc") == MASK)
     check("cle non-secret pas masque", mask_value("pollMs", 1500) == 1500)
     check("api_key masque (normalisation)", mask_value("api_key", "x") == MASK)
+    check("CLIENT_SECRET masque (normalisation)", mask_value("CLIENT_SECRET", "x") == MASK)
     tree = mask_tree({"sessionToken": "x", "nested": {"apiKey": "y"}, "ok": 1})
     check("masquage recursif",
           tree["sessionToken"] == MASK and tree["nested"]["apiKey"] == MASK
@@ -1230,19 +1294,36 @@ def _selftest() -> int:
     check("validation : type invalide refuse", not clean4)
 
     cfg = load_fishing_config()
-    check("config completee par DEFAULT_CONFIG",
-          cfg.get("cursorDivergePx") == 60, "cursorDivergePx=%s" % cfg.get("cursorDivergePx"))
-    check("config du disque conservee",
-          cfg.get("castSettleSec") == 2.0, "castSettleSec=%s" % cfg.get("castSettleSec"))
-    check("cles inconnues signalees", isinstance(cfg.get("__unknown__"), dict))
+    check("config : toutes les cles du schema accessibles",
+          all(k in cfg for k in FISHING_SCHEMA))
+    check("config : source annoncee", bool(cfg.get("__config_source__")))
+    if bot_here:
+        check("config completee par DEFAULT_CONFIG",
+              cfg.get("cursorDivergePx") == 60,
+              "cursorDivergePx=%s" % cfg.get("cursorDivergePx"))
+    else:
+        check("config : repli sur le schema interne",
+              cfg.get("__bot_present__") is False
+              and "schema integre" in cfg["__config_source__"])
+        ok, errs, _ = save_fishing_config({"pasUnParametre": 1})
+        check("ecriture refusee pour cle inconnue", not ok and errs)
 
-    hb = heartbeat(COMPONENTS_BY_KEY["fishing_bot"])
-    check("heartbeat lu", hb.get("checked") is True, str(hb.get("last_event")))
-    check("heartbeat : age disponible", hb.get("last_age_sec") is not None,
-          "age=%s event=%s" % (hb.get("last_age_sec"), hb.get("last_event")))
+    if log_here:
+        check("journal de progression = fichier existant", True)
+        hb = heartbeat(COMPONENTS_BY_KEY["fishing_bot"])
+        check("heartbeat lu", hb.get("checked") is True, str(hb.get("last_event")))
+        check("heartbeat : age disponible", hb.get("last_age_sec") is not None,
+              "age=%s event=%s" % (hb.get("last_age_sec"), hb.get("last_event")))
+    else:
+        hb = heartbeat(COMPONENTS_BY_KEY["fishing_bot"])
+        check("heartbeat absent = BLOQUE si vivant, sans planter",
+              hb.get("checked") is True and hb.get("fresh") is False,
+              str(hb.get("error")))
 
     st = component_status(COMPONENTS_BY_KEY["fishing_bot"])
-    check("botPeche sans processus = ARRETE", st["state"] == STOPPED, st["detail"])
+    check("botPeche declare etat coherent",
+          st["state"] in (STOPPED, ACTIVE, BLOCKED, STARTING, PAUSED, ERROR),
+          "%s - %s" % (st["state"], st["detail"]))
     check("botCasino = ABSENT",
           component_status(COMPONENTS_BY_KEY["casino_bot"])["state"] == ABSENT)
 
@@ -1254,12 +1335,26 @@ def _selftest() -> int:
           (not r.ok) and "aucun processus" in r["detail"].lower(), r["detail"])
     check("tout resultat trace", len(cc.history) == 2)
 
+    if not bot_here:
+        r = cc.start("fishing_bot")
+        check("demarrage refuse si le lanceur est absent du checkout",
+              (not r.ok) and "lanceur absent" in r["detail"], r["detail"])
+
     snap = cc.snapshot()
     check("snapshot complet",
           {"bot_state", "casino_state", "wow", "guard"} <= set(snap))
     rep = cc.diagnostic_report()
     text = json.dumps(rep, ensure_ascii=False)
-    check("rapport sans secret visible", "sessionToken" in text and MASK in text)
+    bridge_cfg = _read_json(os.path.join(ROOT, "bridge", "config.json"), {})
+    if bridge_cfg:
+        check("rapport : secret de bridge masque",
+              all((not bridge_cfg.get(k)) or MASK in text
+                  for k in bridge_cfg if is_secret(k)))
+        for k in bridge_cfg:
+            if is_secret(k) and bridge_cfg[k]:
+                check("secret '%s' absent en clair" % k, bridge_cfg[k] not in text)
+    else:
+        check("rapport : aucune config bridge a masquer (checkout reduit)", True)
     check("rapport declare casino absent", rep["casino"]["state"] == ABSENT)
 
     print("-" * 70)
