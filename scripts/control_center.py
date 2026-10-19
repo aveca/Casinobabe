@@ -40,7 +40,10 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 import tkinter as tk  # noqa: E402
-from tkinter import filedialog  # noqa: E402
+
+# Aucun import de `messagebox` ni de `filedialog` : tout retour a l'utilisateur
+# passe par la barre d'etat. Aucune fenetre modale ne peut donc bloquer
+# l'interface pendant que les bots travaillent.
 
 import control_core as core  # noqa: E402
 import window_guard  # noqa: E402
