@@ -1168,7 +1168,7 @@ class FishingBot:
                 return "RESULT_UNKNOWN (capture impossible)"
             img_np = to_bgr(img)
             amb = _ambient_light(img_np)
-            vf = 55 if amb < 60.0 else 80
+            vf = 55 if amb < 75.0 else 80  # meme regle que la boucle
             bx, by, conf = detect_bobber(img_np, self.calib, v_floor=vf)
             if bx is not None and conf >= self.config["bobberMinConf"]:
                 return "CAST_IN_PROGRESS (flotteur revu en %d,%d)" % (bx, by)
@@ -1482,15 +1482,17 @@ class FishingBot:
         img_np = to_bgr(img)
         amb = _ambient_light(img_np)
         self._cycle_amb = amb
-        # FIX 2026-10-20 : on n'abaisse PLUS le plancher V la nuit.
-        # Ce seuil datait de l'ancienne definition de l'eau (ou l'eau de
-        # nuit etait « grise », S<115). Avec la definition par TEINTE, la
-        # voie jour detecte le flotteur la nuit aussi (mesure en jeu le
-        # 20/10 03:00 : amb=57.6, conf=0.95 a v_floor=80 comme a 55).
-        # Abaisser v_floor n'apportait rien (la porte eau rejettait de toute
-        # facon les blobs hors eau) et ne faisait que baisser le seuil de
-        # detection des leurres.
-        vf = 80
+        # FIX 2026-10-20 : plancher V ADAPTATIF (seuil bas la nuit).
+        # Cette logique avait ete supprimee a tort, sur une deduction
+        # non mesuree. Mesure reelle sur 120 captures de NUIT
+        # (ambiance < 75) :
+        #   v_floor=80 (rouge vif)   -> flotteur dans  2/120 frames
+        #   v_floor=55 (rouge sombre) -> flotteur dans  6/120 frames
+        # Le leurre est SOMBRE la nuit : le seuil bas englobe la plume
+        # complete. Risque de leurre nul : la porte eau (waterR >=
+        # 0.88) rejette de toute facon les blobs hors eau (201 blobs
+        # rejetes a v_floor=80, 257 a v_floor=55, aucun ne passe).
+        vf = 55 if amb < 75.0 else 80
         # Fix 2026-10-15 : voie jour TOUJOURS tentée (l'amb 82-94 de l'oasis
         # n'est pas la nuit). La voie nuit reste un secours scène sombre.
         scale = float(self.config.get("detectScale", 1.0) or 1.0)
