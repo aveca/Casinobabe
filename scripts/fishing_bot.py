@@ -1108,6 +1108,23 @@ class FishingBot:
                      instance=get_wow_instance() or "first",
                      wowWindows=len(list_wow_windows()))
             if not hwnd:
+                # FIX 2026-10-20 : PATIENCE au demarrage. Le bot echouait
+                # immediatement si WoW n'etait pas encore lance (fenetre
+                # absente) : il fallait le relancer APRES le lancement du jeu.
+                # On attend maintenant la fenetre comme on attend deja le HUD
+                # « en jeu » (30 x 10 s) : le joueur peut lancer le jeu puis
+                # le bot, ou l'inverse, sans coordination.
+                for attempt in range(30):
+                    self.log("WINDOW_WAIT", attempt=attempt + 1,
+                             note="attente de la fenetre WoW (max 5 min)")
+                    time.sleep(10)
+                    hwnd, title, rect = find_wow_window()
+                    if hwnd:
+                        self.log("WIN_TARGET", hwnd=hwnd, rect=rect,
+                                 instance=get_wow_instance() or "first",
+                                 wowWindows=len(list_wow_windows()))
+                        break
+            if not hwnd:
                 self._fail("WoW introuvable : fenêtre 'World of Warcraft' absente.")
                 return
             # Vérification d'écran avec réessais (un glitch PrintWindow ou un
