@@ -120,20 +120,27 @@ def button_text_ratio(img_bgr, btn):
 
 
 def popup_confirm_buttons(img_bgr):
-    """Boutons d'un popup de CONFIRMATION d'appât (1 ou 2). Vide sinon.
+    """Boutons d'un popup de CONFIRMATION d'appat (1 ou 2). Vide sinon.
 
-    Deux filets :
-      - au-delà de 2 boutons rouges alignés, ce n'est pas une confirmation
-        (menu Options du jeu) -> on ne clique RIEN ;
-      - le texte doit être COURT (« Yes »/« Okay ») : une invitation de
-        groupe (« Accept »/« Decline ») n'est JAMAIS confirmée par le bot.
+    Trois filets successifs, tous mesures sur captures reelles :
+      1) au-dela de 2 boutons rouges alignes, ce n'est pas une confirmation
+         (menu Options du jeu : 5-6 boutons) -> on ne clique RIEN ;
+      2) le texte de CHAQUE bouton doit etre COURT ("Yes", "No", "Okay") :
+         une invitation de groupe ("Accept" / "Decline", ratios 0.355 /
+         0.328) n'est JAMAIS confirmee, alors que "Yes" / "No" (ratios
+         0.124 / 0.081) l'est ;
+      3) un popup a 2 boutons exige que LES DEUX soient du meme type
+         (court) : un melange court/long n'est aucune confirmation connue
+         -> refuse.
     """
     btns = find_popup_buttons(img_bgr)
     if not btns or len(btns) > MAX_CONFIRM_BUTTONS:
         return []
-    for b in btns:
-        if button_text_ratio(img_bgr, b) > BTN_TEXT_MAX_RATIO:
-            return []
+    ratios = [button_text_ratio(img_bgr, b) for b in btns]
+    if any(r > BTN_TEXT_MAX_RATIO for r in ratios):
+        return []
+    if len(btns) == 2 and ((ratios[0] > 0.2) != (ratios[1] > 0.2)):
+        return []
     return btns
 
 

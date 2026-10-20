@@ -132,6 +132,15 @@ def main():
               not conf, "(confirme %d)" % len(conf))
 
     print()
+    print("=== 6) Un popup 1 bouton (« Okay ») est bien confirme ===")
+    p = os.path.join(CAP, "20261019-203650-bite.png")
+    if os.path.isfile(p):
+        bgr = cv2.imread(p)
+        conf = popup_confirm_buttons(bgr)
+        check("dialogue a 1 bouton (TSM « Okay ») : confirme", len(conf) == 1,
+              "(trouve %d)" % len(conf))
+
+    print()
     print("%d echec(s)" % len(FAILED))
     return 1 if FAILED else 0
 
