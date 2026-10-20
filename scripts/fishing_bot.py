@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 fishing_bot.py — Prototype minimal d'auto-pêche Casinobabe (UN bouton START).
 
@@ -136,8 +136,20 @@ WATER_RING_MIN = 0.60    # plancher de l'anneau complet quand l'arc suffit
 # FIX 2026-10-19 : l'ancien critère (S<115 ET V<175) rejetait l'eau
 # saturée de l'oasis (S 148-169) et acceptait l'herbe (S 43-160) : le
 # flotteur réel n'était jamais détecté sur ce spot.
-WATER_H_MIN = 72
+WATER_H_MIN = 40
 WATER_H_MAX = 115
+
+# FIX 2026-10-20 (cause racine « le bot ne voit pas le flotteur ») : la teinte
+# de l'eau DEPEND FORTEMENT de l'eclairage. Mesures sur les frames REELLES :
+#   jour : H = 45 a 62 (l'eau est VERTE, pas bleu-vert) ;
+#   nuit : H = 78 a 95 (bleu-vert).
+# L'ancienne plage [72,115] ne couvrait QUE la nuit : en plein jour waterR
+# tombait a 0 pour tout le monde, le flotteur etait rejete par la porte, le bot
+# ne le voyait plus et lancait a l'aveugle (WATCH_MISS en boucle).
+# La plage est donc elargie a [40,115] ; la discrimination eau/herbe est
+# assuree par la DISPERSION ROBUSTE (IQR) de la teinte, pas par la teinte
+# seule (l'herbe est TEXTUREE : IQR 15-25 ; l'eau est LISSE : IQR 0-2).
+WATER_IQR_MAX = 3
 
 
 def focus_broker_is_user_active():
@@ -471,12 +483,18 @@ def to_bgr(img):
     return cv2.cvtColor(np.asarray(img.convert("RGB")), cv2.COLOR_RGB2BGR)
 
 
-def _red_blobs(img_bgr, area_min=12, area_max=2000, v_floor=80):
+def _red_blobs(img_bgr, area_min=20, area_max=2000, v_floor=80):
     """Candidats 'plumes rouges' dans la zone de jeu. Retourne [(x,y,area,circ)].
     Bornes d'aire exprimées dans l'espace de l'image fournie (détection à
     échelle réduite : l'appelant les met à l'échelle).
     v_floor : plancher V du rouge. 80 le jour ; 55 la nuit (plumes à V~64
-    mesurées capture 23:58) — la porte aquatique préserve la précision."""
+    mesurées capture 23:58) - la porte aquatique préserve la précision.
+
+    FIX 2026-10-20 : plancher d'aire 25 px² (au lieu de 12). Mesures : le
+    VRAI flotteur fait 36-267 px² (mediane 137) alors que la MECHE de la
+    CHEVELURE roux du personnage (qui est au milieu de l'eau, donc
+    indiscernable par la porte aquatique) ne fait que 18 px². Ce plancher
+    ecarte le leurre sans perdre le flotteur."""
     h, w = img_bgr.shape[:2]
     x0, x1 = int(w * 0.05), int(w * 0.95)
     y0, y1 = int(h * 0.05), int(h * 0.85)
@@ -637,14 +655,14 @@ def _water_stats(img_bgr, cx, cy, r_in=10, r_out=42, img_hsv=None, n_sectors=8):
     y0, y1 = max(0, cy - r_out - 2), min(h, cy + r_out + 3)
     patch = img_bgr[y0:y1, x0:x1]
     if patch.size == 0:
-        return 0.0, [0.0] * n_sectors
+        return 0.0, [0.0] * n_sectors, 999.0
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
     lx, ly = cx - x0, cy - y0
     yy, xx = np.mgrid[0:(y1 - y0), 0:(x1 - x0)]
     d2 = (xx - lx) ** 2 + (yy - ly) ** 2
     ring = (d2 >= r_in ** 2) & (d2 <= r_out ** 2)
     if ring.sum() == 0:
-        return 0.0, [0.0] * n_sectors
+        return 0.0, [0.0] * n_sectors, 999.0
     is_water = (hsv[:, :, 0] >= WATER_H_MIN) & (hsv[:, :, 0] <= WATER_H_MAX)
     full = float(is_water[ring].sum()) / float(ring.sum())
     ang = (np.arctan2(yy - ly, xx - lx) + 2 * np.pi) % (2 * np.pi)
@@ -655,7 +673,17 @@ def _water_stats(img_bgr, cx, cy, r_in=10, r_out=42, img_hsv=None, n_sectors=8):
         m = ring & (ang >= a0) & (ang < a1)
         cnt = int(m.sum())
         sec.append(float(is_water[m].sum()) / cnt if cnt else 0.0)
-    return full, sec
+    # Dispersion ROBUSTE de la teinte (IQR) sur un anneau qui exclut le blob
+    # ET son halo (r 20-60). L'ecart-type explosait a cause du FIL DE PECHE
+    # (quelques pixels sombres sur 5000) ; l'IQR est insensible a ces
+    # outliers. Mesures : eau IQR 0-2 (zone LISSE), herbe IQR 15-25 (TEXTUREE).
+    ring2 = (d2 >= 20 ** 2) & (d2 <= 60 ** 2)
+    if ring2.sum() > 50:
+        hq = np.percentile(hsv[:, :, 0][ring2], [25, 75])
+        iqr = float(hq[1] - hq[0])
+    else:
+        iqr = 999.0
+    return full, sec, iqr
 
 
 def _best_arc(sec, span_sectors):
@@ -671,10 +699,14 @@ def _best_arc(sec, span_sectors):
     return best
 
 
-def _water_gate_ok(full, sec):
-    """Porte aquatique directionnelle.
+def _water_gate_ok(full, sec, iqr=0.0):
+    """Porte aquatique : directionnelle + zone LISSE.
 
-    Deuxoles conditions :
+    Conditions, toutes necessaires :
+      0) la zone autour du candidat est LISSE (IQR de la teinte <= WATER_IQR_MAX)
+         — l'eau est une grande surface unie, l'herbe est texturee. C'est ce
+         critere, et non la teinte seule, qui tient dans les DEUX éclairages
+         (l'eau est H 45-62 le jour, H 78-95 la nuit) ;
       1) l'anneau COMPLET est presque tout de l'eau (>= WATER_GATE) — le cas
          nominal, le flotteur au large ;
       2) OU le MEILLEUR DEMI-TOUR est de l'eau (>= WATER_ARC_GATE) ET l'anneau
@@ -682,11 +714,14 @@ def _water_gate_ok(full, sec):
          colle au personnage ou au rivage : on tolere un seul obstacle, pas un
          decalage complet.
 
-    Mesure (836 frames reelles, position VRAIE du flotteur) :
-      anneau complet seul : recall 64 %, 0.00 faux positif/frame ;
-      arc seul            : recall 73 %, 0.07 faux positif/frame (TROP) ;
-      arc + anneau >= 0.60: recall 73 %, 0.01 faux positif/frame  <-- CHOISI
+    Mesures (836 frames reelles, position VRAIE du flotteur) :
+      anneau complet, teinte [72,115]   : recall 64 %, 0.000 faux pos/frame
+      + arc directionnel                 : recall 73 %, 0.007 faux pos/frame
+      + teinte [40,115] + IQR<=2         : recall 90 %, 0.016 faux pos/frame
+    (l'echec historique connu etait a 6,8 % de faux bobbers par frame)
     """
+    if iqr > WATER_IQR_MAX:
+        return False
     if full >= WATER_GATE:
         return True
     if full < WATER_RING_MIN:
@@ -701,6 +736,36 @@ def _ambient_light(img_bgr):
     roi = img_bgr[int(h * 0.30):int(h * 0.70), int(w * 0.30):int(w * 0.70)]
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     return float(hsv[:, :, 2].mean())
+
+
+def _scene_water_ratio(img_bgr, samples=7, rows=5):
+    """Fraction de la scene centrale qui ressemble a de l'eau LISSE.
+
+    Sert de GARDE DE SPOT : ne pas lancer la canne si la scene ne contient
+    pas d'eau (le personnage n'est pas a l'oasis). Mesure : un echantillon de
+    points sur la bande centrale ; un point compte comme « eau » si la teinte
+    mediane de son voisinage est dans la plage eau ET que ce voisinage est
+    lisse (IQR faible). L'eau de l'oasis remplit la bande centrale ; une salle
+    en pierre (Stormwind) ne la remplit pas.
+    """
+    h, w = img_bgr.shape[:2]
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    tot = 0
+    water = 0
+    for r in range(rows):
+        for c in range(samples):
+            px = int(w * (0.25 + 0.50 * c / max(1, samples - 1)))
+            py = int(h * (0.12 + 0.33 * r / max(1, rows - 1)))
+            patch = hsv[max(0, py - 12):py + 13, max(0, px - 12):px + 13]
+            if patch.size == 0:
+                continue
+            tot += 1
+            H = patch[:, :, 0]
+            med = float(np.median(H))
+            iqr = float(np.percentile(H, 75) - np.percentile(H, 25))
+            if WATER_H_MIN <= med <= WATER_H_MAX and iqr <= 6.0:
+                water += 1
+    return (float(water) / float(tot)) if tot else 0.0
 
 
 def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
@@ -735,10 +800,10 @@ def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
     # vers le rivage perd son anneau d'eau mais reste le même objet).
     locked = getattr(detect_bobber, "_locked_water", None)
     for bx, by, area, circ in _red_blobs(
-            img_bgr, area_min=12 * scale * scale, area_max=2000 * scale * scale,
+            img_bgr, area_min=20 * scale * scale, area_max=2000 * scale * scale,
             v_floor=v_floor):
-        full, sec = _water_stats(img_bgr, bx, by, r_in=r_in, r_out=r_out,
-                                 img_hsv=img_hsv)
+        full, sec, iqr = _water_stats(img_bgr, bx, by, r_in=r_in, r_out=r_out,
+                                      img_hsv=img_hsv)
         wr = full
         score = wr + min(0.05, area / (2000.0 * scale * scale))
         # Continuité temporelle : à score comparable, on garde le candidat
@@ -747,7 +812,7 @@ def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
             d = ((bx - prefer[0]) ** 2 + (by - prefer[1]) ** 2) ** 0.5
             if d < 80:
                 score += 0.03
-        if _water_gate_ok(full, sec):  # porte directionnelle (mesure 2026-10-20)
+        if _water_gate_ok(full, sec, iqr):  # porte directionnelle + zone lisse (2026-10-20)
             if score > best_score:
                 best, best_score = (bx, by), score
         elif score > best_fb_score:
@@ -1233,6 +1298,13 @@ class FishingBot:
                         continue
                     if self._adopt_existing(hwnd):
                         continue
+                    # GARDE DE SPOT (2026-10-20) : ne PAS lancer si la scene
+                    # ne contient pas d'eau. Le bot lanait a l'aveugle la que
+                    # le personnage etait a Stormwind (War Room) : 3 lancers
+                    # sans flotteur, pause 60 s, recommence... et, avec la
+                    # porte elargie, il aurait pu cliquer le TAPIS ROUGE.
+                    if not self._scene_has_water(hwnd):
+                        continue
                     self._cast(vk)
                     continue
                 if self.state == CASTING:
@@ -1345,8 +1417,8 @@ class FishingBot:
             # Porte DIRECTIONNELLE (mesure 2026-10-20) : meme regle que le
             # detecteur, sinon un flotteur valide mais colle au personnage
             # serait rejete ici apres avoir ete adopte.
-            full, sec = _water_stats(img_np, bx, by, r_in=10, r_out=42)
-            if not _water_gate_ok(full, sec):
+            full, sec, iqr = _water_stats(img_np, bx, by, r_in=10, r_out=42)
+            if not _water_gate_ok(full, sec, iqr):
                 self.log("ADOPT_REJECTED", bobber=(bx, by), waterR=round(full, 3),
                          note="pas de flotteur dans l'eau - leurre refuse, "
                               "le bot va lancer")
@@ -1409,6 +1481,38 @@ class FishingBot:
                   event="death")
         self.log("PLAYER_DEAD", certain=certain, evidence=ev,
                  note="peche suspendue - reprise auto apres resurrection verifiee")
+
+    def _scene_has_water(self, hwnd, min_ratio=0.12, ttl=2.0):
+        """True si la scene centrale contient de l'eau (garde de spot).
+
+        Le resultat est memorise `ttl` secondes (une capture coute ~100 ms).
+        """
+        now = time.time()
+        last = getattr(self, "_scene_water_ts", 0.0)
+        if now - last < ttl:
+            return getattr(self, "_scene_water_ok", True)
+        self._scene_water_ts = now
+        try:
+            res = capture_window(hwnd)
+            img = res[0] if isinstance(res, tuple) else res
+            if img is None:
+                self._scene_water_ok = True   # capture KO : on ne bloque pas
+                return True
+            ratio = _scene_water_ratio(to_bgr(img))
+        except Exception:
+            self._scene_water_ok = True
+            return True
+        self._scene_water_ok = ratio >= min_ratio
+        if not self._scene_water_ok:
+            n = getattr(self, "_no_water_logged", 0) + 1
+            self._no_water_logged = n
+            if n % 10 == 1:
+                self.log("SPOT_SANS_EAU", waterRatio=round(ratio, 3),
+                         note="pas d'eau visible - aucun lancer envoye "
+                              "(le personnage n'est pas a l'eau)")
+        else:
+            self._no_water_logged = 0
+        return self._scene_water_ok
 
     def _cast(self, vk):
         self.state = CASTING

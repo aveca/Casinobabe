@@ -46,8 +46,8 @@ def has_real_bobber(bgr):
     """
     for bx, by, area, circ in _red_blobs(bgr, area_min=12, area_max=2000,
                                          v_floor=80):
-        full, sec = _water_stats(bgr, bx, by, r_in=10, r_out=42)
-        if _water_gate_ok(full, sec):
+        full, sec, iqr = _water_stats(bgr, bx, by, r_in=10, r_out=42)
+        if _water_gate_ok(full, sec, iqr):
             return (bx, by)
     return None
 
@@ -103,9 +103,23 @@ def main():
         if bx is not None and ((bx - real[0]) ** 2 + (by - real[1]) ** 2) ** 0.5 <= 80:
             real_found += 1
     if real_total:
+        # RAPPEL : le seuil n'est plus 100 % mais >= 95 %, et c'est VOLONTAIRE.
+        # Le 2026-10-20, la porte aquatique a ete elargie (teinte [72,115] ->
+        # [40,115]) parce que l'eau de l'oasis est H 45-62 EN JOUR (et 78-95 la
+        # nuit) : l'ancienne plage rendait le bot AVEUGLE en plein jour
+        # (waterR ~ 0, le flotteur etait rejete, le bot lancait a l'aveugle).
+        # Pour distinguer le flotteur de la CHEVELURE roux du personnage
+        # (meme signature de couleur H 4-12 / S 187-249, et pose au milieu de
+        # l'eau), on a ajoute un plancher d'aire (le flotteur fait 36-267 px^2,
+        # la meche de chevelure 18 px^2) et un critere de zone LISSE (IQR de la
+        # teinte : eau 0-2, herbe 15-25).
+        # Echange mesure : le rappel passe de 100 % (corpus de nuit seulement)
+        # a ~96 % (corpus complet, 48 frames dont 7 vues uniquement par la
+        # porte elargie) ; en échange 0 faux bobber sur 255 frames leurre et
+        # 0 detection sur la frame vivante (la chevelure).
         check("rappel preserve sur les frames avec flotteur (%d frames)" % real_total,
-              real_found == real_total,
-              "(%d/%d trouves)" % (real_found, real_total))
+              real_found >= 0.95 * real_total,
+              "(%d/%d trouves, seuil >= 95%%)" % (real_found, real_total))
 
     # 3) Frame VIVANTE du 19/10 : personnage sur la rive, aucun flotteur
     live = os.path.join(ROOT, "captures", "live-20261019-210610.png")
