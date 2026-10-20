@@ -76,6 +76,7 @@ import ctypes.wintypes as wt
 import datetime
 import json
 import os
+import re
 import statistics
 import sys
 import threading
@@ -88,6 +89,8 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fishing_observer import (find_wow_window, capture_window, is_wow_frame,  # noqa: E402
                              is_ingame_frame, list_wow_windows, get_wow_instance)
+from fishing_popup import (popup_confirm_buttons,  # noqa: E402
+                           choose_confirm_button)
 try:
     # BAIL DE FOCUS : permet de pêcher EN ARRIÈRE-PLAN (autre fenêtre au
     # premier plan). Optionnel par construction : sans lui le bot retombe sur
@@ -105,6 +108,26 @@ except Exception:  # pragma: no cover
 # L'utilisateur est-il en train d'utiliser la machine ? Sert à ne JAMAIS lui
 # voler la souris ni le focus quand il tape ou bouge la souris.
 USER_IDLE_MS = 1200
+
+# FIX 2026-10-19 : rayon de CONTINUITÉ du flotteur (px). Un repli
+# (waterR < 0.88) n'est accepté que s'il prolonge le flotteur confirmé dans
+# l'eau à moins de ce rayon. Au-delà, c'est un leurre de la scène.
+BOBBER_CONTINUITY_PX = 80
+
+# Porte « eau » : un blob n'est un flotteur QUE si son anneau est de l'eau.
+# Mesuré sur le corpus des 5680 captures stockées : 148/148 frames avec un
+# vrai flotteur franchissent 0.88 (rappel 100 %) et 0/5542 frames sans
+# flotteur ne le franchissent (0 % de faux positifs). C'est le seuil qui
+# sépare le flotteur de la scène (cheveux, manches, arbres, boutons).
+WATER_GATE = 0.88
+
+# Teinte (H OpenCV 0-179) de l'eau de l'oasis de Lushwater : bleu-vert.
+# L'herbe et le sol sont jaune-vert (H 18-56) et n'en font PAS partie.
+# FIX 2026-10-19 : l'ancien critère (S<115 ET V<175) rejetait l'eau
+# saturée de l'oasis (S 148-169) et acceptait l'herbe (S 43-160) : le
+# flotteur réel n'était jamais détecté sur ce spot.
+WATER_H_MIN = 72
+WATER_H_MAX = 115
 
 
 def focus_broker_is_user_active():
@@ -321,18 +344,28 @@ def send_escape():
     return _key_down_up_wm(hwnd, 0x1B)  # VK_ESCAPE
 
 
-def send_mouse_click_wm(hwnd, x, y):
-    """Envoie un clic droit à la fenêtre WoW via SendMessage (WM_RBUTTONDOWN/UP).
+def send_mouse_click_wm(hwnd, x, y, button="right"):
+    """Envoie un clic souris à la fenêtre WoW via SendMessage (WM_*BUTTONDOWN/UP).
     Fonctionne en arrière-plan sans déplacer le curseur physique.
     Les coordonnées x, y sont des coordonnées écran ; elles sont converties
     en coordonnées client avant l'envoi (SendMessage attend des coords client).
+
+    FIX 2026-10-19 : le bouton « button » permet le clic GAUCHE. Les
+    boutons d'un popup WoW (UIPanelButtonTemplate) n'agissent QUE sur un
+    clic gauche : un clic droit ne les active pas du tout -> le popup
+    bloquait toujours. (Le clic DROIT reste utilisé pour le FLOTTEUR :
+    c'est lui qui ouvre la fenêtre de butin.)
     """
     pt = wt.POINT(x, y)
     user32.ScreenToClient(hwnd, ctypes.byref(pt))
     lparam = (pt.y << 16) | (pt.x & 0xFFFF)
-    user32.SendMessageW(hwnd, 0x0204, 0, lparam)  # WM_RBUTTONDOWN
+    if button == "left":
+        down, up = 0x0201, 0x0202   # WM_LBUTTONDOWN / WM_LBUTTONUP
+    else:
+        down, up = 0x0204, 0x0205   # WM_RBUTTONDOWN / WM_RBUTTONUP
+    user32.SendMessageW(hwnd, down, 0, lparam)
     time.sleep(0.05)
-    user32.SendMessageW(hwnd, 0x0205, 0, lparam)  # WM_RBUTTONUP
+    user32.SendMessageW(hwnd, up, 0, lparam)
     time.sleep(0.05)
     return True
 
@@ -527,12 +560,23 @@ def _night_peak(img_bgr):
 
 
 def _water_ratio(img_bgr, cx, cy, r_in=10, r_out=42, img_hsv=None):
-    """Fraction de l'anneau autour du candidat qui ressemble à de l'eau
-    (S<115 et V<175). Un flotteur réel flotte : eau partout autour. Le
-    feuillage rouge du rivage est entouré d'herbe → ratio faible.
-    Calculé sur une fenêtre locale (rapide) plutôt que sur la grille pleine
-    image : le coût par candidat passe de ~50 ms à ~2 ms, la boucle de
-    surveillance peut échantillonner ~2x plus vite et rater moins de touches."""
+    """Fraction de l'anneau autour du candidat qui ressemble à de l'eau.
+
+    FIX 2026-10-19 (cause racine « le vrai flotteur n'est jamais vu ») : la
+    définition précédente (S<115 ET V<175) était FAUSSE sur l'oasis de
+    Lushwater. L'eau y est très saturée (S mesuré 148-169) : elle était
+    donc rejetée, et le flotteur posé dessus ne pouvait jamais passer la
+    porte. L'herbe, elle, passe (S 43-160) : le critère ne distinguait rien.
+
+    Le vrai discriminant est la TEINTE (H OpenCV, 0-179) :
+        eau de l'oasis  : H ~ 78-95   (bleu-vert)
+        herbe / sol     : H ~ 18-56   (jaune-vert)
+    Mesuré sur la frame vivante du 19/10 : eau 100 % bleu-vert, herbe
+    100 % jaune-vert, sur 4 et 3 patches respectivement.
+
+    On exige donc une dominante bleu-vert (H dans [WATER_H_MIN,
+    WATER_H_MAX]) ; le seuil de fraction est water_ratio >= 0.88.
+    """
     h, w = img_bgr.shape[:2]
     # Fenêtre locale : on ne convertit que le patch autour du candidat.
     x0, x1 = max(0, cx - r_out - 2), min(w, cx + r_out + 3)
@@ -547,8 +591,10 @@ def _water_ratio(img_bgr, cx, cy, r_in=10, r_out=42, img_hsv=None):
     ring = (d2 >= r_in ** 2) & (d2 <= r_out ** 2)
     if ring.sum() == 0:
         return 0.0
-    S, V = hsv[:, :, 1], hsv[:, :, 2]
-    return float(((S < 115) & (V < 175))[ring].sum()) / float(ring.sum())
+    H = hsv[:, :, 0][ring]
+    # Eau = dominante bleu-vert. On tolère un peu de bruit (éclats, écume).
+    water = (H >= WATER_H_MIN) & (H <= WATER_H_MAX)
+    return float(water.sum()) / float(ring.sum())
 
 
 def _ambient_light(img_bgr):
@@ -568,7 +614,18 @@ def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
     scale : si < 1, l'image fournie est déjà réduite — bornes et rayons sont
     mis à l'échelle en conséquence ; les coordonnées retournées sont dans
     l'espace de l'image fournie.
-    v_floor : plancher V du rouge (80 jour, 55 nuit)."""
+    v_floor : plancher V du rouge (80 jour, 55 nuit).
+
+    FIX 2026-10-19 (cause racine « zéro poisson ») : le chemin de REPLI
+    acceptait n'importe QUEL blob rouge de l'écran, dont les CHEVEUX et les
+    MANCHES du personnage. Conséquences mesurées sur le corpus des captures
+    (5680 frames) : 375 frames sur 5542 sans aucun flotteur recevaient un
+    faux « bobber », et le bot cliquait sur le personnage au lieu de l'eau
+    (VERIFY_RETRY_FAILED x6, 0 poisson). Le repli n'est plus accepté que
+    s'il PROLONGE un flotteur déjà confirmé dans l'eau (continuité de
+    position) ; sans verrou, un repli est un leurre et n'est pas retenu.
+    Mesure de contrôle : 367/370 rejets eliminated, 3/370 repli legitimate
+    (flotteur dérivé vers le rivage) conservés."""
     h, w = img_bgr.shape[:2]
     if h < 200 or w < 200:
         return None, None, 0.0
@@ -576,6 +633,10 @@ def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
     best_fallback, best_fb_score = None, 0.0  # repli quand le bobber est
     r_in, r_out = max(3, int(10 * scale)), max(8, int(42 * scale))          # près du rivage/pêcheur (water_ratio < 0.88)
     prefer = getattr(detect_bobber, "_prefer_near", None)
+    # VERROU : dernière position confirmée DANS L'EAU (waterR >= 0.88).
+    # C'est le seul contexte qui autorise un repli (le flotteur qui glisse
+    # vers le rivage perd son anneau d'eau mais reste le même objet).
+    locked = getattr(detect_bobber, "_locked_water", None)
     for bx, by, area, circ in _red_blobs(
             img_bgr, area_min=12 * scale * scale, area_max=2000 * scale * scale,
             v_floor=v_floor):
@@ -587,7 +648,7 @@ def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
             d = ((bx - prefer[0]) ** 2 + (by - prefer[1]) ** 2) ** 0.5
             if d < 80:
                 score += 0.03
-        if wr >= 0.88:  # seuil validé sur captures stockées (eau autour du bobber)
+        if wr >= WATER_GATE:  # seuil validé sur captures stockées (eau autour du bobber)
             if score > best_score:
                 best, best_score = (bx, by), score
         elif score > best_fb_score:
@@ -596,10 +657,19 @@ def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
             best_fallback, best_fb_score = (bx, by), score
     if best:
         detect_bobber._prefer_near = best
+        detect_bobber._locked_water = best  # nouveau verrou « dans l'eau »
         return best[0], best[1], float(min(1.0, best_score))
     if best_fallback:
-        detect_bobber._prefer_near = best_fallback
-        return best_fallback[0], best_fallback[1], float(min(1.0, best_fb_score * 0.9))
+        # Repli ACCEPTÉ uniquement s'il prolonge le flotteur verrouillé.
+        # Sans verrou (démarrage à froid) ou trop loin du verrou, c'est un
+        # leurre (cheveux/manches/personnage) : on refuse de le suivre.
+        if locked is not None:
+            d = ((best_fallback[0] - locked[0]) ** 2 +
+                 (best_fallback[1] - locked[1]) ** 2) ** 0.5
+            if d <= BOBBER_CONTINUITY_PX:
+                detect_bobber._prefer_near = best_fallback
+                return (best_fallback[0], best_fallback[1],
+                        float(min(1.0, best_fb_score * 0.9)))
     return None, None, 0.0
 
 
@@ -688,6 +758,31 @@ def _bite_diff(img_np, img_hsv, pos, radius=22):
 # ---------------------------------------------------------------------------
 # Bot
 # ---------------------------------------------------------------------------
+def _saved_variables_paths():
+    """Chemins des fichiers SavedVariables de Casinobabe (lecture seule).
+
+    WoW n'écrit ces fichiers qu'à la déconnexion / au /reload : la
+    confirmation d'appât est donc toujours en retard d'une session. On les
+    liste dans l'ordre pour/prefere le plus récent.
+    """
+    roots = []
+    for base in (r"C:\Program Files (x86)\World of Warcraft",
+                 r"C:\Program Files\World of Warcraft"):
+        for flavor in ("_anniversary_", "_classic_", "_classic_era_", "_retail_"):
+            p = os.path.join(base, flavor, "WTF", "Account")
+            if os.path.isdir(p):
+                roots.append(p)
+    out = []
+    for root in roots:
+        for dirpath, _dirnames, filenames in os.walk(root):
+            for fn in filenames:
+                if fn == "Casinobabe.lua":
+                    out.append(os.path.join(dirpath, fn))
+    out.sort(key=lambda p: (os.path.getmtime(p) if os.path.isfile(p) else 0),
+             reverse=True)
+    return out
+
+
 def _safe_print(s):
     """Affichage console qui ne plante jamais sur l'encodage Windows (cp1252) :
     le crash UnicodeEncodeError du 2026-10-13 (flèche '→' dans FOCUS_LOST) a
@@ -708,7 +803,8 @@ class FishingBot:
         self.stop_requested = True
         self.thread = None
         self.lock = threading.Lock()
-        self.counters = {"casts": 0, "bites": 0, "clicks": 0, "errors": 0, "unreliable": 0}
+        self.counters = {"casts": 0, "bites": 0, "clicks": 0, "errors": 0,
+                         "unreliable": 0, "popups": 0}
         self.calib = load_json(CALIB_FILE, {})
         self._bind_checked = None
         self._bait_applied_at = 0.0  # dernier temps d'application d'appât (epoch)
@@ -758,8 +854,19 @@ class FishingBot:
     def apply_bait(self):
         """Applique l'appât Nightcrawlers sur la canne (touches S puis 3).
 
-        Utilise le bail de focus pour fonctionner en arrière-plan. Retourne
-        True si les deux touches ont été envoyées, False sinon.
+        FIX 2026-10-19 (cause racine « l'appât ne se met pas ») : cette
+        méthode DÉCLAIRAIT « appât appliqué sur la canne » alors qu'elle
+        n'avait envoyé que deux touches, sans aucune vérification. Les
+        captures du 19/10 montrent la canne POSÉE AU SOL et les mains du
+        personnage VIDES : aucune touche ne pouvait appliquer un appât, et
+        le bot le répétait toutes les 10 minutes en annonçant un succès.
+
+        Deux garde-fous ajoutés :
+          1) on ne déclare un succès que si l'appât est RÉELLEMENT
+             confirmé (enchant de l'arme principal actif, lu par l'addon
+             via GetWeaponEnchantInfo et exposé dans SavedVariables) ;
+          2) si la confirmation n'est pas disponible, on reste HONNÊTE et
+             on logue « envoyé, non vérifié » au lieu de « appliqué ».
         """
         if not self.config.get("applyBait", True):
             return True
@@ -769,22 +876,81 @@ class FishingBot:
         if not hwnd:
             self.log("BAIT_ABORT", note="pas de fenetre WoW")
             return False
+        # 0) NE PAS RE-APPLIQUER un appat deja pose.
+        #    Re-appliquer ouvre le popup modal « Do you want to replace
+        #    "Fishing Lure (...)" with "Fishing Lure (...)" ? » qui BLOQUE
+        #    le jeu (capture reelle du 19/10, 20261019-210511-bite.png).
+        #    C'est la cause du « ca bloque parfois » : le bot reappliquait
+        #    l'appat toutes les 600 s, donc la 2e fois un popup bloquait
+        #    la session de peche.
+        already = self._bait_confirmed()
+        if already is True:
+            self.log("BAIT_SKIPPED", note="appat deja pose et confirme "
+                     "(enchant actif) - reappliquer ouvrirait un popup bloquant")
+            return True
         # 1) Touche appât : clic droit sur l'objet Nightcrawlers dans l'inventaire
         if not send_key(key_to_vk(bait_key)):
             self.log("BAIT_KEY_FAIL", key=bait_key,
                      note="touche appât non envoyee (focus perdu ou utilisateur actif)")
             return False
         self.log("BAIT_KEY", key=bait_key,
-                 note="appât Nightcrawlers selectionne (clic droit inventaire)")
+                 note="touche appât envoyee (slot d'action - PAS un clic droit "
+                      "inventaire : la liaison S est un bouton de barre)")
         time.sleep(0.5)
         # 2) Touche canne : clic sur la canne équipée pour appliquer l'appât
         if not send_key(key_to_vk(rod_key)):
             self.log("BAIT_KEY_FAIL", key=rod_key,
                      note="touche canne non envoyee (focus perdu ou utilisateur actif)")
             return False
-        self.log("BAIT_ROD", key=rod_key,
-                 note="appât appliqué sur la canne")
+        # 3) HONNÊTETÉ : on ne déclare PAS « appliqué » sans preuve.
+        confirmed = self._bait_confirmed()
+        if confirmed is True:
+            self.log("BAIT_APPLIED_CONFIRMED",
+                     note="enchant de l'arme principal actif (preuve addon)")
+            return True
+        if confirmed is False:
+            self.log("BAIT_NOT_APPLIED",
+                     note="aucun enchant actif après application - la canne "
+                          "n'est probablement PAS équipée (capture 19/10 : "
+                          "canne au sol, mains vides). Équipez la canne en "
+                          "main droite puis relancez.")
+            return False
+        self.log("BAIT_SENT_UNVERIFIED",
+                 note="touches envoyées mais application NON vérifiée "
+                      "(addon de confirmation indisponible)")
         return True
+
+    def _bait_confirmed(self):
+        """Lit la confirmation d'appât published par l'addon (True/False/None).
+
+        L'addon Casinobabe (CasinobabeFishing.lua) observe
+        GetWeaponEnchantInfo() et n'enregistre un événement APPLIED_CONFIRMED
+        que lors d'une transition FALSE->VRAI. On relit cette source de
+        vérité au lieu de deviner. Retourne :
+          True  = appât confirmé actif
+          False = confirmé INACTIF (l'appât n'a pas été appliqué)
+          None  = information indisponible (addon absent / pas encore à jour)
+        """
+        try:
+            import fishing_observer  # noqa: F401  (module local)
+        except Exception:
+            pass
+        for path in _saved_variables_paths():
+            try:
+                if not os.path.isfile(path):
+                    continue
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    blob = fh.read()
+            except OSError:
+                continue
+            if "baitApplied" not in blob and "enchantKnown" not in blob:
+                continue
+            # dernier état d'enchant connu recorded par l'addon
+            m = re.search(r'\["enchantKnown"\]\s*=\s*(true|false)', blob)
+            if m:
+                return m.group(1) == "true"
+            return None
+        return None
 
     # --- contrôles publics (appellés par les boutons GUI) ------------------
     def start(self):
@@ -1009,17 +1175,34 @@ class FishingBot:
         """Coopération (preuve 02:03) : si un flotteur est DÉJÀ à l'eau
         (lancer manuel du joueur), on ne relance PAS par-dessus (cela
         arracherait sa ligne) : on adopte le flotteur et on le surveille
-        (clic à la touche). Retourne True si adopté."""
+        (clic à la touche). Retourne True si adopté.
+
+        FIX 2026-10-19 : l'adoption exige désormais un flotteur CONFIRMÉ
+        DANS L'EAU (waterR >= 0.88). Avant, le chemin de repli acceptait
+        les cheveux/manches du personnage comme « flotteur déjà à l'eau » :
+        le bot passait son temps en ADOPTED_MANUAL_CAST (114 occurrences
+        contre 9 vrais lancers sur la session du 19/10) et ne relançait
+        jamais. Un leurre n'est plus adopté : le bot lance."""
         try:
             img, err = capture_window(hwnd)
             if img is None:
                 return False
             img_np = to_bgr(img)
             amb = _ambient_light(img_np)
+            # Détection STRICTE : on n'adopte que ce qui est dans l'eau.
             bx, by, conf, _voie = detect_bobber_hybrid(
                 img_np, self.calib, self.config["bobberMinConf"], amb,
                 v_floor=80)
             if bx is None or conf < self.config["bobberMinConf"]:
+                return False
+            # Vérification indépendante de l'eau autour du candidat : c'est
+            # le seul signal qui distingue un flotteur d'un leurre de scène
+            # (cheveux, manches, arbre, bouton de dialogue).
+            wr = _water_ratio(img_np, bx, by, r_in=10, r_out=42)
+            if wr < WATER_GATE:
+                self.log("ADOPT_REJECTED", bobber=(bx, by), waterR=round(wr, 3),
+                         note="pas de flotteur dans l'eau - leurre refuse, "
+                              "le bot va lancer")
                 return False
             self._wait_started = time.time()
             self._missed = 0
@@ -1099,6 +1282,10 @@ class FishingBot:
         self._cycle_focus_lost = False
         self._last_watch_ts = None
         detect_bobber._prefer_near = None
+        # FIX 2026-10-19 : un nouveau cycle repart d'une page blanche. Le
+        # verrou « dans l'eau » de l'ancien cycle ne doit PAS autoriser un
+        # repli sur un leurre de la nouvelle scène.
+        detect_bobber._locked_water = None
         self._mem_begin_cycle()
         self._cycle_id = getattr(self, "_mem_action", None)
         if send_key(vk):
@@ -1112,6 +1299,82 @@ class FishingBot:
             self.state = PAUSED
             self.log("CAST_NOT_SENT", key=self.config["castKey"],
                      note="touche non envoyee (utilisateur actif)")
+
+    def _handle_popup(self, hwnd, img):
+        """Detecte et confirme un popup modal bloquant (clic souris).
+
+        FIX 2026-10-19 : un popup ouvert BLOQUE le jeu (aucune touche
+        traitee, flotteur invisible) -> la session de peche est perdue
+        jusqu'a confirmation. Deux popups reels ont ete captures :
+          - « Do you want to replace "Fishing Lure (+50 Fishing Skill)" ... »
+            -> [Yes] [No] : c'est la CONFIRMATION D'APPAT ;
+          - dialogue d'erreur TSM -> [Okay].
+
+        Regles de securite (scripts/fishing_popup.py) :
+          - on ne clique QUE sur un popup a 1 ou 2 boutons ;
+          - le texte du bouton doit etre COURT (« Yes », « Okay ») : une
+            invitation de groupe (« Accept », « Decline ») n'est JAMAIS
+            confirmee ;
+          - on ne reclique pas le meme popup plusieurs fois (anti-spam) ;
+          - on respecte la deference utilisateur (pas de clic si
+            l'utilisateur manipule la souris).
+
+        Retourne True si un popup a ete traite (la boucle doit s'arreter :
+        l'etat du jeu a change).
+        """
+        try:
+            bgr = to_bgr(img)
+            btns = popup_confirm_buttons(bgr)
+            if not btns:
+                return False
+            btn = choose_confirm_button(btns)
+            if btn is None:
+                return False
+            key = (btn[4], btn[5])
+            # Anti-spam : on ne reclique pas le meme bouton toutes les
+            # 2 s (le popup peut ne pas disparaitre immediatement).
+            last = getattr(self, "_popup_clicked", None)
+            now = time.time()
+            if last and last[0] == key and (now - last[1]) < 3.0:
+                time.sleep(self.config["captureIntervalSec"])
+                return True
+            hwnd2, _t, rect = find_wow_window()
+            if not hwnd2:
+                return False
+            sx = rect[0] + btn[4]
+            sy = rect[1] + btn[5]
+            self.log("POPUP_CONFIRM", button=(btn[4], btn[5]),
+                     n_buttons=len(btns), screen=(sx, sy),
+                     note="popup modal bloquant detecte - confirmation a la souris")
+            if focus_broker_is_user_active():
+                self.log("POPUP_DEFERRED", button=(btn[4], btn[5]),
+                         note="utilisateur actif - confirmation differee")
+                return True
+            # Clic reel (comme pour le flotteur) : prioritaire au SendMessage
+            # pour fonctionner en arriere-plan.
+            # CLIC GAUCHE : un bouton de popup WoW n'est active que par un
+            # clic gauche (le clic droit ne fait rien -> le popup restait
+            # bloque, ce que vous avez observe).
+            if focus_lease is not None:
+                send_mouse_click_wm(hwnd2, sx, sy, button="left")
+            else:
+                import win32api
+                import win32con
+                win32api.SetCursorPos((sx, sy))
+                self._cursor_set = (sx, sy)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            self._popup_clicked = (key, now)
+            self.counters["popups"] = self.counters.get("popups", 0) + 1
+            self.log("POPUP_CONFIRMED", button=(btn[4], btn[5]),
+                     counters=self.counters)
+            time.sleep(self.config["captureIntervalSec"])
+            return True
+        except Exception as exc:
+            self.log("POPUP_CHECK_FAILED", error=repr(exc))
+            return False
 
     def _wait_bite(self, hwnd, rect):
         """Surveille le flotteur jusqu'à touche ou expiration du canal de pêche.
@@ -1136,6 +1399,16 @@ class FishingBot:
                 self._last_capture_err = time.time()
                 self.log("CAPTURE_ERROR", error=err)
             time.sleep(0.8)
+            return
+        # FIX 2026-10-19 : un popup modal bloque le JEU. Tant qu'il est
+        # ouvert, aucune touche n'est traitee et le flotteur n'est pas vu :
+        # la session est perdue. Cas reels captures : « Do you want to
+        # replace "Fishing Lure (+50 Fishing Skill)" ... » ([Yes] [No]) et
+        # le dialogue d'erreur TSM ([Okay]). On le confirme A LA SOURIS sur
+        # le bouton detecte (scripts/fishing_popup.py : seuls les popups a
+        # texte court « Yes »/« Okay » sont confirmes, jamais une
+        # invitation de groupe « Accept »).
+        if self._handle_popup(hwnd, img):
             return
         elapsed = time.time() - getattr(self, "_wait_started", time.time())
         if elapsed > self.config["maxBiteWaitSec"]:
