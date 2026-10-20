@@ -1111,12 +1111,15 @@ class FishingBot:
                 # FIX 2026-10-20 : PATIENCE au demarrage. Le bot echouait
                 # immediatement si WoW n'etait pas encore lance (fenetre
                 # absente) : il fallait le relancer APRES le lancement du jeu.
-                # On attend maintenant la fenetre comme on attend deja le HUD
+                # On attend la fenetre comme on attend deja le HUD
                 # « en jeu » (30 x 10 s) : le joueur peut lancer le jeu puis
-                # le bot, ou l'inverse, sans coordination.
-                for attempt in range(30):
-                    self.log("WINDOW_WAIT", attempt=attempt + 1,
-                             note="attente de la fenetre WoW (max 5 min)")
+                # le bot, ou l'inverse, sans coordination. Patience portee a
+                # 30 min (180 x 10 s) : le bot reste en attente, inoffensif,
+                # et journalise une fois par minute (pas de spam).
+                for attempt in range(180):
+                    if attempt % 6 == 0:
+                        self.log("WINDOW_WAIT", attempt=attempt + 1,
+                                 note="attente de la fenetre WoW (max 30 min)")
                     time.sleep(10)
                     hwnd, title, rect = find_wow_window()
                     if hwnd:
