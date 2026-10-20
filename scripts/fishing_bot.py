@@ -1455,8 +1455,20 @@ class FishingBot:
                         time.sleep(60)
                         return
                 else:
-                    self.log("NIGHT_BLIND", amb=round(getattr(self, "_cycle_amb", 0) or 0, 1),
-                             note="nuit : flotteur invisible, cycle patient maintenu")
+                    # FIX 2026-10-20 : ce message etait emis sur le seul
+                    # critere « amb < 90 », alors que la voie jour detecte
+                    # le flotteur la nuit (conf 0.95 mesuree a amb=57.6 le
+                    # 20/10 03:00). Il affirmait donc une cecite inexistante
+                    # et masquait la vraie cause d'un cycle sans flotteur
+                    # (ligne pas encore a l'eau,_camera bougee, etc.).
+                    # On ne signale plus que l'absence de VERRROU, sans
+                    # pretendre que la nuit en est la cause.
+                    self.log("NO_BOBBER_LOCKED",
+                             amb=round(getattr(self, "_cycle_amb", 0) or 0, 1),
+                             note="aucun flotteur verrouille sur ce cycle - "
+                                  "ligne pas encore a l'eau ou camera bougee "
+                                  "(la voie jour detecte la nuit aussi : "
+                                  "conf 0.95 a amb=57.6)")
             else:
                 self._failed_casts = 0
             # Echap supprime : envoyer Echap automatiquement ferme des fenetres
@@ -1470,7 +1482,15 @@ class FishingBot:
         img_np = to_bgr(img)
         amb = _ambient_light(img_np)
         self._cycle_amb = amb
-        vf = 55 if amb < 60.0 else 80
+        # FIX 2026-10-20 : on n'abaisse PLUS le plancher V la nuit.
+        # Ce seuil datait de l'ancienne definition de l'eau (ou l'eau de
+        # nuit etait « grise », S<115). Avec la definition par TEINTE, la
+        # voie jour detecte le flotteur la nuit aussi (mesure en jeu le
+        # 20/10 03:00 : amb=57.6, conf=0.95 a v_floor=80 comme a 55).
+        # Abaisser v_floor n'apportait rien (la porte eau rejettait de toute
+        # facon les blobs hors eau) et ne faisait que baisser le seuil de
+        # detection des leurres.
+        vf = 80
         # Fix 2026-10-15 : voie jour TOUJOURS tentée (l'amb 82-94 de l'oasis
         # n'est pas la nuit). La voie nuit reste un secours scène sombre.
         scale = float(self.config.get("detectScale", 1.0) or 1.0)

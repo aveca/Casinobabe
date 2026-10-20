@@ -45,7 +45,8 @@ def main():
     #   - popup TSM « Okay »          : 1 bouton rouge 185x22
     #   - popup remplacement d'appat  : 2 boutons rouges 185x22
     ref_one = ["20261019-203650-bite.png"]
-    ref_two = ["20261019-210511-bite.png", "20261019-212509-bite.png"]
+    ref_two = ["20261019-210511-bite.png", "20261019-212509-bite.png",
+               "20261019-223454-bite.png"]
 
     print("=== 1) Bouton unique (dialogue « Okay ») ===")
     for name in ref_one:
