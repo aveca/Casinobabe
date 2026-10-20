@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "scripts"))
 
 from fishing_bot import (detect_bobber, _red_blobs, _water_ratio,  # noqa: E402
+                          _water_stats, _water_gate_ok,
                           WATER_GATE, BOBBER_CONTINUITY_PX)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -37,10 +38,16 @@ def check(name, ok, detail=""):
 
 
 def has_real_bobber(bgr):
-    """Vrai si la frame contient un blob CONFIRME dans l'eau (le flotteur)."""
+    """Vrai si la frame contient un blob CONFIRME dans l'eau (le flotteur).
+
+    Même porte que le détecteur (DIRECTIONNELLE depuis le 2026-10-20) :
+    la vérité terrain doit suivre la règle testée, sinon le test compterait
+    comme « faux positif » une detection valide.
+    """
     for bx, by, area, circ in _red_blobs(bgr, area_min=12, area_max=2000,
                                          v_floor=80):
-        if _water_ratio(bgr, bx, by, r_in=10, r_out=42) >= WATER_GATE:
+        full, sec = _water_stats(bgr, bx, by, r_in=10, r_out=42)
+        if _water_gate_ok(full, sec):
             return (bx, by)
     return None
 

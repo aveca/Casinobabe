@@ -121,6 +121,16 @@ BOBBER_CONTINUITY_PX = 80
 # sépare le flotteur de la scène (cheveux, manches, arbres, boutons).
 WATER_GATE = 0.88
 
+# FIX 2026-10-20 : porte aquatique DIRECTIONNELLE (cf. _water_stats et
+# _water_gate_ok). L'anneau complet (360°) rejette le flotteur colle au
+# personnage ou au rivage : mesuré sur 836 frames réelles, le flotteur vrai
+# n'est ainsi retenu que dans 64 % des cas alors qu'il est visible dans
+# 280/301 des frames perdues (candidat a <=45 px, waterR median 0,053).
+# Le meilleur demi-tour d'eau + un plancher sur l'anneau complet donnent
+# recall 73 % pour 0,01 faux positif par frame (arc seul : 0,07 — trop).
+WATER_ARC_GATE = 0.90    # meilleur demi-tour : fraction d'eau minimale
+WATER_RING_MIN = 0.60    # plancher de l'anneau complet quand l'arc suffit
+
 # Teinte (H OpenCV 0-179) de l'eau de l'oasis de Lushwater : bleu-vert.
 # L'herbe et le sol sont jaune-vert (H 18-56) et n'en font PAS partie.
 # FIX 2026-10-19 : l'ancien critère (S<115 ET V<175) rejetait l'eau
@@ -150,6 +160,10 @@ CALIB_FILE = os.path.join(ROOT, "state", "fishing-bot-calibration.json")
 CALIB_SHOT = os.path.join(ROOT, "state", "fishing-bot-bobber-template.png")
 LOG_FILE = os.path.join(ROOT, "reports", "fishing-bot-log.jsonl")
 SHOTS_DIR = os.path.join(ROOT, "captures", "fishing-bot")
+
+# Journal : anti-ondulation + rotation (2026-10-20). Voir la methode log().
+LOG_DEDUP_WINDOW_S = 5.0     # un evenement identique n'est ecrit qu'une fois / 5 s
+LOG_MAX_BYTES = 20 * 1024 * 1024   # rotation du log au-dela de 20 Mo
 
 VK_F9 = 0x78
 WM_KEYDOWN = 0x0100
@@ -602,6 +616,84 @@ def _water_ratio(img_bgr, cx, cy, r_in=10, r_out=42, img_hsv=None):
     return float(water.sum()) / float(ring.sum())
 
 
+def _water_stats(img_bgr, cx, cy, r_in=10, r_out=42, img_hsv=None, n_sectors=8):
+    """(fraction eau de l'anneau complet, fractions eau par secteur angulaire).
+
+    UN SEUL passage de calcul (conversion HSV + masque de l'anneau) : le
+    découpage sectoriel ne coûte qu'une aggrégation numpy sur le meme masque.
+
+    FIX 2026-10-20 (cause racine « le clic arrive au mauvais moment ») :
+    la porte « anneau complet >= 0.88 » REJETAIT le flotteur dans 36 % des
+    frames ou il etait pourtant bien visible (mesure sur 836 frames reelles :
+    le candidat rouge est a <=45 px de la position VRAIE dans 280/301 frames
+    perdues, mais son waterR est de 0,000 a 0,880 — mediane 0,053). Cause :
+    l'anneau complet (360°) englobe le personnage ou le rivage des qu'un seul
+    cote. D'ou la perte du flotteur, la re-action tardive a sa DISPARITION
+    (voie BITE_DIP : 1021 clics sur 1837, soit 56 %) et le clic au mauvais
+    moment. L'arc directionnel (meilleur demi-tour d'eau) remedie a cela.
+    """
+    h, w = img_bgr.shape[:2]
+    x0, x1 = max(0, cx - r_out - 2), min(w, cx + r_out + 3)
+    y0, y1 = max(0, cy - r_out - 2), min(h, cy + r_out + 3)
+    patch = img_bgr[y0:y1, x0:x1]
+    if patch.size == 0:
+        return 0.0, [0.0] * n_sectors
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    lx, ly = cx - x0, cy - y0
+    yy, xx = np.mgrid[0:(y1 - y0), 0:(x1 - x0)]
+    d2 = (xx - lx) ** 2 + (yy - ly) ** 2
+    ring = (d2 >= r_in ** 2) & (d2 <= r_out ** 2)
+    if ring.sum() == 0:
+        return 0.0, [0.0] * n_sectors
+    is_water = (hsv[:, :, 0] >= WATER_H_MIN) & (hsv[:, :, 0] <= WATER_H_MAX)
+    full = float(is_water[ring].sum()) / float(ring.sum())
+    ang = (np.arctan2(yy - ly, xx - lx) + 2 * np.pi) % (2 * np.pi)
+    sec = []
+    for k in range(n_sectors):
+        a0 = 2 * np.pi * k / n_sectors
+        a1 = 2 * np.pi * (k + 1) / n_sectors
+        m = ring & (ang >= a0) & (ang < a1)
+        cnt = int(m.sum())
+        sec.append(float(is_water[m].sum()) / cnt if cnt else 0.0)
+    return full, sec
+
+
+def _best_arc(sec, span_sectors):
+    """Meilleure moyenne d'eau sur une fenetre contigue de secteurs."""
+    n = len(sec)
+    k = max(1, int(span_sectors))
+    best = 0.0
+    for i in range(n):
+        vals = [sec[(i + j) % n] for j in range(k)]
+        v = sum(vals) / float(k)
+        if v > best:
+            best = v
+    return best
+
+
+def _water_gate_ok(full, sec):
+    """Porte aquatique directionnelle.
+
+    Deuxoles conditions :
+      1) l'anneau COMPLET est presque tout de l'eau (>= WATER_GATE) — le cas
+         nominal, le flotteur au large ;
+      2) OU le MEILLEUR DEMI-TOUR est de l'eau (>= WATER_ARC_GATE) ET l'anneau
+         complet reste majoritairement eau (>= WATER_RING_MIN) — le flotteur
+         colle au personnage ou au rivage : on tolere un seul obstacle, pas un
+         decalage complet.
+
+    Mesure (836 frames reelles, position VRAIE du flotteur) :
+      anneau complet seul : recall 64 %, 0.00 faux positif/frame ;
+      arc seul            : recall 73 %, 0.07 faux positif/frame (TROP) ;
+      arc + anneau >= 0.60: recall 73 %, 0.01 faux positif/frame  <-- CHOISI
+    """
+    if full >= WATER_GATE:
+        return True
+    if full < WATER_RING_MIN:
+        return False
+    return _best_arc(sec, 4) >= WATER_ARC_GATE
+
+
 def _ambient_light(img_bgr):
     """Luminosité ambiante (V moyen de la zone de jeu) : < 60 = nuit.
     Le mode nuit abaisse le plancher V du détecteur (plumes à V~64)."""
@@ -645,7 +737,9 @@ def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
     for bx, by, area, circ in _red_blobs(
             img_bgr, area_min=12 * scale * scale, area_max=2000 * scale * scale,
             v_floor=v_floor):
-        wr = _water_ratio(img_bgr, bx, by, r_in=r_in, r_out=r_out, img_hsv=img_hsv)
+        full, sec = _water_stats(img_bgr, bx, by, r_in=r_in, r_out=r_out,
+                                 img_hsv=img_hsv)
+        wr = full
         score = wr + min(0.05, area / (2000.0 * scale * scale))
         # Continuité temporelle : à score comparable, on garde le candidat
         # proche du verrou précédent (anti-saut vers un leurre du rivage).
@@ -653,7 +747,7 @@ def detect_bobber(img_bgr, calib, img_hsv=None, scale=1.0, v_floor=80):
             d = ((bx - prefer[0]) ** 2 + (by - prefer[1]) ** 2) ** 0.5
             if d < 80:
                 score += 0.03
-        if wr >= WATER_GATE:  # seuil validé sur captures stockées (eau autour du bobber)
+        if _water_gate_ok(full, sec):  # porte directionnelle (mesure 2026-10-20)
             if score > best_score:
                 best, best_score = (bx, by), score
         elif score > best_fb_score:
@@ -835,7 +929,30 @@ class FishingBot:
         row = {"ts": datetime.datetime.now().isoformat(timespec="milliseconds"),
                "event": event, "state": self.state}
         row.update(kw)
+        # DEDUP + ROTATION (2026-10-20) : quand l'utilisateur est actif, le
+        # bot ne peut pas envoyer la touche et journaliait CAST_NOT_SENT ~3
+        # fois par seconde -> 70 Mo de reports/fishing-bot-log.jsonl pour une
+        # seule session. Un evenement identique repete est donc ecrit au plus
+        # une fois par DEDUP_WINDOW_S, le nombre d'occurrences etant conserve
+        # dans le champ `deduped` (aucune information perdue).
+        sig = (event, self.state, kw.get("note"), kw.get("key"))
+        now = time.time()
+        last = getattr(self, "_log_last_sig", None)
+        if last and last[0] == sig and (now - last[1]) < LOG_DEDUP_WINDOW_S:
+            self._log_dup_count = getattr(self, "_log_dup_count", 0) + 1
+            return
+        self._log_last_sig = (sig, now)
+        dup = getattr(self, "_log_dup_count", 0)
+        if dup:
+            row["deduped"] = dup
+            self._log_dup_count = 0
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        # Rotation : le log ne doit pas grossir indefiniment.
+        try:
+            if os.path.isfile(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX_BYTES:
+                os.replace(LOG_FILE, LOG_FILE + ".1")
+        except OSError:
+            pass
         with open(LOG_FILE, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         self.log_fn("[%s] %s %s" % (row["ts"], event,
@@ -1205,9 +1322,12 @@ class FishingBot:
             # Vérification indépendante de l'eau autour du candidat : c'est
             # le seul signal qui distingue un flotteur d'un leurre de scène
             # (cheveux, manches, arbre, bouton de dialogue).
-            wr = _water_ratio(img_np, bx, by, r_in=10, r_out=42)
-            if wr < WATER_GATE:
-                self.log("ADOPT_REJECTED", bobber=(bx, by), waterR=round(wr, 3),
+            # Porte DIRECTIONNELLE (mesure 2026-10-20) : meme regle que le
+            # detecteur, sinon un flotteur valide mais colle au personnage
+            # serait rejete ici apres avoir ete adopte.
+            full, sec = _water_stats(img_np, bx, by, r_in=10, r_out=42)
+            if not _water_gate_ok(full, sec):
+                self.log("ADOPT_REJECTED", bobber=(bx, by), waterR=round(full, 3),
                          note="pas de flotteur dans l'eau - leurre refuse, "
                               "le bot va lancer")
                 return False
@@ -1293,16 +1413,22 @@ class FishingBot:
         # verrou « dans l'eau » de l'ancien cycle ne doit PAS autoriser un
         # repli sur un leurre de la nouvelle scène.
         detect_bobber._locked_water = None
-        self._mem_begin_cycle()
-        self._cycle_id = getattr(self, "_mem_action", None)
         if send_key(vk):
+            # FIX 2026-10-20 : le cycle memoire n'est OUVERT qu'apres un lancer
+            # REEL. Avant, chaque tentative sans envoi de touche (l'utilisateur
+            # est actif : le bot refuse de lui voler la souris) ouvrait puis
+            # fermait une action memoire -> 9 Mo de state/mem-actions.jsonl
+            # pour une seule session, sans aucune information utile (aucun
+            # lancer n'a eu lieu). Le cycle en cours reste celui du dernier
+            # lancer reellement effectue.
+            self._mem_begin_cycle()
+            self._cycle_id = getattr(self, "_mem_action", None)
             self.counters["casts"] += 1
             self.log("CAST", key=self.config["castKey"], counters=self.counters)
         else:
-            # Touche NON envoyee : l'utilisateur est actif (taque ou bouge la
+            # Touche NON envoyee : l'utilisateur est actif (tape ou bouge la
             # souris depuis < USER_IDLE_MS). Ce n'est pas un lancer, on ne
             # compte rien et on attend qu'il libere le poste (deference).
-            self._mem_end_cycle("unknown", {"note": "touche non envoyee (utilisateur actif)"})
             self.state = PAUSED
             self.log("CAST_NOT_SENT", key=self.config["castKey"],
                      note="touche non envoyee (utilisateur actif)")
@@ -1533,6 +1659,10 @@ class FishingBot:
                 lx, ly = self._last_centroid
                 self.counters["bites"] += 1
                 self._cycle_bite_ts = datetime.datetime.now().isoformat(timespec="milliseconds")
+                # Instrumentation : ici le « signal » est la DERNIERE vue du
+                # flotteur — c'est le delai de reaction a la disparition.
+                self._bite_signal_ts = getattr(self, "_last_watch_ts", None)
+                self._click_source = "dip"
                 self.log("BITE_DIP", bobber=(lx, ly), missed=self._missed,
                          lockedSec=round(locked_for, 1),
                          counters=self.counters)
@@ -1662,6 +1792,9 @@ class FishingBot:
             self.state = CATCH
             self.counters["bites"] += 1
             self._cycle_bite_ts = datetime.datetime.now().isoformat(timespec="milliseconds")
+            # Instrumentation du « clic au bon moment » (2026-10-20).
+            self._bite_signal_ts = time.time()
+            self._click_source = "detect"
             self.log("CATCH_DETECTED", bobber=(bx, by), biteDiff=round(d, 1),
                      whiteFrac=round(wf, 3),
                      trigger="foam" if hit_foam else "diff-streak",
@@ -1879,9 +2012,17 @@ class FishingBot:
                     return False
             win32api.SetCursorPos((sx, sy))
             self._cursor_set = (sx, sy)  # P0.9.2 : position connue du bot
-            time.sleep(0.05)
+            # FIX 2026-10-20 (latence du clic) : 50 ms de pause apres le
+            # deplacement du curseur et 50 ms entre RIGHTDOWN et RIGHTUP
+            # =~ 100 ms sur le chemin critique. Mesure : latence
+            # CATCH_DETECTED -> CLICK_BOBBER = 456 ms (median), dont 150 ms de
+            # delai choisi et ~200 ms de ces deux pauses. On les ramene a
+            # 20 ms : le curseur a deja ete deplace par le suivi (_track_cursor)
+            # juste avant, et le clic droit n'a pas besoin de 50 ms pour etre
+            # traite comme un clic simple.
+            time.sleep(0.02)
             win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-            time.sleep(0.05)
+            time.sleep(0.02)
             win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
 
         self._click_pos = (sx, sy)
@@ -1889,7 +2030,19 @@ class FishingBot:
         self._mem_end_cycle("success", {"bobber": (x, y),
                            "button": "right",
                            "loot": "unconfirmed_by_bot (compteurs addon apres /reload)"})
-        self.log("CLICK_BOBBER", button="right", screen=(sx, sy), counters=self.counters)
+        # FIX 2026-10-20 : instrumentation du « clic au bon moment ».
+        # latence = temps entre le SIGNAL de morsure et le clic effectif ;
+        # source = 'detect' (morsure vue) ou 'dip' (flotteur perdu -> reaction
+        # tardive) ; offset = distance entre le point clique et la derniere
+        # position OU le flotteur a ete vu (un gros offset = clic perime).
+        sig = getattr(self, "_bite_signal_ts", None)
+        lat = round((time.time() - sig) * 1000) if sig else None
+        lwt = getattr(self, "_last_watch_ts", None)
+        since_sight = round((time.time() - lwt) * 1000) if lwt else None
+        self.log("CLICK_BOBBER", button="right", screen=(sx, sy),
+                 latencyMs=lat, sinceLastSightMs=since_sight,
+                 source=getattr(self, "_click_source", "?"),
+                 counters=self.counters)
         return self._verify_click(hwnd, x, y, rect)
 
     def _verify_click(self, hwnd, x, y, rect):
