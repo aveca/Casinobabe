@@ -1360,10 +1360,30 @@ class FishingBot:
             self._mem(memory.session_end, self._mem_session, "STOPPED",
                       {"counters": self.counters})
             self.log("BOT_STOPPED", counters=self.counters)
-        except Exception as exc:  # pragma: no cover — filet de sécurité
+        except Exception as exc:  # pragma: no cover - filet de sécurité
             self.state = ERROR
             self.log("BOT_CRASH", error=repr(exc))
             self.counters["errors"] += 1
+            # RECUPERATION (2026-10-20) : observe en jeu — un `SetCursorPos`
+            # refuse (bureau Windows verrouille / bascule de session) faisait
+            # tomber le bot en ERROR et il NE PECHAIT PLUS (5 min perdues le
+            # 20/10 18:45). Un incident isole ne doit pas tuer la session : on
+            # relance la boucle d'observation, avec un plafond de relances.
+            restarts = getattr(self, "_crash_restarts", 0) + 1
+            self._crash_restarts = restarts
+            if restarts <= 3 and not self.stop_requested:
+                self.log("BOT_RECOVERED", attempt=restarts, error=repr(exc),
+                         note="incident non fatal - boucle d'observation relancée")
+                try:
+                    self._mem_end_cycle("unknown", {"note": "recup apres crash"})
+                except Exception:
+                    pass
+                self._mem_action = None
+                self.state = READY
+                time.sleep(3.0)
+                return self.run()
+            self.log("BOT_CRASH_FATAL", error=repr(exc),
+                     note="relances épuisées - arrêt de la session")
 
     # --- étapes -------------------------------------------------------------
     def _reexamine(self, hwnd):
@@ -2164,20 +2184,31 @@ class FishingBot:
                              counters=dict(self.counters))
                     self.state = PAUSED
                     return False
-            win32api.SetCursorPos((sx, sy))
-            self._cursor_set = (sx, sy)  # P0.9.2 : position connue du bot
-            # FIX 2026-10-20 (latence du clic) : 50 ms de pause apres le
-            # deplacement du curseur et 50 ms entre RIGHTDOWN et RIGHTUP
-            # =~ 100 ms sur le chemin critique. Mesure : latence
-            # CATCH_DETECTED -> CLICK_BOBBER = 456 ms (median), dont 150 ms de
-            # delai choisi et ~200 ms de ces deux pauses. On les ramene a
-            # 20 ms : le curseur a deja ete deplace par le suivi (_track_cursor)
-            # juste avant, et le clic droit n'a pas besoin de 50 ms pour etre
-            # traite comme un clic simple.
-            time.sleep(0.02)
-            win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
-            time.sleep(0.02)
-            win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+            try:
+                win32api.SetCursorPos((sx, sy))
+                self._cursor_set = (sx, sy)  # P0.9.2 : position connue du bot
+                # FIX 2026-10-20 (latence du clic) : 50 ms de pause apres le
+                # deplacement du curseur et 50 ms entre RIGHTDOWN et RIGHTUP
+                # =~ 100 ms sur le chemin critique. Mesure : latence
+                # CATCH_DETECTED -> CLICK_BOBBER = 456 ms (median), dont 150 ms de
+                # delai choisi et ~200 ms de ces deux pauses. On les ramene a
+                # 20 ms : le curseur a deja ete deplace par le suivi (_track_cursor)
+                # juste avant, et le clic droit n'a pas besoin de 50 ms pour etre
+                # traite comme un clic simple.
+                time.sleep(0.02)
+                win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
+                time.sleep(0.02)
+                win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
+            except Exception as exc:
+                # FIX 2026-10-20 : un SetCursorPos refuse (bureau verrouille,
+                # bascule de session Windows) NE DOIT PAS tuer la session de
+                # peche — c'est ce qui a arrete le bot le 20/10 18:45 pendant
+                # 5 minutes. Le clic echoue proprement, le cycle continue.
+                self.log("CLICK_FAILED", error=repr(exc),
+                         cycle=getattr(self, "_cycle_id", None),
+                         note="envoi du clic impossible - cycle conserve")
+                self.state = PAUSED
+                return False
 
         # FIX 2026-10-20 (mission §4) : les metriques de latence sont CALCULEES
         # AU MOMENT DU CLIC, pas apres. L'ecriture memoire (_mem_end_cycle ->
