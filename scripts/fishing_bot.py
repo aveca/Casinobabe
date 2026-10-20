@@ -163,13 +163,18 @@ DEFAULT_CONFIG = {
     "clickAfterBiteMs": 150,     # délai après détection touche avant clic (était 60ms — trop court pour validation serveur)
     "bobberMinConf": 0.55,     # confiance minimale pour AGIR (sinon ERROR observe)
     "biteDiffThresh": 5.0,     # mouvement + écume (porte blanche, 2 frames)
-    "biteWhiteFrac": 0.03,     # fraction de pixels quasi-blancs (écume) dans la ROI
+    "biteWhiteFrac": 0.02,     # fraction de pixels d'ECUME (splash) dans la ROI
+    # FIX 2026-10-19 : recalibre sur les seuils REELS de l'ecume mesures en
+    # jeu (V>165 ET S<150) : baseline calme 0.0062, pic de morsure 0.0284.
+    # Avec l'ancien seuil 0.03 (calibre sur un detecteur d'ecume obsolete),
+    # la porte ne pouvait JAMAIS s'ouvrir -> le bot ne cliquait que sur un
+    # faux deplacement, au mauvais moment.     # fraction de pixels quasi-blancs (écume) dans la ROI
     "biteMotionThresh": 3.5,   # agitation soutenue SANS écume visible (porte mouvement)
     "biteMotionStreak": 4,     # frames consécutives d'agitation (le balancement = pics isolés)
     "biteGraceSec": 7.0,       # après le lancer, le flotteur se stabilise (amerrissage) :
                                # aucune touche n'est acceptée avant ce délai
     "biteStrongDiff": 10.0,    # splash franc : 1 seule frame suffit (pas d'attente)
-    "biteStrongWhite": 0.08,
+    "biteStrongWhite": 0.05,   # recalibre sur l'echelle reelle de l'ecume
     "biteConsecutive": 2,      # frames consécutives standard au-dessus des seuils
     "manualSuspendSec": 120,   # P0.9.2 : inactivité requise avant reprise auto
                                # après suspension sur activité manuelle
@@ -711,14 +716,27 @@ _bite_prev = {"pos": None, "gray": None}
 def _bite_diff(img_np, img_hsv, pos, radius=22):
     """Évidence visuelle de touche autour du flotteur. Retourne (diff, whiteFrac) :
     - diff : variation moyenne 0-255 (plongée du flotteur) ;
-    - whiteFrac : fraction de pixels quasi-blancs (écume du splash).
+    - whiteFrac : fraction de pixels d'ÉCUME (splash de la morsure).
     Une touche réelle produit les deux : le flotteur bouge ET l'eau éclabousse.
     Le simple balancement produit du mouvement sans écume.
+
     FIX 2026-10-13 (bug critique) : la version précédente indexait la
     référence par la position EXACTE du flotteur, qui jitter de 1-2 px à
     chaque frame → la comparaison retombait toujours à 0.0 et AUCUNE touche
     ne pouvait se déclencher (167 lancers, 0 clics). On compare maintenant
-    avec la frame précédente tant que le déplacement reste ≤ 8 px."""
+    avec la frame précédente tant que le déplacement reste ≤ 8 px.
+
+    FIX 2026-10-19 (2e cause racine, « zéro poisson ») : le seuil d'écume
+    était V>205 ET S<70. Mesuré EN JEU sur 4 morsures réelles capturées à
+    l'oasis de nuit : l'écume du splash a V=205..217 mais S=206..226
+    (elle est VIVE, pas blanchie). Avec l'ancien seuil, la fraction
+    plafonnait à 0.0088, SOUS le seuil biteWhiteFrac=0.03 : la porte
+    « écume » ne pouvait jamais s'ouvrir et le bot ne cliquait que sur un
+    faux déplacement (mesuré : max whiteFrac 0.0088 sur 4 morsures).
+    Avec V>165 ET S<150, la fraction passe de 0.0062 (calme) à 0.0284
+    (pic de morsure), soit un ratio de 4.6x : la porte s'ouvre au bon
+    moment.
+    """
     if not pos:
         return 0.0, 0.0
     x, y = pos
@@ -733,7 +751,10 @@ def _bite_diff(img_np, img_hsv, pos, radius=22):
         cropH = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV).astype(np.int32)
     else:
         cropH = img_hsv[y0:y1, x0:x1]
-    white = ((cropH[:, :, 1] < 70) & (cropH[:, :, 2] > 205))
+    # ÉCUME : pixels très clairs (V>165) et modérément saturés (S<150).
+    # L'écume du jeu est VIVE (S 206-226) : exiger S<70 la rendait
+    # invisible (cf. FIX 2026-10-19).
+    white = ((cropH[:, :, 1] < 150) & (cropH[:, :, 2] > 165))
     whiteFrac = float(white.sum()) / float(white.size)
     prev = _bite_prev
     if prev["gray"] is None or prev["pos"] is None:
@@ -1548,10 +1569,21 @@ class FishingBot:
         wf_floor = statistics.median(hist)
         # Use biteWhiteFrac as hard floor; spot baseline addsitively on top
         # so the gate never exceeds what the config considers a valid bite signal.
+        # FIX 2026-10-19 : l'écume étant recalibrée (seuils V/S réels), les
+        # seuils config doivent être exprimés dans la NOUVELLE échelle.
+        # Mesuré en jeu sur 4 morsures réelles (oasis de nuit) :
+        #   baseline calme  = 0.0062
+        #   pic de morsure  = 0.0284  (ratio 4.6x)
+        # Le seuil « standard » passe donc à 0.02 et la porte est aussi
+        # acceptée sur un PIC RELATIF (baseline x 3) : c'est le ratio qui
+        # distingue la morsure du clapotis, pas une valeur absolue.
         wf_gate_std = max(self.config["biteWhiteFrac"],
                           wf_floor + self.config["biteWhiteFrac"])
         wf_gate_hard = max(self.config["biteStrongWhite"], wf_floor * 3.0)
         wf_gate_move = max(0.02, wf_floor * 1.8)
+        # PIC RELATIF : l'écume de la morsure est ~4.6x la baseline du spot.
+        # C'est le critère le plus fiable car il s'adapte à la luminosité.
+        wf_gate_rel = wf_floor * 3.0
         # Déplacement du centroïde depuis la frame précédente : le flotteur
         # bouge VRAIMENT lors d'une touche ; le clapotis, lui, ne déplace pas
         # le flotteur (positions stables à ~2 px, diffs 4-8 illusoires).
@@ -1596,20 +1628,36 @@ class FishingBot:
         if hit_move:
             self.log("BITE_MOVE", bobber=(bx, by), move=round(move, 1),
                      biteDiff=round(d, 1), whiteFrac=round(wf, 3))
-        hit_std = (d >= self.config["biteDiffThresh"]
-                   and wf >= wf_gate_std)
-        hit_hard = (d >= self.config["biteStrongDiff"]
-                    and wf >= wf_gate_hard)
-        if hit_std:
+        # FIX 2026-10-19 (3e cause racine, « le clic part au mauvais moment ») :
+        # les deux signaux de la morsure n'arrivent PAS en meme temps.
+        # Mesure sur des sequences REELLES capturees en jeu (oasis de nuit) :
+        #   frame N   : diff = 13.4  (le flotteur plonge)   wf = 0.0005
+        #   frame N+1 : diff =  8.1                          wf = 0.0124 (ecume)
+        # L'ANCIENNE porte exigeait diff>=5 ET wf>=seuil sur 2 frames
+        # consecutives : elle ne s'ouvrait donc JAMAIS (valide : 0 porte
+        # ouverte sur 5 morsures reelles capturees). Le bot ne cliquait
+        # qu'au hasard, sur un faux deplacement.
+        # Nouvelle regle, etablie sur ces mesures :
+        #   - ECUME (relative a la baseline du spot) : 1 frame suffit
+        #     (le pic d'ecume est unique) ;
+        #   - ou DIFF FORT (>= biteStrongDiff) sur 2 frames consecutives
+        #     (le clapotis fait des diffs 2-8, la morsure 8-25 : le seuil
+        #     biteStrongDiff=10 les separe).
+        hit_foam = wf >= wf_gate_rel
+        hit_diff = d >= self.config["biteStrongDiff"]
+        if hit_diff:
             self._bite_streak = getattr(self, "_bite_streak", 0) + 1
         else:
             self._bite_streak = 0
-        if hit_hard or hit_move or self._bite_streak >= self.config["biteConsecutive"]:
+        hit_streak = self._bite_streak >= self.config["biteConsecutive"]
+        if hit_foam or hit_streak:
             self.state = CATCH
             self.counters["bites"] += 1
             self._cycle_bite_ts = datetime.datetime.now().isoformat(timespec="milliseconds")
             self.log("CATCH_DETECTED", bobber=(bx, by), biteDiff=round(d, 1),
-                     whiteFrac=round(wf, 3), counters=self.counters)
+                     whiteFrac=round(wf, 3),
+                     trigger="foam" if hit_foam else "diff-streak",
+                     counters=self.counters)
             shot = self.snapshot("bite")
             time.sleep(self.config["clickAfterBiteMs"] / 1000.0)
             ok = self._click(bx, by)  # 2 args : _click résout rect lui-même (mémo multi-agents)

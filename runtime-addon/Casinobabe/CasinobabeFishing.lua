@@ -344,6 +344,36 @@ local function isFishingSpell(name)
   return FISH_SPELLS[norm(name)] or false
 end
 
+-- Resout le NOM d'un sort a partir de son ID (les evenements
+-- UNIT_SPELLCAST_* de WoW Classic ne transmettent que le castGUID et
+-- l'ID du sort, jamais le nom). Retourne nil si l'API est absente ou
+-- l'ID inconnu : l'appelant decidera alors (aucune erreur inventee).
+local function spellNameFromCast(spellID, castGUID)
+  -- Certains clients transmettent le nom en 2e argument : on l'accepte
+  -- s'il ressemble a un nom de sort (pas un GUID, pas un nombre).
+  if type(castGUID) == "string" and castGUID ~= "" then
+    if not castGUID:match("^0[xX]") and not castGUID:match("^%-?%d+$") then
+      return castGUID
+    end
+  end
+  if type(spellID) == "number" and spellID > 0 then
+    local gsi = G("GetSpellInfo")
+    if gsi then
+      local ok, name = pcall(gsi, spellID)
+      if ok and type(name) == "string" and name ~= "" then return name end
+    end
+    local cs = Gv("C_Spell")
+    if type(cs) == "table" and type(cs.GetSpellInfo) == "function" then
+      local ok, info = pcall(cs.GetSpellInfo, spellID)
+      if ok and type(info) == "table" and type(info.name) == "string"
+         and info.name ~= "" then
+        return info.name
+      end
+    end
+  end
+  return nil
+end
+
 -- Échecs de lancer / poisson échappé : mots-clés connus (FR/EN). Une erreur
 -- inconnue est journalisée sans modifier l'état de réussite.
 local FAILURE_KEYWORDS = { "echappe", "got away", "pas abouti", "didn t work",
@@ -373,7 +403,19 @@ F.OnEvent = function(self, event, ...)
   end
 
   if event == "UNIT_SPELLCAST_SUCCEEDED" then
-    local unit, spellName = ...
+    -- FIX 2026-10-20 : en WoW Classic (2.5.x), UNIT_SPELLCAST_SUCCEEDED
+    -- transmet (unitTarget, castGUID, spellID) -- le NOM DU SORT n'est
+    -- JAMAIS transmis. L'ancien code lisait le 2e argument comme un nom de
+    -- sort : c'etait en realite le castGUID, donc isFishingSpell() ne
+    -- pouvait jamais etre vrai et castObserved restait a 0 (constate dans
+    -- les SavedVariables). Consequence : l'etat EN_COURS n'etait jamais
+    -- atteint, donc un butin "You receive loot: [X]" (anglais, client
+    -- TBC) n'etait JAMAIS reclassifie en "catch" -> les prises de
+    -- peche n'etaient comptees que par le mot-cle texte, jamais par le
+    -- contexte de peche.
+    -- On resout donc le nom via GetSpellInfo(spellID).
+    local unit, castGUID, spellID = ...
+    local spellName = spellNameFromCast(spellID, castGUID)
     if unit == "player" and isFishingSpell(spellName) then
       F.castStart = GetTime()
       DB().totals.castObserved = DB().totals.castObserved + 1
@@ -381,7 +423,8 @@ F.OnEvent = function(self, event, ...)
     end
 
   elseif event == "UNIT_SPELLCAST_FAILED" then
-    local unit, spellName = ...
+    local unit, castGUID, spellID = ...
+    local spellName = spellNameFromCast(spellID, castGUID)
     if unit == "player" and isFishingSpell(spellName) and F.state == F.STATES.EN_COURS then
       DB().totals.lostCasts = DB().totals.lostCasts + 1
       pushHistory({ ev = "CAST_FAILED", item = spellName, zone = zoneInfo(),
