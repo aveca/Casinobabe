@@ -68,7 +68,15 @@ local function DB()
   if type(fdb.totals) ~= "table" then
     fdb.totals = { catches = 0, targets = 0, lostCasts = 0, dups = 0,
                    unknownKind = 0, combats = 0, deaths = 0, castObserved = 0,
-                   crafted = 0, possibleTargets = 0 }
+                   crafted = 0, possibleTargets = 0,
+                   -- DIAGNOSTIC (2026-10-20) : pourquoi castObserved reste a 0
+                   -- malgre 73 prises comptees ? On note ce que l'evenement
+                   -- UNIT_SPELLCAST_SUCCEEDED apporte REELLEMENT (un seul
+                   -- canal disponible : les SavedVariables, flush a la
+                   -- deconnexion du client). Lecture : CasinobabeDB.fishing.
+                   castEvents = 0, castNameResolved = 0,
+                   castLastUnit = "", castLastArgs = "", castLastName = "",
+                   castLastState = "" }
   end
   if type(fdb.spots) ~= "table" then fdb.spots = {} end
   if type(fdb.history) ~= "table" then fdb.history = {} end
@@ -419,6 +427,18 @@ F.OnEvent = function(self, event, ...)
     -- On resout donc le nom via GetSpellInfo(spellID).
     local unit, castGUID, spellID = ...
     local spellName = spellNameFromCast(spellID, castGUID)
+    -- DIAGNOSTIC (2026-10-20) : trace brute de l'evenement. castObserved est
+    -- a 0 alors que 73 prises ont ete comptees : on doit savoir ce que le
+    -- client envoie reellement (ordre des arguments, identifiant du sort) et
+    -- dans quel etat etait le module. Ecrit dans les SavedVariables (flush a
+    -- la deconnexion) — seul canal autorise (io.open est bloque par le client).
+    local T = DB().totals
+    T.castEvents = (T.castEvents or 0) + 1
+    T.castLastUnit = tostring(unit)
+    T.castLastArgs = "guid=" .. tostring(castGUID) .. " id=" .. tostring(spellID)
+    T.castLastName = tostring(spellName)
+    T.castLastState = tostring(F.state)
+    if spellName then T.castNameResolved = (T.castNameResolved or 0) + 1 end
     if unit == "player" and isFishingSpell(spellName) then
       F.castStart = GetTime()
       DB().totals.castObserved = DB().totals.castObserved + 1
