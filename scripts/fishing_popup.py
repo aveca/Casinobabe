@@ -63,6 +63,27 @@ MAX_CONFIRM_BUTTONS = 2
 BTN_TEXT_MAX_RATIO = 0.25
 
 
+def button_text_is_gold(img_bgr, btn):
+    """Le TEXTE d'un bouton de popup WoW est JAUNE (or), pas blanc.
+
+    Mesure sur la capture reelle du dialogue « Do you want to replace
+    "Fishing Lure (+50 Fishing Skill)" ... ? » (19/10 22:34) : les
+    lettres de « Yes » / « No » sont or (H ~ 25-35, S eleve, V eleve)
+    sur le fond rouge du bouton. C'est un discriminant PLUS ROBUSTE que
+    la longueur du texte (qui depend de la langue) : on exige que le
+    texte soit de l'or.
+    """
+    x, y, w, h = btn[0], btn[1], btn[2], btn[3]
+    inner = img_bgr[max(0, y + 3):y + h - 2, max(0, x + 4):x + w - 3]
+    if inner.size == 0:
+        return False
+    hsv = cv2.cvtColor(inner, cv2.COLOR_BGR2HSV)
+    H, S, V = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    # or : H 18-42, saturation moyenne, valeur elevee
+    gold = (H >= 18) & (H <= 42) & (V >= 150) & (S >= 60)
+    return float(gold.sum()) / float(gold.size) >= 0.004
+
+
 def find_popup_buttons(img_bgr):
     """Boutons de popup détectés : [(x, y, w, h, cx, cy), ...]."""
     if img_bgr is None:
@@ -140,6 +161,11 @@ def popup_confirm_buttons(img_bgr):
     if any(r > BTN_TEXT_MAX_RATIO for r in ratios):
         return []
     if len(btns) == 2 and ((ratios[0] > 0.2) != (ratios[1] > 0.2)):
+        return []
+    # Exige en plus un texte OR : c'est la couleur reelle des libelles
+    # d'un popup WoW (« Yes », « No », « Okay »), discriminant independant
+    # de la langue (donc de la longueur du texte).
+    if not any(button_text_is_gold(img_bgr, b) for b in btns):
         return []
     return btns
 
