@@ -437,7 +437,13 @@ def spot_map(db, zone=None, reference=None):
             "x": c[0] if c else None,
             "y": c[1] if c else None,
             "score": round(s.get("confirmScore", 0.0), 3),
-            "status": "confirmed" if s.get("observations", 0) >= CONFIRM_MIN_OBS else "candidate",
+            # Le nombre d'observations fait partie du CONTRAT d'export : sans
+            # lui, le consommateur (demo web) ne peut pas distinguer un banc
+            # confirme d'un candidat (constate par le test de parite JS/Python).
+            "observations": int(s.get("observations", 0)),
+            "confirmations": int(s.get("confirmations", 0)),
+            "status": "confirmed" if s.get("observations", 0) >= CONFIRM_MIN_OBS
+            else "candidate",
             "visits": s.get("visits", 0),
             "catches": (s.get("results") or {}).get("catch", 0),
             "reliability": round(reliability(s), 3),
@@ -498,6 +504,72 @@ def segment_stats(db, a_id, b_id):
         "distance": seg.get("distance"),
         "obstacles": seg.get("obstacles", []),
     }
+
+
+def export_map(db, path=None, zone=None):
+    """Exporte la carte au format d'echange (JSON partage avec la demo web).
+
+    Le format est VOLONTAIREMENT le meme des deux cotes (bot local et
+    demonstration du site) : une seule definition de la carte, donc aucune
+    implementation contradictoire. Les donnees simulees sont marquees
+    ``simulated`` par l'appelant.
+    """
+    payload = spot_map(db, zone)
+    payload["exportedAt"] = _now()
+    payload["exportedBy"] = "casinobabe-fishing-v2"
+    if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+    return payload
+
+
+def import_map(payload, db=None, simulated=False):
+    """Importe une carte (format d'echange) dans la base locale.
+
+    Les observations importees sont tracees comme telles : une carte importee
+    n'est PAS une observation directe, elle porte la mention
+    ``imported`` pour ne pas etre comptee comme une visite reelle.
+    """
+    db = db if db is not None else _empty_db()
+    if not isinstance(payload, dict):
+        return db
+    ref = payload.get("reference") or db.get("referenceName", "minimap")
+    db["referenceName"] = ref
+    for item in payload.get("spots") or []:
+        if item.get("x") is None or item.get("y") is None:
+            continue
+        # L'IDENTIFIANT EST PRESERVE : les segments importes referencent les
+        # ids d'origine. Si l'import creeait de nouveaux ids, aucun segment ne
+        # correspondrait a un noeud et la carte importee n'aurait AUCUNE arete
+        # (constate par le test de parite JS/Python).
+        spot = new_spot(item.get("zone") or "?", item.get("subsection"),
+                        item.get("kind"), ref)
+        if item.get("id"):
+            spot["id"] = str(item["id"])
+        spot["coords"] = {ref: [float(item["x"]), float(item["y"])]}
+        spot["confirmScore"] = float(item.get("score") or 0.0)
+        spot["observations"] = int(item.get("observations") or 0) or 2
+        spot["confirmations"] = 1
+        spot["score"] = spot["confirmScore"]
+        spot["visits"] = int(item.get("visits") or 0)
+        spot["results"] = {"catch": int(item.get("catches") or 0),
+                           "empty": max(0, int(item.get("visits") or 0)
+                                       - int(item.get("catches") or 0)),
+                           "error": 0}
+        spot["accessTimes"] = list(item.get("accessTimes") or [])
+        spot["fishTimes"] = list(item.get("fishTimes") or [])
+        spot["revisitAfterSec"] = item.get("revisitAfterSec")
+        spot["mobs"] = list(item.get("mobs") or [])
+        spot["simulated"] = bool(simulated or item.get("simulated"))
+        db.setdefault("spots", {})[spot["id"]] = spot
+    for key, seg in (payload.get("segments") or {}).items():
+        db.setdefault("segments", {})[key] = seg
+    db.setdefault("history", []).append(
+        {"ts": _now(), "event": "map_imported", "spots": len(payload.get("spots") or []),
+         "simulated": bool(simulated)})
+    return db
 
 
 def record_error(db, kind, note, spot_id=None, now=None):

@@ -215,6 +215,41 @@ def test_routes():
     check("une carte vide ne fait pas planter le planificateur", empty["order"] == [])
 
 
+# ------------------------------------------------- 5. export / import
+def test_export_import():
+    print()
+    print("=== 5. EXPORT / IMPORT (contrat de la carte partagee) ===")
+    db = mk_db(3)
+    ids = [s["id"] for s in fs.confirmed_spots(db)]
+    fs.record_segment(db, ids[0], ids[1], duration_sec=12.0, distance=40.0, success=True)
+
+    payload = fs.export_map(db)
+    check("l'export est serialisable", isinstance(json.dumps(payload), str))
+    check("l'export porte le nombre d'observations (contrat)",
+          all("observations" in s for s in payload["spots"]),
+          "(sans ce champ, le consommateur ne peut pas distinguer "
+          "un banc confirme d'un candidat)")
+    check("l'export porte le referentiel", payload.get("reference") == "minimap")
+
+    # reimport : les identifiants doivent etre PRESERVES, sinon les segments
+    # importes ne pointent sur aucun noeud (bug corrige, detecte par la parite)
+    db2 = fs.import_map(json.loads(json.dumps(payload)), simulated=True)
+    ids2 = [s["id"] for s in fs.all_spots(db2)]
+    check("les identifiants sont preserves a l'import",
+          set(ids).issubset(set(ids2)), "(%s vs %s)" % (ids, ids2))
+    check("les segments sont reimportes", len(db2.get("segments") or {}) == 1)
+    st = fs.segment_stats(db2, ids[0], ids[1])
+    check("un segment importe est utilisable (duree mesuree)",
+          st is not None and abs(st["meanDuration"] - 12.0) < 1e-6, "(%s)" % st)
+
+    # la carte importee doit permettre de calculer une ronde
+    import fishing_routes as fr
+    r = fr.plan_round(db2, None, "equilibre")
+    check("une carte importee permet de calculer une ronde", len(r["order"]) >= 2,
+          "(%d bancs)" % len(r["order"]))
+    check("la ronde importee utilise les segments importes", len(r["legs"]) >= 1)
+
+
 # ------------------------------------------------------------------- main
 def main():
     print("=== TESTS FISHING V2 (hors jeu) ===")
@@ -222,6 +257,7 @@ def main():
     test_persistence()
     test_map()
     test_routes()
+    test_export_import()
     print()
     print("%d ok / %d echec(s)" % (PASSED, len(FAILED)))
     for f in FAILED:
