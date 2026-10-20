@@ -30,6 +30,26 @@ jobs:
       - name: Run runtime regression contracts
         run: node tests/regression-runtime-contract.cjs
 
+      # Tests Python du bot de peche (detecteur, popup, contrat V2, navigation).
+      # Ils n'etaient PAS joues en CI : une regression du detecteur ou du
+      # planificateur pouvait donc passer inaperçue.
+      - name: Run fishing bot python tests
+        run: |
+          set -euo pipefail
+          for t in tests/test_fishing_detector.py \
+                   tests/test_fishing_popup.py \
+                   tests/test_fishing_bot_contract.py \
+                   tests/test_fishing_v2.py \
+                   tests/test_fishing_navigator.py; do
+            if [ -f "$t" ]; then
+              echo "::group::$t"
+              python3 "$t"
+              echo "::endgroup::"
+            else
+              echo "absent (ignore) : $t"
+            fi
+          done
+
       - name: Compile legacy addon sources
         run: |
           sudo apt-get update
