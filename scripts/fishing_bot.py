@@ -1482,8 +1482,15 @@ class FishingBot:
         self.log("PLAYER_DEAD", certain=certain, evidence=ev,
                  note="peche suspendue - reprise auto apres resurrection verifiee")
 
-    def _scene_has_water(self, hwnd, min_ratio=0.12, ttl=2.0):
+    def _scene_has_water(self, hwnd, min_ratio=0.40, ttl=2.0):
         """True si la scene centrale contient de l'eau (garde de spot).
+
+        Seuil 0,40 issu de MESURES sur des frames reelles :
+          oasis de jour (bande centrale entirement de l'eau) : 0,714
+          rive de l'oasis (personnage sur la berge)              : 0,457
+          arene Blade's Edge (sol sombre lisse, TEINTE proche)    : 0,371
+          interieur de Stormwind (marbre, tapis rouge)            : 0,029
+        => en dessous de 0,40 on estindoor ou en arene : aucun lancer.
 
         Le resultat est memorise `ttl` secondes (une capture coute ~100 ms).
         """
