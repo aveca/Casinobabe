@@ -2179,6 +2179,18 @@ class FishingBot:
             time.sleep(0.02)
             win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
 
+        # FIX 2026-10-20 (mission §4) : les metriques de latence sont CALCULEES
+        # AU MOMENT DU CLIC, pas apres. L'ecriture memoire (_mem_end_cycle ->
+        # action_end) relit et REECRIT tout le fichier d'actions (9 Mo) :
+        # ~200-300 ms postees entre le clic et le log ; mesurer apres gonflait
+        # latencyMs de ~200-300 ms et attribuait au clic un temps qui ne lui
+        # appartient pas.
+        sig = getattr(self, "_bite_signal_ts", None)
+        lat = round((time.time() - sig) * 1000) if sig else None
+        lwt = getattr(self, "_last_watch_ts", None)
+        since_sight = round((time.time() - lwt) * 1000) if lwt else None
+        self._last_click_ts = time.time()
+
         self._click_pos = (sx, sy)
         self.counters["clicks"] += 1
         self._mem_end_cycle("success", {"bobber": (x, y),

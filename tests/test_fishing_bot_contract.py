@@ -265,6 +265,20 @@ def main():
     check("chaque ligne porte ts + event + state",
           all(("ts" in r and "event" in r and "state" in r) for r in rows))
 
+    # La latence doit etre CALCULEE AU MOMENT DU CLIC : l'ecriture memoire
+    # (_mem_end_cycle -> action_end) reecrit 9 Mo (~200-300 ms) et se trouve
+    # entre le clic et le log ; mesurer apres gonflait latencyMs de 200-300 ms.
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                            "scripts", "fishing_bot.py"), encoding="utf-8").read()
+    i = src.index("    def _click(")
+    blk = src[i:i + 12000]
+    j = blk.index('self.log("CLICK_BOBBER"')
+    seg = blk[:j]
+    p_lat = seg.find("lat = round(")
+    p_mem = seg.find("self._mem_end_cycle(")
+    check("latencyMs est calcule AVANT l'ecriture memoire (mesure non gonflee)",
+          0 <= p_lat < p_mem, "(lat=%d mem=%d)" % (p_lat, p_mem))
+
     print()
     print("=== 7. PROTECTION CONTRE LES DOUBLES INSTANCES ===")
     import subprocess
