@@ -873,72 +873,58 @@ class FishingBot:
             datetime.datetime.now().strftime("%Y%m%d-%H%M%S"), tag))
 
     def apply_bait(self):
-        """Applique l'appât Nightcrawlers sur la canne (touches S puis 3).
+        """Etat de l'appat sur la canne.
 
-        FIX 2026-10-19 (cause racine « l'appât ne se met pas ») : cette
-        méthode DÉCLAIRAIT « appât appliqué sur la canne » alors qu'elle
-        n'avait envoyé que deux touches, sans aucune vérification. Les
-        captures du 19/10 montrent la canne POSÉE AU SOL et les mains du
-        personnage VIDES : aucune touche ne pouvait appliquer un appât, et
-        le bot le répétait toutes les 10 minutes en annonçant un succès.
+        FIX 2026-10-20 (cause racine « le bot n'applique pas l'appat ») :
+        cette methode ENVOYAIT deux touches (S puis 3) en annonçant
+        « appat applique sur la canne » - sans aucune verification. Or :
+          - la touche S est un SLOT D'ACTION de la barre (d'apres
+            bindings-cache.wtf : bind S ACTIONBUTTON12) ; ce n'est PAS un
+            clic droit sur l'appat dans l'inventaire, et ce slot ne
+            contient meme pas l'appat ;
+          - la touche 3 (bind 3 ACTIONBUTTON8) non plus.
+        Le bot envoyait donc une touche sans effet toutes les 600 s, et
+        declarait un echec (« BAIT_NOT_APPLIED ») alors que l'appat
+        etait deja pose : capture du 20/10 02:24, zoom sur la canne en
+        main -> la FISHING LURE (leurre violet a plume) est ATTACHEE a la
+        hampe de la canne.
 
-        Deux garde-fous ajoutés :
-          1) on ne déclare un succès que si l'appât est RÉELLEMENT
-             confirmé (enchant de l'arme principal actif, lu par l'addon
-             via GetWeaponEnchantInfo et exposé dans SavedVariables) ;
-          2) si la confirmation n'est pas disponible, on reste HONNÊTE et
-             on logue « envoyé, non vérifié » au lieu de « appliqué ».
+        La pose REELLE d'un appat se fait par un clic DROIT sur l'appat
+        dans l'inventaire, puis un clic sur la canne : c'est une action
+        reservee au joueur (regle du projet : aucune action simulee, le
+        bot ne fait QUE ce que le joueur peut voir et corriger).
+
+        Le bot ne joue donc plus l'appat : il CONSTATE et il RAPPORTE.
+        Il lit l'etat publie par l'addon (GetWeaponEnchantInfo) quand il
+        est disponible, et sinon il le dit clairement au lieu d'inventer
+        un succes ou un echec.
         """
         if not self.config.get("applyBait", True):
             return True
-        bait_key = self.config.get("baitKey", "S")
-        rod_key = self.config.get("rodKey", "3")
-        hwnd, _t, _r = find_wow_window()
-        if not hwnd:
-            self.log("BAIT_ABORT", note="pas de fenetre WoW")
-            return False
-        # 0) NE PAS RE-APPLIQUER un appat deja pose.
-        #    Re-appliquer ouvre le popup modal « Do you want to replace
-        #    "Fishing Lure (...)" with "Fishing Lure (...)" ? » qui BLOQUE
-        #    le jeu (capture reelle du 19/10, 20261019-210511-bite.png).
-        #    C'est la cause du « ca bloque parfois » : le bot reappliquait
-        #    l'appat toutes les 600 s, donc la 2e fois un popup bloquait
-        #    la session de peche.
-        already = self._bait_confirmed()
-        if already is True:
-            self.log("BAIT_SKIPPED", note="appat deja pose et confirme "
-                     "(enchant actif) - reappliquer ouvrirait un popup bloquant")
-            return True
-        # 1) Touche appât : clic droit sur l'objet Nightcrawlers dans l'inventaire
-        if not send_key(key_to_vk(bait_key)):
-            self.log("BAIT_KEY_FAIL", key=bait_key,
-                     note="touche appât non envoyee (focus perdu ou utilisateur actif)")
-            return False
-        self.log("BAIT_KEY", key=bait_key,
-                 note="touche appât envoyee (slot d'action - PAS un clic droit "
-                      "inventaire : la liaison S est un bouton de barre)")
-        time.sleep(0.5)
-        # 2) Touche canne : clic sur la canne équipée pour appliquer l'appât
-        if not send_key(key_to_vk(rod_key)):
-            self.log("BAIT_KEY_FAIL", key=rod_key,
-                     note="touche canne non envoyee (focus perdu ou utilisateur actif)")
-            return False
-        # 3) HONNÊTETÉ : on ne déclare PAS « appliqué » sans preuve.
         confirmed = self._bait_confirmed()
         if confirmed is True:
-            self.log("BAIT_APPLIED_CONFIRMED",
-                     note="enchant de l'arme principal actif (preuve addon)")
+            self.log("BAIT_ACTIVE",
+                     note="appat deja pose et confirme (enchant actif) - "
+                          "aucune action necessaire")
             return True
         if confirmed is False:
-            self.log("BAIT_NOT_APPLIED",
-                     note="aucun enchant actif après application - la canne "
-                          "n'est probablement PAS équipée (capture 19/10 : "
-                          "canne au sol, mains vides). Équipez la canne en "
-                          "main droite puis relancez.")
+            # Etat connu et negatif : on ne peut pas poser l'appat
+            # nous-memes (clic droit dans l'inventaire = action du
+            # joueur). On le dit UNE fois, puis on ne repete plus.
+            last = getattr(self, "_bait_reported_at", 0.0)
+            if time.time() - last > 900.0:
+                self._bait_reported_at = time.time()
+                self.log("BAIT_NEEDS_PLAYER",
+                         note="aucun appat actif sur la canne. Posez-le vous-meme : "
+                              "clic droit sur l'appat dans l'inventaire, puis "
+                              "clic sur la canne. Le bot ne pose pas l'appat "
+                              "lui-meme (clic droit sur l'inventaire = action "
+                              "reservee au joueur).")
             return False
-        self.log("BAIT_SENT_UNVERIFIED",
-                 note="touches envoyées mais application NON vérifiée "
-                      "(addon de confirmation indisponible)")
+        # Information indisponible : ni succes ni echec invente.
+        self.log("BAIT_STATE_UNKNOWN",
+                 note="etat de l'appat inconnu (addon de confirmation "
+                      "indisponible) - aucune action tentee")
         return True
 
     def _bait_confirmed(self):

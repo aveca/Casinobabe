@@ -138,7 +138,10 @@ F.STATES = {
 
 -- État initial défini AVANT toute construction UI : jamais nil, même si
 -- l'init de la barre échoue partiellement côté client réel.
-F.state = F.state or F.STATES.INACTIF
+F.state = F.state or F.STATES.INACTIF -- FIX 2026-10-20 : publie l'etat
+-- canne/appat des le depart, pour que le bot desktop sache s'il doit
+-- tenter l'appat.
+if F.PublishBaitState then pcall(F.PublishBaitState) end -- 
 
 local function setState(s)
   F.state = s
@@ -990,11 +993,47 @@ F.BaitStatus = function()
   return "OUT OF STOCK", "aucun enchant et aucun appât détecté en sacs"
 end
 
+-- FIX 2026-10-20 : publication de l'etat « canne / appat ».
+-- Sans cela, le bot ne pouvait que deviner : il envoyait une touche de
+-- barre qui ne pose AUCUN appat (le slot S ne contient pas l'appat) et
+-- declarait un succes ou un echec invente. L'addon, lui, a l'API reelle
+-- (GetInventoryItemLink du slot 16, GetItemCount, GetWeaponEnchantInfo) :
+-- c'est la seule source de verite.
+--
+-- CANAL : SavedVariables uniquement (CasinobabeDB.fishing.bait).
+-- NOTE 2026-10-20 : un canal direct par fichier a ete teste et RETIRE :
+-- io.open est bloque dans ce client (les 3 chemins testes n'ont jamais ete
+-- ecrits). Les SavedVariables ne sont ecrites qu'a la deconnexion / au
+-- /reload : l'etat est donc en retard d'une session. Le bot desktop le
+-- sait et le signale plutot que d'inventer un etat.
+F.PublishBaitState = function()
+  local fdb = DB()
+  fdb.bait = fdb.bait or {}
+  local rodOk, rodLabel = F.RodEquipped()
+  local lure = F.LureInventory()
+  local enchant = F.WeaponEnchantActive()
+  local status, detail = F.BaitStatus()
+  fdb.bait.rodEquipped = rodOk
+  fdb.bait.rodLabel = rodLabel
+  fdb.bait.lureId = lure and lure.id or nil
+  fdb.bait.lureName = lure and lure.name or nil
+  fdb.bait.lureCount = lure and lure.count or 0
+  fdb.bait.enchant = enchant
+  fdb.bait.status = status
+  fdb.bait.detail = detail
+  fdb.bait.publishedAt = nowISO()
+  -- Note : pas d'ecriture fichier (io.open bloque dans ce client, verifie
+  -- le 2026-10-20). Le canal disponible est SavedVariables uniquement.
+  return fdb.bait
+end
+
 F.ObserveBaitInventory = function(reason)
   local fdb = DB()
   fdb.bait = fdb.bait or {}
   fdb.bait.inventoryObs = fdb.bait.inventoryObs or {}
   local lure = F.LureInventory()
+  -- publication pour le bot desktop (voir FIX 2026-10-20)
+  if F.PublishBaitState then pcall(F.PublishBaitState) end
   table.insert(fdb.bait.inventoryObs, {
     ts = nowISO(), reason = tostring(reason or "?"),
     lureId = lure and lure.id or nil,
