@@ -984,7 +984,7 @@ class FishingBot:
         self.thread = None
         self.lock = threading.Lock()
         self.counters = {"casts": 0, "bites": 0, "clicks": 0, "errors": 0,
-                         "unreliable": 0, "popups": 0}
+                         "unreliable": 0, "popups": 0, "deferred": 0}
         self.calib = load_json(CALIB_FILE, {})
         self._bind_checked = None
         self._bait_applied_at = 0.0  # dernier temps d'application d'appât (epoch)
@@ -1737,6 +1737,15 @@ class FishingBot:
             self._cycle_summary("timeout", False)
             return
         img_np = to_bgr(img)
+        # FIX 2026-10-20 (mission §4) : GRANULARITE DE DETECTION. Le delai
+        # entre la morsure PHYSIQUE et sa detection est borne par la periode
+        # d'analyse d'une frame (mesure : 218 ms median). On la journalise pour
+        # chaque evenement de morsure, sinon `latencyMs` (decision -> clic)
+        # donnerait l'illusion d'une synchronisation parfaite.
+        now_f = time.time()
+        prev_f = getattr(self, "_last_frame_ts", None)
+        self._frame_period_ms = int((now_f - prev_f) * 1000) if prev_f else 0
+        self._last_frame_ts = now_f
         amb = _ambient_light(img_np)
         self._cycle_amb = amb
         # FIX 2026-10-20 : plancher V ADAPTATIF (seuil bas la nuit).
@@ -1796,6 +1805,8 @@ class FishingBot:
                 self._click_source = "dip"
                 self.log("BITE_DIP", bobber=(lx, ly), missed=self._missed,
                          lockedSec=round(locked_for, 1),
+                         cycle=getattr(self, "_cycle_id", None),
+                         framePeriodMs=getattr(self, "_frame_period_ms", 0),
                          counters=self.counters)
                 shot = self.snapshot("dip")
                 time.sleep(self.config["clickAfterBiteMs"] / 1000.0)
@@ -1929,6 +1940,8 @@ class FishingBot:
             self.log("CATCH_DETECTED", bobber=(bx, by), biteDiff=round(d, 1),
                      whiteFrac=round(wf, 3),
                      trigger="foam" if hit_foam else "diff-streak",
+                     cycle=getattr(self, "_cycle_id", None),
+                     framePeriodMs=getattr(self, "_frame_period_ms", 0),
                      counters=self.counters)
             shot = self.snapshot("bite")
             time.sleep(self.config["clickAfterBiteMs"] / 1000.0)
@@ -2101,8 +2114,15 @@ class FishingBot:
             return False
 
         if focus_broker_is_user_active():
+            # Clic DIFFERE (pas une erreur de detection) : compteur dedie
+            # `deferred`, et la morsure reste traitable (le cycle n'est pas
+            # perdu : le flotteur reste a l'eau et une morsure suivante peut
+            # etre exploitee).
+            self.counters["deferred"] = self.counters.get("deferred", 0) + 1
             self.log("CLICK_DEFERRED",
                      reason="utilisateur actif (pas de clic en background)",
+                     cycle=getattr(self, "_cycle_id", None),
+                     source=getattr(self, "_click_source", "?"),
                      counters=dict(self.counters))
             self.state = PAUSED
             return False
@@ -2136,8 +2156,11 @@ class FishingBot:
                 if div > self.config["cursorDivergePx"]:
                     # La souris a ete reprise par l'humain : on ne l'arrache
                     # JAMAIS des mains de l'utilisateur (P0.9.2).
+                    self.counters["deferred"] = self.counters.get("deferred", 0) + 1
                     self.log("CLICK_DEFERRED",
                              reason="souris reprise par l'humain (divergence)",
+                             cycle=getattr(self, "_cycle_id", None),
+                             source=getattr(self, "_click_source", "?"),
                              counters=dict(self.counters))
                     self.state = PAUSED
                     return False
@@ -2162,17 +2185,24 @@ class FishingBot:
                            "button": "right",
                            "loot": "unconfirmed_by_bot (compteurs addon apres /reload)"})
         # FIX 2026-10-20 : instrumentation du « clic au bon moment ».
-        # latence = temps entre le SIGNAL de morsure et le clic effectif ;
-        # source = 'detect' (morsure vue) ou 'dip' (flotteur perdu -> reaction
-        # tardive) ; offset = distance entre le point clique et la derniere
-        # position OU le flotteur a ete vu (un gros offset = clic perime).
+        # latencyMs  : temps entre le SIGNAL de morsure et le clic effectif
+        #               (decision -> clic). Ne PAS confondre avec la
+        #               granularite de DETECTION (framePeriodMs : la morsure a
+        #               pu s produire dans la frame analysee precedemment).
+        # sinceLastSightMs : age de la derniere observation du flotteur
+        #               (= 0 pour une morsure vue ; = le retard de reaction
+        #               pour la voie 'dip', ou le flotteur a disparu).
+        # source     : 'detect' (morsure vue) ou 'dip' (flotteur perdu).
         sig = getattr(self, "_bite_signal_ts", None)
         lat = round((time.time() - sig) * 1000) if sig else None
         lwt = getattr(self, "_last_watch_ts", None)
         since_sight = round((time.time() - lwt) * 1000) if lwt else None
+        self._last_click_ts = time.time()
         self.log("CLICK_BOBBER", button="right", screen=(sx, sy),
                  latencyMs=lat, sinceLastSightMs=since_sight,
                  source=getattr(self, "_click_source", "?"),
+                 cycle=getattr(self, "_cycle_id", None),
+                 framePeriodMs=getattr(self, "_frame_period_ms", 0),
                  counters=self.counters)
         return self._verify_click(hwnd, x, y, rect)
 
@@ -2191,14 +2221,18 @@ class FishingBot:
         time.sleep(1.0)
         img, err = capture_window(hwnd)
         if img is None:
-            self.log("VERIFY_UNKNOWN", reason="capture impossible: %s" % err)
+            self.log("VERIFY_UNKNOWN", reason="capture impossible: %s" % err,
+                     cycle=getattr(self, "_cycle_id", None),
+                     sinceClickMs=self._since_click_ms())
             return False
         img_np = to_bgr(img)
         amb = _ambient_light(img_np)
         bx, by, conf, _voie = detect_bobber_hybrid(
             img_np, self.calib, 0.0, amb, v_floor=80)
         if bx is None:
-            self.log("VERIFY_OK", note="flotteur disparu apres clic droit (recupere ou echappe - butin : voir compteurs addon)")
+            self.log("VERIFY_OK", note="flotteur disparu apres clic droit (recupere ou echappe - butin : voir compteurs addon)",
+                     cycle=getattr(self, "_cycle_id", None),
+                     sinceClickMs=self._since_click_ms())
             return True
         dist = ((bx - x) ** 2 + (by - y) ** 2) ** 0.5
         if dist < 60:
@@ -2210,7 +2244,9 @@ class FishingBot:
             self._cursor_set = (sx2, sy2)
             time.sleep(0.05)
             self.log("VERIFY_RETRY", note="flotteur toujours la - 1 second clic droit a la nouvelle position",
-                     bobber=(bx, by), screen=(sx2, sy2))
+                     bobber=(bx, by), screen=(sx2, sy2),
+                     cycle=getattr(self, "_cycle_id", None),
+                     sinceClickMs=self._since_click_ms())
             win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTDOWN, 0, 0, 0, 0)
             time.sleep(0.05)
             win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
@@ -2224,16 +2260,31 @@ class FishingBot:
                 bx2, by2, conf2, _voie2 = detect_bobber_hybrid(
                     img2_np, self.calib, 0.0, amb2, v_floor=80)
                 if bx2 is None:
-                    self.log("VERIFY_OK", note="flotteur disparu apres retry (recupere ou echappe)")
+                    self.log("VERIFY_OK", note="flotteur disparu apres retry (recupere ou echappe)",
+                             cycle=getattr(self, "_cycle_id", None),
+                             sinceClickMs=self._since_click_ms())
                     return True
                 dist2 = ((bx2 - bx) ** 2 + (by2 - by) ** 2) ** 0.5
                 if dist2 >= 60:
-                    self.log("VERIFY_OK", note="flotteur derive apres retry (recupere probable)")
+                    self.log("VERIFY_OK", note="flotteur derive apres retry (recupere probable)",
+                             cycle=getattr(self, "_cycle_id", None),
+                             sinceClickMs=self._since_click_ms())
                     return True
-            self.log("VERIFY_RETRY_FAILED", note="flotteur toujours present apres retry", bobber=(bx2, by2) if 'bx2' in locals() else (bx, by))
+            self.log("VERIFY_RETRY_FAILED", note="flotteur toujours present apres retry",
+                     bobber=(bx2, by2) if 'bx2' in locals() else (bx, by),
+                     cycle=getattr(self, "_cycle_id", None),
+                     sinceClickMs=self._since_click_ms())
             return False
-        self.log("VERIFY_OK", note="flotteur parti (autre position : derive ou recupere)")
+        self.log("VERIFY_OK", note="flotteur parti (autre position : derive ou recupere)",
+                 cycle=getattr(self, "_cycle_id", None),
+                 sinceClickMs=self._since_click_ms())
         return True
+
+    def _since_click_ms(self):
+        """Age du dernier clic (ms) — correle le resultat de verification
+        avec le clic qui l'a declenche."""
+        t = getattr(self, "_last_click_ts", None)
+        return int((time.time() - t) * 1000) if t else None
 
     def _fail(self, message, detail=None):
         self.state = ERROR

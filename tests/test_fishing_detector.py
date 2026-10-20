@@ -42,9 +42,10 @@ def has_real_bobber(bgr):
 
     Même porte que le détecteur (DIRECTIONNELLE depuis le 2026-10-20) :
     la vérité terrain doit suivre la règle testée, sinon le test compterait
-    comme « faux positif » une detection valide.
+    comme « faux positif » une detection valide. Même plancher d'aire que le
+    détecteur (20 px²) pour que les deux jeux de candidats soient identiques.
     """
-    for bx, by, area, circ in _red_blobs(bgr, area_min=12, area_max=2000,
+    for bx, by, area, circ in _red_blobs(bgr, area_min=20, area_max=2000,
                                          v_floor=80):
         full, sec, iqr = _water_stats(bgr, bx, by, r_in=10, r_out=42)
         if _water_gate_ok(full, sec, iqr):
@@ -52,26 +53,60 @@ def has_real_bobber(bgr):
     return None
 
 
+def corpus_frames():
+    """(frames avec flotteur, frames sans flotteur, source).
+
+    Le corpus FIGE (tests/fixtures/detector_frames.json) est utilise quand il
+    est disponible : sans lui, le test lit le flux VIVANT de captures que le
+    bot ecrit en continu, et le resultat oscille d'une session a l'autre
+    (constate : rappel 46/48 puis 46/49 sur le meme code). Sans manifeste,
+    on retombe sur le flux vivant et on le signale explicitement.
+    """
+    manifest = os.path.join(ROOT, "tests", "fixtures", "detector_frames.json")
+    if os.path.isfile(manifest):
+        import json
+        with open(manifest, "r", encoding="utf-8") as fh:
+            m = json.load(fh)
+        return m.get("withBobber", []), m.get("withoutBobber", []), "manifeste fige"
+    files = sorted(f for f in os.listdir(CAP) if f.endswith(".png"))
+    step = max(1, len(files) // 300)
+    sample = files[::step]
+    bob, lure = [], []
+    for f in sample:
+        bgr = cv2.imread(os.path.join(CAP, f))
+        if bgr is None:
+            continue
+        (bob if has_real_bobber(bgr) else lure).append(f)
+    return bob, lure, "flux VIVANT (non reproductible : manifeste absent)"
+
+
 def main():
     if not os.path.isdir(CAP):
         print("SKIP : pas de corpus de captures (%s)" % CAP)
         return 0
 
-    files = sorted(f for f in os.listdir(CAP) if f.endswith(".png"))
-    if not files:
+    with_bob, without_bob, source = corpus_frames()
+    if not with_bob and not without_bob:
         print("SKIP : corpus vide")
+        return 0
+    print("info  corpus : %s (%d frames avec flotteur, %d sans)"
+          % (source, len(with_bob), len(without_bob)))
+    # Les frames du corpus ne sont PAS versionnees (captures/ est local) :
+    # sur un clone frais, le test doit etre signale comme IGNORE, jamais
+    # presenter comme un succes.
+    probe = with_bob[0] if with_bob else (without_bob[0] if without_bob else None)
+    if probe and not os.path.isfile(os.path.join(CAP, probe)):
+        print("SKIP : corpus de captures absent sur cette machine "
+              "(%s) - le test de detection est IGNORE, pas reussi" % probe)
         return 0
 
     # 1) Frames SANS flotteur -> plus aucun faux bobber
-    step = max(1, len(files) // 300)
     lure_frames = 0
     false_positives = 0
-    for f in files[::step]:
+    for f in without_bob:
         bgr = cv2.imread(os.path.join(CAP, f))
         if bgr is None:
             continue
-        if has_real_bobber(bgr):
-            continue          # frame avec un vrai flotteur : test 2
         lure_frames += 1
         detect_bobber._prefer_near = None
         detect_bobber._locked_water = None
@@ -89,7 +124,7 @@ def main():
     #    On cherche les frames où le VRAI flotteur est dans l'eau.
     real_total = 0
     real_found = 0
-    for f in files[::step]:
+    for f in with_bob:
         bgr = cv2.imread(os.path.join(CAP, f))
         if bgr is None:
             continue
