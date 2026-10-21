@@ -12,7 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -33,12 +32,11 @@ jobs:
       # Tests Python du bot de peche (detecteur, popup, contrat V2, navigation).
       # Ils n'etaient PAS joues en CI : une regression du detecteur ou du
       # planificateur pouvait donc passer inaperçue.
-      - name: Run fishing bot python tests
+      - name: Run portable fishing bot python tests
         run: |
           set -euo pipefail
           for t in tests/test_fishing_detector.py \
                    tests/test_fishing_popup.py \
-                   tests/test_fishing_bot_contract.py \
                    tests/test_fishing_v2.py \
                    tests/test_fishing_navigator.py; do
             if [ -f "$t" ]; then
@@ -70,3 +68,59 @@ jobs:
           path: |
             reports/
             logs/
+
+  # Tests Python du bot de peche sur les deux systemes.
+  # Le contrat du bot (tests/test_fishing_bot_contract.py) importe fishing_bot,
+  # donc pywin32 : il n'est jouable que sur Windows. Les tests portables
+  # (detecteur, popup, V2, navigation) passent sur les deux OS.
+  fishing-python:
+    name: Fishing bot python tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install python dependencies
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet numpy opencv-python-headless
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            python -m pip install --quiet pywin32
+          fi
+
+      - name: Run fishing bot python tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          for t in tests/test_fishing_detector.py \
+                   tests/test_fishing_popup.py \
+                   tests/test_fishing_v2.py \
+                   tests/test_fishing_navigator.py; do
+            if [ -f "$t" ]; then
+              echo "::group::$t"
+              python "$t"
+              echo "::endgroup::"
+            else
+              echo "absent (ignore) : $t"
+            fi
+          done
+
+      - name: Run bot contract test (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::tests/test_fishing_bot_contract.py"
+          python tests/test_fishing_bot_contract.py
+          echo "::endgroup::"
+
+      - name: Explain why the contract test is skipped on Linux
+        if: runner.os != 'Windows'
+        run: echo "tests/test_fishing_bot_contract.py : ignore hors Windows (depend de pywin32)"
