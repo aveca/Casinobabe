@@ -328,36 +328,6 @@ class MinimapReader(object):
         out.sort(key=lambda m: m["dist"])
         return out
 
-    # -- garde-fou : le bruit de la minicarte --------------------------------
-    def drift_check(self, seconds=2.0, samples=6, sleep=0.3):
-        """Mesure la derive de l'odometre quand le personnage ne bouge pas.
-
-        MESURE IMPORTANTE (2026-10-21) : la minicarte n'est PAS un odometre
-        fiable. L'eau animee fait deriver la correlation de phase de facon
-        SYSTEMATIQUE : derive mesuree de 7,05 px en 10 s sur un personnage
-        IMMOBILE (verifie independamment : la vue 3D ne defile pas, donc le
-        personnage ne bouge pas). Une derive « 0,000 » mesuree auparavant etait
-        un faux negatif (l'animation etait momentanement immobile).
-
-        Consequence : avant de piloter un deplacement, on verifie que la
-        derive est inferieure au deplacement que l'on cherche a mesurer.
-        Sinon la position n'est pas exploitable.
-        """
-        import time as _t
-        before = (self.x, self.y)
-        steps = []
-        for _ in range(max(2, int(samples))):
-            _t.sleep(sleep)
-            steps.append(self.update_from_crop(self.last_crop) if False else None)
-        # la mesure se fait sur des captures fournies par l'appelant ; sans
-        # capture, on renvoie une derive inconnue (None) : mieux vaut
-        # l'ignorer que l'inventer.
-        return None
-
-    def set_position(self, x, y):
-        self.x = float(x)
-        self.y = float(y)
-
 
 def world_displacement(frame_a, frame_b, region=(0.12, 0.72, 0.05, 0.62)):
     """Deplacement de la VUE 3D entre deux captures (pixels ecran).
