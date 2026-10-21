@@ -1,33 +1,45 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-fishing_recovery.py — RECUPERATION DU CORPS (procedure dediee, a etats).
+fishing_recovery.py — RECUPERATION DU CORPS (machine a etats, fondee sur
+des MESURES, pas sur des hypotheses).
 
-Le personnage est mort dans l'eau (noyade du 2026-10-21).  Il faut
-retrouver le corps et ressusciter SUR PLACE.
+Sequence exigee :
 
-La sequence explicite, chaque transition depending d'une observation
-verifiable :
+    ALIVE -> DEAD_SPECTER -> NAVIGATING_TO_CORPSE -> CORPSE_INTERACTION
+          -> RESURRECTION_VERIFY -> PAUSED_SAFE
 
-    RECOVERY_INIT -> MAP_ANALYSIS -> ROUTE_PLANNING -> TRAVEL_STEP
-                  -> PROGRESS_CHECK -> RELOCALIZATION -> CORPSE_APPROACH
-                  -> RESURRECTION_DETECTED -> VERIFY_ALIVE -> PAUSED_SAFE
+Principes (tous appliques, aucun suppose) :
 
-Regles appliquees :
+1. LA CARTE EST L'ORACLE.  Le jeu dessine sur la carte du monde le
+   marqueur du CORPS (crane) et le JOUEUR (fleche verte).  Deux gabarits
+   DISJOINTS (crane / fleche) sont localises par template matching.  On en
+   tire :
+     * le CAP vers le corps (repere nord, la carte est verrouillee au nord) ;
+     * la DISTANCE au corps en pixels de carte -> c'est la MESURE DE
+       PROGRESSION de reference (elle seule dit si on se rapproche).
+   Les gabarits ne doivent JAMAIS se recouvrir : sinon les deux marqueurs
+   tombent au meme endroit, le cap devient du bruit et la distance ne
+   diminue jamais (bug observe le 2026-10-21).
 
-* aucune commande n'est consideree comme reussie parce qu'elle a ete
-  envoyee : chaque deplacement est MESURE, chaque etat est verifie ;
-* la carte du monde fournit la direction ABSOLUE (elle est verrouillee au
-  nord), la fleche de la minicarte fournit le cap REEL du personnage, et
-  la calibration mesuree du moteur de navigation corrige l'angle de clic ;
-* le vecteur de la carte n'est JAMAIS utilise tel quel comme point de clic ;
-* un resultat ambigu de la carte -> nouvelle capture, puis arret controle ;
-* le garde-fou "eau" reste actif pour le personnage VIVANT ; pour le
-  FANTOME il est desactive (un fantome ne se noie pas), mais les autres
-  garde-fous (progression nulle, distance, duree, nombre de tentatives)
-  restent actifs ;
-* a la fin, le personnage est laisse PAUSED_SAFE : la peche n'est pas
-  relancee automatiquement.
+2. LA CAMERA N'EST SUPPOSEE ETRE RIEN.  Le cap du personnage est releve sur
+   la fleche de la minicarte (verrouillee au nord).  On pilote par
+   BOUCLE A RETROACTION : on clique un point ecran, on relit le cap
+   obtenu, on corrige l'angle de clic.  La camera (statique, "Smart" ou
+   "Never") n'a pas besoin d'etre connue : le moteur l'apprend.
+
+3. AUCUN CLIC AVEUGLE.  Chaque commande est suivie d'une MESURE
+   (progression au cadran, cap obtenu, distance au corps).  Un clic
+   execute n'est jamais une preuve.
+
+4. L'INTERACTION AVEC LE CORPS n'est supposee etre un bouton "Resurrect"
+   a l'ecran : l'invite est recherchee dans la VUE 3D uniquement (la carte
+   contient des elements dores qui诱发 des faux positifs), puis on clique
+   et on exige une CONFIRMATION INDEPENDANTE (le lecteur d'etat doit
+   repasser en "vivant").
+
+5. LA PECHE NE RELANCE JAMAIS.  L'etat final est PAUSED_SAFE, et la
+   transition n'est possible qu'apres resurrection confirmee.
 """
 
 import math
@@ -46,55 +58,42 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from fishing_map import (CORPS, JOUEUR, MapAnalysis,  # noqa: E402
-                         MapMarkerDetector, analyze_map, map_is_open,
-                         map_bearing_to_screen)
+from fishing_map import (CORPS, JOUEUR, MapMarkerDetector,  # noqa: E402
+                         analyze_map, map_is_open, map_bearing_to_screen)
 from fishing_safety import (DEAD, GHOST, CORPSE_RECOVERY, RESURRECTION,  # noqa: E402
-                            SAFE_REPOSITION, RESUME_OR_STOP, FISHING,
-                            OUTCOME_OK, OUTCOME_BLOCKED, OUTCOME_WATER,
-                            OUTCOME_RECOVERED)
+                            SAFE_REPOSITION, RESUME_OR_STOP,
+                            OUTCOME_OK, OUTCOME_BLOCKED, OUTCOME_RECOVERED)
 
 # --------------------------------------------------------------------------
-# etats de la recuperation
+# etats
 # --------------------------------------------------------------------------
-RECOVERY_INIT = "RECOVERY_INIT"
+ALIVE = "ALIVE"
+DEAD_SPECTER = "DEAD_SPECTER"
 MAP_ANALYSIS = "MAP_ANALYSIS"
-ROUTE_PLANNING = "ROUTE_PLANNING"
-TRAVEL_STEP = "TRAVEL_STEP"
+NAVIGATING_TO_CORPSE = "NAVIGATING_TO_CORPSE"
 PROGRESS_CHECK = "PROGRESS_CHECK"
 RELOCALIZATION = "RELOCALIZATION"
-CORPSE_APPROACH = "CORPSE_APPROACH"
-RESURRECTION_DETECTED = "RESURRECTION_DETECTED"
-VERIFY_ALIVE = "VERIFY_ALIVE"
+CORPSE_INTERACTION = "CORPSE_INTERACTION"
+RESURRECTION_VERIFY = "RESURRECTION_VERIFY"
 PAUSED_SAFE = "PAUSED_SAFE"
 ABORTED = "ABORTED"
 
-RECOVERY_STATES = (RECOVERY_INIT, MAP_ANALYSIS, ROUTE_PLANNING, TRAVEL_STEP,
-                   PROGRESS_CHECK, RELOCALIZATION, CORPSE_APPROACH,
-                   RESURRECTION_DETECTED, VERIFY_ALIVE, PAUSED_SAFE, ABORTED)
+#: etats de la sequence exigee, dans l'ordre
+REQUIRED_SEQUENCE = (ALIVE, DEAD_SPECTER, NAVIGATING_TO_CORPSE,
+                     CORPSE_INTERACTION, RESURRECTION_VERIFY, PAUSED_SAFE)
 
-#: Correspondance avec la sequence demandedee pour le correctif du retour au
-#: corps : ALIVE -> DEATH_DETECTED -> GHOST_CONFIRMED -> NAVIGATE_TO_CORPSE
-#: -> VERIFY_ARRIVAL -> RESURRECTION_CONFIRMED -> RESUME_FISHING.
-#:
-#: Le present moteur est plus fin (il separe l'analyse de carte, la
-#: planification et la verification), mais chaque etat de la sequence
-#: demandee a bien une correspondance 1-1 :
-STATE_SEQUENCE = (
-    ("ALIVE", RECOVERY_INIT),
-    ("DEATH_DETECTED", RECOVERY_INIT),
-    ("GHOST_CONFIRMED", MAP_ANALYSIS),
-    ("NAVIGATE_TO_CORPSE", ROUTE_PLANNING),
-    ("VERIFY_ARRIVAL", PROGRESS_CHECK),
-    ("RELOCALIZATION", RELOCALIZATION),
-    ("CORPSE_APPROACH", CORPSE_APPROACH),
-    ("RESURRECTION_CONFIRMED", RESURRECTION_DETECTED),
-    ("RESUME_FISHING", VERIFY_ALIVE),
-    ("PAUSED_SAFE", PAUSED_SAFE),
-)
+#: anciens noms conserves (compatibilite)
+RECOVERY_INIT = DEAD_SPECTER
+MAP_ANALYSIS = MAP_ANALYSIS
+ROUTE_PLANNING = NAVIGATING_TO_CORPSE
+TRAVEL_STEP = NAVIGATING_TO_CORPSE
+CORPSE_APPROACH = CORPSE_INTERACTION
+RESURRECTION_DETECTED = CORPSE_INTERACTION
+VERIFY_ALIVE = RESURRECTION_VERIFY
 
-#: couleurs de l'invite "Resurrect" (or / jaune dore dans le monde)
-GOLD_LO, GOLD_HI = 18, 42
+RECOVERY_STATES = (ALIVE, DEAD_SPECTER, MAP_ANALYSIS, NAVIGATING_TO_CORPSE,
+                   PROGRESS_CHECK, RELOCALIZATION, CORPSE_INTERACTION,
+                   RESURRECTION_VERIFY, PAUSED_SAFE, ABORTED)
 
 
 def _bgr(img):
@@ -103,19 +102,18 @@ def _bgr(img):
 
 
 class ResurrectPrompt(object):
-    """Detecte l'invite "Resurrect" du client (bouton dore sur le corps).
+    """Invite "Resurrect" du client : bouton DORE, dans la VUE 3D.
 
-    Contrainte de localisation : l'invite est dessinee AU PIED DU
-    PERSONNAGE (le corps est a ses pieds).  On ne cherche donc que dans un
-    rectangle autour du personnage : sans cela, les objets dores de la
-    scene (lanterne du bateau, icones de l'UI) declenchaient de faux
-    positifs.
-
-    Ne detectionne jamais dans l'UI (barres d'action, sacs, mini-carte).
+    Contraintes de robustesse :
+      * jamais dans la carte (la carte a des elements dores) -> la vue 3D
+        est verifiee avant toute recherche ;
+      * forme d'un bouton horizontal compact (ratio 1.5 a 12) ;
+      * zone autour du personnage (l'invite est dessinee sur le corps, donc
+        au pied du fantome) : on evite les lanternes, les icones d'or du
+        decor et les boutons de l'UI.
     """
 
-    def __init__(self, region=(0.28, 0.74, 0.48, 0.86)):
-        # (x_min, x_max, y_min, y_max) en fractions de l'ecran
+    def __init__(self, region=(0.18, 0.86, 0.30, 0.88)):
         self.region = region
 
     def find(self, img):
@@ -123,27 +121,26 @@ class ResurrectPrompt(object):
         if bgr is None:
             return None
         h, w = bgr.shape[:2]
-        x0 = int(self.region[0] * w)
-        x1 = int(self.region[1] * w)
-        y0 = int(self.region[2] * h)
-        y1 = int(self.region[3] * h)
-        roi = bgr[y0:y1, x0:x1]
+        x0, x1, y0, y1 = self.region
+        roi = bgr[int(h * y0):int(h * y1), int(w * x0):int(w * x1)]
         if roi.size == 0:
             return None
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        gold = ((hsv[:, :, 0] >= GOLD_LO) & (hsv[:, :, 0] <= GOLD_HI)
-                & (hsv[:, :, 1] > 110) & (hsv[:, :, 2] > 150))
+        gold = ((hsv[:, :, 0] >= 14) & (hsv[:, :, 0] <= 45)
+                & (hsv[:, :, 1] > 90) & (hsv[:, :, 2] > 140))
         n, _lab, stats, _cent = cv2.connectedComponentsWithStats(
             gold.astype(np.uint8), 8)
         best = None
         for i in range(1, n):
             x, y, cw, ch, area = stats[i]
-            if area < 60 or cw < 22 or ch < 6 or cw > 260:
+            if area < 120 or cw < 40 or cw > 300 or ch < 10 or ch > 90:
                 continue
-            if not (1.2 <= float(cw) / max(1, ch) <= 12.0):
+            if not (1.5 <= float(cw) / max(1, ch) <= 12.0):
                 continue
-            cx = x0 + x + cw / 2.0
-            cy = y0 + y + ch / 2.0
+            if area < 0.40 * cw * ch:
+                continue
+            cx = x0 * w + x + cw / 2.0
+            cy = y0 * h + y + ch / 2.0
             if best is None or area > best["area"]:
                 best = {"x": int(cx), "y": int(cy), "area": int(area),
                         "w": int(cw), "h": int(ch)}
@@ -151,14 +148,11 @@ class ResurrectPrompt(object):
 
 
 class RecoverySession(object):
-    """Machine a etats de recuperation du corps.
-
-    Une transition par appel a `step()` : la progression est donc
-    observable, journalisee et interruptible a tout instant.
-    """
+    """Machine a etats du retour au corps (une transition par `step()`)."""
 
     def __init__(self, executor, state_reader=None, safety=None, memory=None,
-                 detector=None, prompt=None, log=None, config=None):
+                 detector=None, prompt=None, log=None, config=None,
+                 validator=None, evidence_dir=None):
         self.ex = executor
         self.state_reader = state_reader or executor.state
         self.safety = safety
@@ -167,36 +161,33 @@ class RecoverySession(object):
         self.prompt = prompt or ResurrectPrompt()
         self.log = log or (lambda *a, **k: None)
         self.cfg = dict(config or {})
-        self.state = RECOVERY_INIT
+        self.validator = validator
+        self.evidence_dir = evidence_dir
+        self.state = DEAD_SPECTER
         self.history = []
         self.analysis = None
-        self.route = []
-        self.route_index = 0
-        self.steps_since_reloc = 0
+        self.last_distance = None
+        self.best_distance = None
         self.attempts = 0
-        self.max_attempts = int(self.cfg.get("maxAttempts", 24))
+        self.max_attempts = int(self.cfg.get("maxAttempts", 40))
         self.map_attempts = int(self.cfg.get("maxMapAttempts", 4))
-        # Distance du clic : le point vise doit etre LOINTAIN (bord de
-        # l'ecran).  Mesure du 2026-10-21 : viser un point proche situé
-        # derrière un obstacle (l'epave du cimetière) fait echouer le
-        # pathing ; viser loin fait contourner l'obstacle.
-        self.step_px = int(self.cfg.get("stepPx", 900))
-        self.min_px = float(self.cfg.get("minProgressPx", 1.0))
-        self.direction_tol = float(self.cfg.get("directionTolDeg", 70.0))
-        self.click_rotation = float(self.cfg.get("clickRotationDeg", 0.0))
-        self.heading_deg = None
+        self.click_px = int(self.cfg.get("clickPx", 900))
+        self.min_px = float(self.cfg.get("minProgressPx", 0.8))
         self.map_open = False
+        self.result = None
         self.prompt_hit = None
         self.resurrect_clicks = 0
-        self.last_distance = None
+        self.max_resurrect_clicks = int(self.cfg.get("maxResurrectClicks", 3))
+        self.theta = None          # angle ecran du dernier clic (feedback)
+        self.click_to_heading = None   # rotation APPRISE (clic -> cap)
+        self.heading = None        # cap du personnage (minicarte)
         self.stuck_count = 0
-        self.block_turn = 0
-        self.camera_px_per_deg = None
-        self.result = None
-        self.spiral = [(0, -1), (0.7, -0.7), (1, 0), (0.7, 0.7),
-                       (0, 1), (-0.7, 0.7), (-1, 0), (-0.7, -0.7)]
+        self.map_open_tries = 0
+        self._geo = None
 
-    # -- utilitaires ------------------------------------------------------
+    # ------------------------------------------------------------------
+    # utilitaires
+    # ------------------------------------------------------------------
     def _set(self, state, note=None, **evidence):
         old = self.state
         self.state = state
@@ -208,22 +199,31 @@ class RecoverySession(object):
         return rec
 
     def _abort(self, reason, **evidence):
-        self.result = {"ok": False, "outcome": OUTCOME_BLOCKED, "reason": reason,
-                       "state": self.state}
+        """Arret controle, AVEC preuve conservee (auto-diagnostic)."""
+        self._evidence("abort-" + str(reason)[:24].replace(" ", "_"))
+        self.result = {"ok": False, "outcome": OUTCOME_BLOCKED,
+                       "reason": reason, "state": self.state}
         self._set(ABORTED, reason, **evidence)
         return self.result
 
     def _capture(self):
         return self.ex.screen.grab(force=True)
 
-    def _map_key(self):
-        """Bascule l'ouverture de la carte (la sesiion suit l'etat reels)."""
-        self.ex.actions.key("M")
-        time.sleep(float(self.cfg.get("mapOpenSeconds", 2.4)))
-        self.map_open = not self.map_open
+    def _world_view(self):
+        """Capture de la VUE 3D (la carte est fermee si besoin).
+
+        Indispensable : la carte contient des elements DORES qui seraient
+        confondus avec l'invite "Resurrect".
+        """
+        img = self._capture()
+        if img is not None and map_is_open(_bgr(img)):
+            self._ensure_map(False)
+            img = self._capture()
+        self.map_open = False
+        return img
 
     def _ensure_map(self, want_open):
-        """Garantit l'etat de la carte en le MESURANT (pas en supposant)."""
+        """Garantit l'etat de la carte en le MESURANT."""
         for _ in range(4):
             img = self._capture()
             if img is None:
@@ -234,141 +234,193 @@ class RecoverySession(object):
             if state == want_open:
                 self.map_open = state
                 return True
-            self._map_key()
+            self.ex.actions.key("M")
+            time.sleep(float(self.cfg.get("mapOpenSeconds", 2.4)))
         self.map_open = want_open
         return False
 
-    def _world_view(self):
-        """Capture de la VUE 3D (la carte est fermee si besoin).
-
-        Indispensable : la carte contient des elements DORES (boutons, textes
-        d'or) qui seraient confondus avec l'invite "Resurrect", et un
-        bouton ROUGE qui serait confondu avec le dialogue de liberation.
-        """
-        img = self._capture()
-        if img is not None and map_is_open(_bgr(img)):
-            self._ensure_map(False)
-            img = self._capture()
-        self.map_open = False
-        return img
-
     def _read_heading(self):
-        """Cap REEL du personnage (fleche de la minicarte, verrouillee nord)."""
+        """Cap REEL du personnage (fleche de la minicarte, verrouillee nord).
+
+        Convention : 0 = est, +90 = nord (identique au cap carte).
+        """
         try:
             from fishing_minimap import MinimapGeometry, player_facing
-            geo = getattr(self, "_geo", None)
-            if geo is None:
-                geo = MinimapGeometry()
-                self._geo = geo
-            img = self._capture()
+            if self._geo is None:
+                self._geo = MinimapGeometry()
+            img = self._world_view()
             if img is None:
                 return None
             bgr = _bgr(img)
-            geo.ensure(bgr)
-            crop = geo.crop(bgr)
+            self._geo.ensure(bgr)
+            crop = self._geo.crop(bgr)
             rad = player_facing(crop)
             return None if rad is None else math.degrees(rad)
         except Exception as exc:                        # pragma: no cover
             self.log("RECOVERY_HEADING_ERROR", error=str(exc))
             return None
 
-    # -- ORIENTATION : la camera, APPRISE par mesure ----------------------
-    def calibrate_camera(self, probe_px=120):
-        """Apprend la sensibilite de la camera (px de souris -> degres).
+    def _center(self):
+        """Centre du personnage a l'ecran (le_camera suit le personnage)."""
+        img = _bgr(self._capture())
+        if img is None:
+            return 1288.0, 902.0
+        h, w = img.shape[:2]
+        return w / 2.0, h * 0.62
 
-        Un deplacement de souris connu est applique (clic gauche enfonce),
-        puis le cap resultant est relu sur la fleche de la minicarte : le
-        rapport donne les pixels par degree.  Rien n'est suppose.
+    def _screen_click(self, theta_deg, radius=None):
+        """Clic droit au sol, a l'angle ecran `theta_deg` (0=droite, 90=bas).
+
+        La cible est ramenee dans la VUE MONDE : un clic sur un bouton
+        d'interface ouvre un panneau (sac, amis, fiche personnage) au lieu
+        de deplacer le personnage.
         """
-        h0 = self._read_heading()
-        if h0 is None:
-            return None
-        rotate = getattr(self.ex.actions, "rotate_camera", None)
-        if rotate is None:
-            return None
-        rotate(probe_px, 0)
-        time.sleep(0.6)
-        h1 = self._read_heading()
-        if h1 is None:
-            return None
-        delta = (h1 - h0 + 180.0) % 360.0 - 180.0
-        if abs(delta) < 1.0:
-            return None
-        sens = float(probe_px) / abs(delta)
-        self.camera_px_per_deg = sens
-        self.log("CAMERA_CALIBRATED", probePx=probe_px,
-                 deltaDeg=round(delta, 1), pxPerDeg=round(sens, 2))
-        return sens
+        from fishing_screen import clamp_to_world, in_world_zone
+        img = _bgr(self._world_view())
+        h = img.shape[0] if img is not None else 1328
+        w = img.shape[1] if img is not None else 2345
+        r = radius if radius is not None else self.click_px
+        cx, cy = w / 2.0, h * 0.62
+        tx = int(cx + math.cos(math.radians(theta_deg)) * r)
+        ty = int(cy + math.sin(math.radians(theta_deg)) * r)
+        if not in_world_zone(tx, ty, w, h):
+            tx, ty = clamp_to_world(tx, ty, w, h)
+        self.ex.actions.click(tx, ty, button="right")
+        return tx, ty
 
-    def turn_to(self, bearing_deg, tolerance=8.0):
-        """Tourne la camera pour pointer le personnage vers le cap vise."""
-        sens = self.camera_px_per_deg or self.calibrate_camera()
-        if not sens:
+    def _evidence(self, tag, img=None):
+        """Conserve une capture de preuve (auto-diagnostic sans humain)."""
+        if not self.evidence_dir:
             return None
-        rotate = getattr(self.ex.actions, "rotate_camera", None)
-        if rotate is None:
-            return None
-        for _ in range(4):
-            h = self._read_heading()
-            if h is None:
+        try:
+            os.makedirs(self.evidence_dir, exist_ok=True)
+            if img is None:
+                img = self._capture()
+            if img is None:
                 return None
-            d = (bearing_deg - h + 180.0) % 360.0 - 180.0
-            if abs(d) <= tolerance:
-                return h
-            # un deplacement souris horizontal NEGatif tourne la camera a
-            # gauche (cap augmente) : signe inverse de l'ecart vise.
-            rotate(-d * sens, 0)
-            time.sleep(0.45)
-        return self._read_heading()
+            import cv2
+            path = os.path.join(self.evidence_dir, "%s-%s.png" % (
+                time.strftime("%H%M%S"), tag))
+            cv2.imwrite(path, as_bgr(img))
+            return path
+        except Exception:
+            return None
 
-    # -- etats ------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # APPRENTISSAGE de la relation clic -> cap
+    # ------------------------------------------------------------------
+    def _calibrate_click_to_heading(self):
+        """Apprend l'angle ecran a cliquer pour un cap donne, PAR MESURE.
+
+        Le cap du personnage est relu sur la fleche de la minicarte
+        (verrouillee au nord, donc directement comparable au cap carte).
+        On clique un angle ecran connu, on attend que le personnage prenne
+        ce cap, et on en deduit la rotation camera -> monde.  Cette rotation
+        est ensuite APPRISE et affinee a chaque pas (boucle a
+        retroaction), ce qui est la seule facon fiable de convertir un cap
+        carte en point de clic : la camera n'est pas supposee immobile.
+        """
+        if self.click_to_heading is not None:
+            return self.click_to_heading
+        probe = -90.0                    # "tout droit" a l'ecran
+        self._screen_click(probe, radius=260)
+        time.sleep(float(self.cfg.get("calibrateSeconds", 2.0)))
+        head = self._read_heading()
+        if head is None:
+            return None
+        # le personnage a pris le cap correspondant au clic : la relation
+        # est lineaire (cap = angle_ecran + rotation)
+        self.click_to_heading = (head - probe + 180.0) % 360.0 - 180.0
+        self.log("CLICK_HEADING_CALIBRATED", probeDeg=probe,
+                 headDeg=round(head, 1),
+                 rotationDeg=round(self.click_to_heading, 1))
+        return self.click_to_heading
+
+    def _theta_for_heading(self, target_heading):
+        """Angle ecran a cliquer pour obtenir le cap vise (appris)."""
+        rot = self.click_to_heading
+        if rot is None:
+            rot = self._calibrate_click_to_heading()
+        if rot is None:
+            return None
+        return (target_heading - rot + 180.0) % 360.0 - 180.0
+
+    def _refine_rotation(self, measured_heading, commanded_theta):
+        """Affine la rotation clic -> cap apres chaque deplacement mesure."""
+        if measured_heading is None:
+            return
+        rot = (measured_heading - commanded_theta + 180.0) % 360.0 - 180.0
+        if self.click_to_heading is None:
+            self.click_to_heading = rot
+        else:
+            # moyenne glissante : le cap releve est bruite (la fleche de la
+            # minicarte est petite), on ne garde que l'information stable
+            self.click_to_heading = (self.click_to_heading * 0.6 + rot * 0.4
+                                     + 180.0) % 360.0 - 180.0
+        self.log("CLICK_HEADING_REFINED", measuredDeg=round(measured_heading, 1),
+                 commandedDeg=round(commanded_theta, 1),
+                 rotationDeg=round(self.click_to_heading, 1))
+
+    # ------------------------------------------------------------------
+    # etats
+    # ------------------------------------------------------------------
     def _st_init(self):
+        """Etat initial : mort ou fantome ? (le lecteur d'etat tranche)."""
         img = self._capture()
         st = self.state_reader.read(img, self.ex.board)
         life = st["life"]
         if life == "alive":
-            return self._abort("personnage deja vivant : rien a recuperer",
+            return self._abort("personnage vivant : rien a recuperer",
                                life=life)
         if st["signals"].get("releaseDialog"):
             # le corps n'est pas encore libere : on libere d'abord
             btn = self._red_block(img)
             if btn:
                 self.ex.do_click([btn["x"], btn["y"]], button="left")
-                time.sleep(1.5)
+                time.sleep(2.0)
                 st2 = self.state_reader.read(self._capture(), self.ex.board)
                 if st2["signals"].get("releaseDialog"):
                     return self._abort("impossible de liberer le corps",
                                        life=life)
-        self.heading_deg = self._read_heading()
-        self._set(MAP_ANALYSIS, "etat initial lu", life=life,
-                  headingDeg=self.heading_deg)
+        self._set(MAP_ANALYSIS, "etat initial lu", life=life)
         return {"ok": True, "state": MAP_ANALYSIS}
 
     def _red_block(self, img):
+        """Bouton rouge du dialogue de liberation (barre desaturee)."""
         bgr = _bgr(img)
         if bgr is None:
             return None
         h, w = bgr.shape[:2]
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        red = (((hsv[:, :, 0] < 12) | (hsv[:, :, 0] > 168))
-               & (hsv[:, :, 1] > 150) & (hsv[:, :, 2] > 140))
-        red = red[:int(h * 0.45), :]
+        b, g, r = (bgr[:, :, 0].astype(np.int16), bgr[:, :, 1].astype(np.int16),
+                   bgr[:, :, 2].astype(np.int16))
+        val = bgr[:, :, 2]
+        redish = ((r - np.maximum(g, b)) > 10) & (val > 60)
+        band = np.zeros_like(redish)
+        band[:int(h * 0.45), :] = True
+        redish = redish & band
         n, _l, stats, _c = cv2.connectedComponentsWithStats(
-            red.astype(np.uint8), 8)
+            redish.astype(np.uint8), 8)
         for i in range(1, n):
             x, y, cw, ch, area = stats[i]
-            if area < 400 or cw < 40 or cw > 320 or ch < 10:
+            if area < 120 or cw < 40 or ch < 8 or cw > 320:
                 continue
-            if not (1.6 <= float(cw) / max(1, ch) <= 9.0):
+            if not (2.0 <= float(cw) / max(1, ch) <= 9.0):
                 continue
-            if area < 0.45 * cw * ch:
+            if area < 0.35 * cw * ch:
+                continue
+            x0 = max(0, x - cw)
+            x1 = min(w, x + 2 * cw)
+            y0 = max(0, y - ch)
+            y1 = min(h, y + 2 * ch)
+            around = val[y0:y1, x0:x1]
+            if around.size == 0 or float(np.median(around)) > 70.0:
                 continue
             return {"x": int(x + cw / 2), "y": int(y + ch / 2)}
         return None
 
     def _st_map_analysis(self):
-        """Ouvre la carte, detecte le corps et le joueur, calcule le cap."""
-        for attempt in range(self.map_attempts):
+        """Ouvre la carte, localise le corps et le joueur, mesure la distance."""
+        for _ in range(self.map_attempts):
             self._ensure_map(True)
             img = self._capture()
             if img is None:
@@ -377,14 +429,12 @@ class RecoverySession(object):
             if analysis.usable:
                 self.analysis = analysis
                 self.last_distance = analysis.distance_px
-                # Equivalent du "Deaths" de la reference CorpseRunGoal :
-                # la position du corps est ENREGISTREE (en RELATIF : cap +
-                # distance sur la carte, jamais de coordonnee absolue
-                # inventee).
+                if self.best_distance is None:
+                    self.best_distance = analysis.distance_px
                 if self.memory is not None:
                     try:
                         self.memory.record_incident(
-                            OUTCOME_DEAD,
+                            OUTCOME_BLOCKED,
                             zone="carte:cap%.0f,dist%.0f" % (
                                 analysis.bearing_deg or 0.0,
                                 analysis.distance_px or 0.0),
@@ -393,317 +443,211 @@ class RecoverySession(object):
                             confidence=0.8)
                     except Exception:
                         pass
-                self._set(ROUTE_PLANNING, "corps localise sur la carte",
+                self._set(NAVIGATING_TO_CORPSE, "corps localise sur la carte",
                           **analysis.as_dict())
-                return {"ok": True, "state": ROUTE_PLANNING,
+                return {"ok": True, "state": NAVIGATING_TO_CORPSE,
                         "analysis": analysis.as_dict()}
-            # resultat ambigu : on referme, on recapture, on reessaye
             self.log("RECOVERY_MAP_AMBIGU", reasons=analysis.reasons)
             self._ensure_map(False)
             time.sleep(0.8)
         return self._abort("marqueur du corps introuvable sur la carte "
                            "(apres %d captures)" % self.map_attempts)
 
-    def _st_route_planning(self):
-        """Convertit le cap carte en une suite de deplacements mesurables.
+    def _st_navigate(self):
+        """UN pas vers le corps, pilote par BOUCLE A RETROACTION.
 
-        Le fantome dispose de la position et de la fleche : le corps est
-        donc atteint EN LIGNE DROITE (le vecteur de la carte), en pas courts
-        et mesures, avec un recalage periodique sur la carte.
+        On ne connait pas la camera : on clique un angle ecran, on relit le
+        cap obtenu sur la minicarte, et on corrige l'angle pour que le cap
+        se rapproche du cap carte vise.  C'est une APPRENTISSAGE en ligne
+        de la relation clic -> cap.
         """
-        a = self.analysis
-        # la carte doit etre FERMEE pour lire le cap (fleche de la
-        # minicarte) : sur la carte, la minicarte est masquee.
-        self._ensure_map(False)
-        if self.heading_deg is None:
-            self.heading_deg = self._read_heading()
-        if a.bearing_reliable and self.heading_deg is not None:
-            # ORIENTATION : on tourne la CAMERA (clic gauche + souris,
-            # sensibilite APPRISE par mesure) pour que le personnage pointe
-            # le corps.  Le clic vise alors "tout droit" : la direction
-            # visee est directe, sans conversion delicate.
-            try:
-                self.turn_to(a.bearing_deg)
-            except Exception as exc:                  # pragma: no cover
-                self.log("CAMERA_TURN_ERROR", error=str(exc))
-            screen = map_bearing_to_screen(a.bearing_deg, self.heading_deg)
-            self.route = [screen] if screen is not None else []
-            reason = ("cap carte %.1f deg -> deplacement ecran %.1f deg "
-                      "(ligne droite)" % (a.bearing_deg,
-                                          screen if screen is not None else -1))
-        else:
-            # marqueurs confondus : cap inexploitable -> spirale locale
-            self.route = [math.degrees(math.atan2(dy, dx))
-                          for dx, dy in self.spiral]
-            reason = "cap non exploitable (%.1f px) -> spirale" % (
-                a.distance_px or 0.0)
-        self.route_index = 0
-        self._ensure_map(False)
-        self._set(TRAVEL_STEP, reason, routes=len(self.route))
-        return {"ok": True, "state": TRAVEL_STEP, "route": self.route}
-
-    def _st_travel_step(self):
-        """UN deplacement court, mesure, dans la direction planned."""
-        if self.route_index >= len(self.route):
-            if not self.route:
-                return self._set_and_go(CORPSE_APPROACH, "aucune direction")
-            # on continue TOUT DROIT : le recalage periodique sur la carte
-            # remettra le cap a jour (la spirale prendra le relais si le
-            # corps n'est pas atteint).
-            angle = self.route[-1]
-        else:
-            angle = self.route[self.route_index]
         if self.attempts >= self.max_attempts:
             return self._abort("budget de deplacements epuise (%d)"
                                % self.max_attempts)
-        # CAP FRAIS : la camera tourne a chaque virage du personnage (le
-        # clic-to-move le fait pivoter).  Un cap perime donne un angle vise
-        # faux -> le personnage fait des detours et tourne en rond.  On relit
-        # donc le cap reel (fleche de la minicarte) AVANT chaque commande.
-        fresh = self._read_heading()
-        if fresh is not None:
-            self.heading_deg = fresh
-        # l'angle de clic tient compte de la rotation mesuree
-        click = angle - (self.click_rotation or 0.0)
-        img = _bgr(self._capture())
-        h = img.shape[0] if img is not None else 1328
-        w = img.shape[1] if img is not None else 2345
-        cx, cy = w / 2.0, h * 0.62
-        tx = int(max(40, min(w - 40, cx + math.cos(math.radians(click))
-                             * self.step_px)))
-        ty = int(max(40, min(h - 120, cy + math.sin(math.radians(click))
-                             * self.step_px)))
-        self.attempts += 1
-        # VITESSE : si le personnage DEJA COURT dans la bonne direction, on
-        # le LAISSE COURIR (un clic reinitialiserait l'auto-run et
-        # annulerait l'elan).  On ne re-clique que s'il est a l'arret ou
-        # s'il part dans la mauvaise direction.
-        before = _bgr(self._capture())
-        time.sleep(1.2)
-        probe = _bgr(self._capture())
-        moved = None
-        ang = None
-        if before is not None and probe is not None:
-            fdx, fdy, _fc = self.ex.actions.displacement(before, probe)
-            moved = math.hypot(fdx, fdy)
-            if moved >= 0.3:
-                ang = math.degrees(math.atan2(fdy, fdx))
-        aimed = math.degrees(math.atan2(math.sin(math.radians(click)),
-                                         math.cos(math.radians(click))))
-        err = None
-        if ang is not None:
-            err = abs((ang - aimed + 180.0) % 360.0 - 180.0)
-        if moved is not None and moved >= self.min_px and (
-                err is None or err <= self.direction_tol):
-            # deja en route : on attend (le fantome continue de nager)
-            time.sleep(float(self.cfg.get("followSeconds", 4.0)))
-            res = {"ok": True, "outcome": OUTCOME_OK, "px": moved,
-                   "angle": ang, "reason": "en course (%.1f px)" % moved}
+        a = self.analysis
+        if a is None or a.bearing_deg is None:
+            return self._set_and_go(CORPSE_INTERACTION, "pas d'analyse")
+        self._ensure_map(False)
+        target = a.bearing_deg
+        # ANGLE DE CLIC : appris en ligne.  On ne suppose rien de la
+        # camera : le cap du personnage est relu sur la fleche de la
+        # minicarte apres chaque clic, et l'angle est corrige de l'ecart
+        # (cap vise - cap obtenu).  Au premier pas, l'angle est deduit du
+        # cap de depart ; ensuite il converge.
+        head_now = self._read_heading()
+        if head_now is not None:
+            self.heading = head_now
+        if self.theta is None:
+            if self.heading is None:
+                # aucun cap lisible : on tente la conversion directe
+                theta = map_bearing_to_screen(target, self.heading or 0.0)
+            else:
+                theta = map_bearing_to_screen(target, self.heading)
+            if theta is None:
+                theta = -90.0
         else:
-            # DEPLACEMENT PAR TOUCHE (plus fluide que le clic) : la camera
-            # a ete orientee vers le corps (turn_to), donc W avance dans la
-            # bonne direction.  Le clic reste le secours si rien ne bouge.
-            hold = getattr(self.ex.actions, "hold_key", None)
-            res = None
-            if hold is not None and self.heading_deg is not None:
-                before = _bgr(self._capture())
-                hold(self.cfg.get("forwardKey", "W"),
-                     float(self.cfg.get("holdSeconds", 1.6)))
-                after = _bgr(self._capture())
-                if before is not None and after is not None:
-                    fdx, fdy, _fc = self.ex.actions.displacement(before, after)
-                    px = math.hypot(fdx, fdy)
-                    ang = (math.degrees(math.atan2(fdy, fdx)) if px >= 0.2
-                           else None)
-                    res = {"ok": px >= self.min_px, "outcome": OUTCOME_OK,
-                           "px": px, "angle": ang,
-                           "reason": "avance %.1f px" % px}
-            if res is None or not res.get("ok"):
-                res = self.ex.do_goto([tx, ty], tries=2, unsafe="allow",
-                                      settle=float(self.cfg.get(
-                                          "settleSeconds", 3.0)))
-        self._last_move = res
-        # CALIBRATION EN VOL : l'angle mesure du deplacement corrige la
-        # relation clic -> deplacement (une MESURE, pas une supposition).
+            theta = (self.theta + (target - (self.heading or 0.0))
+                     + 180.0) % 360.0 - 180.0
+        self.theta = theta
+        self.attempts += 1
+        before = _bgr(self._capture())
+        # On passe par l'EXECUTEUR : c'est lui qui arme l'auto-run (Z),
+        # qui retente une fois, qui mesure et qui VALIDE l'ecran apres
+        # l'action.  (un clic nu sans auto-run arme ne deplace RIENT :
+        # mesure 0,01 px.)
+        ccx, ccy = self._center()
+        tx = int(ccx + math.cos(math.radians(theta)) * self.click_px)
+        ty = int(ccy + math.sin(math.radians(theta)) * self.click_px)
+        res = self.ex.do_goto([tx, ty], tries=2, unsafe="allow",
+                              settle=float(self.cfg.get("moveSeconds", 2.4)))
+        px = res.get("px")
         ang = res.get("angle")
-        if ang is not None and abs(ang) < 360.0:
-            self.click_rotation = (ang - click + 180.0) % 360.0 - 180.0
-        self._set(PROGRESS_CHECK, "deplacement effectue",
-                  px=res.get("px"), angle=res.get("angle"),
-                  outcome=res.get("outcome"))
-        return {"ok": True, "state": PROGRESS_CHECK, "move": res}
+        after = _bgr(self._capture())
+        head2 = self._read_heading()
+        if head2 is not None:
+            self.heading = head2
+            self._refine_rotation(head2, theta)
+        # AUTO-DIAGNOSTIC : si rien n'a bouge, on conserve la capture et
+        # on consigne POURQUOI (le moteur doit pouvoir se corriger seul).
+        if px is None or px < 0.5:
+            path = self._evidence("noprogress-%d" % self.attempts, after)
+            self.log("RECOVERY_NO_PROGRESS", attempt=self.attempts,
+                     px=None if px is None else round(px, 2),
+                     theta=round(theta, 1),
+                     target=round(target, 1),
+                     head=None if head2 is None else round(head2, 1),
+                     screen=res.get("screen"),
+                     evidence=path)
+        self._last = {"px": px, "angle": ang, "theta": theta,
+                      "target": target, "headBefore": self.heading,
+                      "headAfter": head2, "click": [tx, ty]}
+        self._set(PROGRESS_CHECK, "pas de navigation",
+                  px=None if px is None else round(px, 2),
+                  theta=round(theta, 1), target=round(target, 1),
+                  head=None if head2 is None else round(head2, 1))
+        return {"ok": True, "state": PROGRESS_CHECK, "move": self._last}
 
     def _st_progress_check(self):
-        """Verifie que le deplacement a ete REELLEMENT effectue."""
-        res = getattr(self, "_last_move", None) or {}
-        px = res.get("px")
+        """Verifie le deplacement ET la distance au corps (mesure reelle)."""
+        last = getattr(self, "_last", None) or {}
+        px = last.get("px")
         if px is None:
             return self._abort("deplacement non mesure : observation "
                                "insuffisante")
         if px < self.min_px:
-            # BLOQUE (mur / obstacle) : on DECALE la direction au lieu de
-            # rejouer la meme cible (c'est ce qui laissait le personnage
-            # colle au mur).
-            self.block_turn += 1
-            base = self.route[-1] if self.route else 0.0
-            self.route = [(base + 40.0 * self.block_turn) % 360.0]
-            self.route_index = 0
-            if self.block_turn > int(self.cfg.get("maxBlockTurns", 6)):
-                return self._abort("bloque %d fois de suite : obstacle non "
-                                   "contournable" % self.block_turn)
-            self._set(TRAVEL_STEP, "bloque (%.1f px) : direction decalee de "
-                      "%d deg" % (px, 40 * self.block_turn), px=px)
-            return {"ok": True, "state": TRAVEL_STEP}
-        self.route_index += 1
-        self.steps_since_reloc += 1
-        # l'invite "Resurrect" est-elle deja visible ? (controle rapide,
-        # sur la VUE 3D uniquement)
-        hit = self.prompt.find(self._world_view())
-        if hit:
-            self.prompt_hit = hit
-            self._set(RESURRECTION_DETECTED, "invite Resurrect detectee",
-                      hit=hit)
-            return {"ok": True, "state": RESURRECTION_DETECTED, "hit": hit}
-        # recalage periodique : la carte corrige la derive de l'odometre
-        if self.steps_since_reloc >= int(self.cfg.get("relocalizeEvery", 6)):
-            self.steps_since_reloc = 0
-            self._set(RELOCALIZATION, "progression %.1f px -> recalage carte"
-                      % px, px=px)
-            return {"ok": True, "state": RELOCALIZATION}
-        # sinon : on continue dans la meme direction (ligne droite)
-        self._set(TRAVEL_STEP, "progression %.1f px, cap maintenu" % px, px=px)
-        return {"ok": True, "state": TRAVEL_STEP}
+            # AUCUNE PROGRESSION : correction CONTROLEE avant d'abandonner.
+            # On decale l'angle de clic (contournement d'obstacle) et on
+            # retente ; ce n'est qu'apres plusieurs echecs qu'on s'arrete.
+            self.stuck_count += 1
+            self.theta = ((self.theta or 0.0) + 45.0 * self.stuck_count) \
+                % 360.0
+            self.log("RECOVERY_STUCK", attempt=self.attempts,
+                     px=round(px, 2), count=self.stuck_count,
+                     newTheta=round(self.theta, 1))
+            if self.stuck_count > int(self.cfg.get("maxStuck", 4)):
+                self._evidence("stuck-final")
+                return self._abort(
+                    "aucune progression apres %d tentatives (%.2f px) et %d "
+                    "corrections d'angle : obstacle non contournable"
+                    % (self.attempts, px, self.stuck_count))
+            self._set(NAVIGATING_TO_CORPSE,
+                      "aucune progression -> angle decale de %d deg"
+                      % (45 * self.stuck_count), px=px)
+            return {"ok": True, "state": NAVIGATING_TO_CORPSE}
+        self.stuck_count = 0
+        self._set(RELOCALIZATION, "progression %.1f px" % px, px=px)
+        return {"ok": True, "state": RELOCALIZATION}
 
     def _st_relocalization(self):
-        """Re-analyse la carte : la distance au corps doit DECREISSER.
-
-        Mecanisme repris de la reference CorpseRunGoal (WowClassicGrindBot) :
-        la progression se mesure sur la distance au corps (lastDistance), pas
-        seulement sur les pixels parcourus ; le StuckDetecteur declenche
-        quand la distance ne diminue plus.
-        """
+        """Re-mesure la distance au corps : c'est la progression de reference."""
         self._ensure_map(True)
         img = self._capture()
-        analysis = analyze_map(_bgr(img), self.detector) if img else None
-        if analysis is None or not analysis.usable:
-            self._ensure_map(False)
-            return self._set_and_go(CORPSE_APPROACH, "re-localisation impossible")
-        prev = self.last_distance
-        self.last_distance = analysis.distance_px
-        self.analysis = analysis
-        # STUCK DETECTOR : la distance au corps n'a pas diminue.
-        # (meme mecanisme que le StuckDetector de la reference, mais la
-        # distance carte n'a de resolution que si elle est > 15 px : en
-        # dessous, la progression se mesure sur les pixels parcourus.)
-        stuck = (prev is not None and analysis.distance_px is not None
-                 and prev >= 15.0
-                 and analysis.distance_px > (prev - 1.0))
-        if stuck:
-            self.stuck_count += 1
-            self.log("RECOVERY_STUCK", previous=prev,
-                     distance=analysis.distance_px, count=self.stuck_count)
-            if self.stuck_count > int(self.cfg.get("maxStuck", 3)):
-                return self._abort("distance au corps non reduite apres %d "
-                                   "tentatives" % self.stuck_count)
-            # strategie de deblocage : on decale la direction visee
-            self.route = [(a + 35.0 * self.stuck_count) % 360.0
-                          for a in (self.route or [0.0])]
-            self.route_index = 0
-            self._ensure_map(False)
-            self._set(TRAVEL_STEP, "bloque (distance %.0f px) : direction "
-                      "decalee" % (analysis.distance_px or 0),
-                      distance=analysis.distance_px)
-            return {"ok": True, "state": TRAVEL_STEP}
-        self.stuck_count = 0
-        # L'ARRIVEE se juge sur l'invite "Resurrect" du client (le seul
-        # signal fiable), PAS sur la distance carte : quand le marqueur du
-        # corps et celui du joueur se recouvrent, la distance carte reste
-        # constante (8 px) et n'a aucune resolution.  On continue donc
-        # tout droit vers le cap de la carte.
+        analysis = (analyze_map(_bgr(img), self.detector)
+                    if img is not None else None)
         self._ensure_map(False)
-        self.heading_deg = self._read_heading()
-        self._set(ROUTE_PLANNING, "re-localisation (cap corrige)",
-                  **analysis.as_dict())
-        return {"ok": True, "state": ROUTE_PLANNING}
+        if analysis is None or not analysis.usable:
+            return self._set_and_go(CORPSE_INTERACTION,
+                                    "re-localisation impossible")
+        prev = self.last_distance
+        self.analysis = analysis
+        self.last_distance = analysis.distance_px
+        if self.best_distance is None or analysis.distance_px < self.best_distance:
+            self.best_distance = analysis.distance_px
+        closer = (prev is not None and
+                  analysis.distance_px is not None and
+                  analysis.distance_px < prev - 0.5)
+        self.log("RECOVERY_DISTANCE", previous=prev,
+                 distance=analysis.distance_px, closer=bool(closer))
+        if not closer and self.attempts >= 3:
+            # la distance ne diminue pas : on change d'angle de clic
+            self.theta = ((self.theta or 0.0) + 35.0) % 360.0
+            self.log("RECOVERY_STUCK", previous=prev,
+                     distance=analysis.distance_px)
+        self._set(NAVIGATING_TO_CORPSE, "distance %.0f px" %
+                  (analysis.distance_px or 0), **analysis.as_dict())
+        return {"ok": True, "state": NAVIGATING_TO_CORPSE,
+                "analysis": analysis.as_dict()}
 
-    def _st_corpse_approach(self):
-        """Cherche l'invite 'Resurrect' ; a defaut, avance par spirale."""
+    def _st_corpse_interaction(self):
+        """Cherche l'invite d'interaction AVEC LE CORPS (vue 3D)."""
         img = self._world_view()
         hit = self.prompt.find(img)
         if hit:
             self.prompt_hit = hit
-            self._set(RESURRECTION_DETECTED, "invite Resurrect detectee",
-                      hit=hit)
-            return {"ok": True, "state": RESURRECTION_DETECTED, "hit": hit}
+            self.resurrect_clicks += 1
+            if self.resurrect_clicks > self.max_resurrect_clicks:
+                return self._abort("trop de tentatives d'interaction (%d)"
+                                   % self.resurrect_clicks)
+            self.ex.do_click([hit["x"], hit["y"]], button="left")
+            time.sleep(float(self.cfg.get("interactDelay", 2.5)))
+            self._set(RESURRECTION_VERIFY, "interaction avec le corps",
+                      hit=hit, distance=self.last_distance)
+            return {"ok": True, "state": RESURRECTION_VERIFY, "hit": hit}
         if self.attempts >= self.max_attempts:
-            return self._abort("corps non atteint (budget epuise)")
-        # un pas de spirale : on avance dans une direction non encore essayee
-        idx = self.route_index % len(self.spiral)
-        dx, dy = self.spiral[idx]
-        angle = math.degrees(math.atan2(dy, dx))
-        self.route_index += 1
-        img = _bgr(img)
-        h = img.shape[0] if img is not None else 1328
-        w = img.shape[1] if img is not None else 2345
-        cx, cy = w / 2.0, h * 0.62
-        click = angle - (self.click_rotation or 0.0)
-        tx = int(max(40, min(w - 40, cx + math.cos(math.radians(click))
-                             * self.step_px)))
-        ty = int(max(40, min(h - 120, cy + math.sin(math.radians(click))
-                             * self.step_px)))
-        self.attempts += 1
-        res = self.ex.do_goto([tx, ty], tries=2, unsafe="allow", settle=2.0)
-        self._last_move = res
-        self._set(TRAVEL_STEP, "pas de spirale %d" % (idx + 1),
-                  px=res.get("px"), outcome=res.get("outcome"))
-        return {"ok": True, "state": TRAVEL_STEP, "move": res}
-
-    def _st_resurrection(self):
-        """Clic sur l'invite, puis verification REELLE de l'etat vivant."""
-        hit = self.prompt_hit or {}
-        self.resurrect_clicks += 1
-        if self.resurrect_clicks > int(self.cfg.get("maxResurrectClicks", 3)):
-            return self._abort("trop de clics de resurrection (%d) : arret "
-                               "controle" % self.resurrect_clicks)
-        self.ex.do_click([hit.get("x", 0), hit.get("y", 0)], button="left")
-        time.sleep(float(self.cfg.get("resurrectDelay", 3.0)))
-        self._set(VERIFY_ALIVE, "clic sur l'invite Resurrect")
-        return {"ok": True, "state": VERIFY_ALIVE}
+            return self._abort("corps non atteint (distance finale %.0f px)"
+                               % (self.last_distance or 0))
+        self._set(NAVIGATING_TO_CORPSE, "pas d'invite : on continue",
+                  distance=self.last_distance)
+        return {"ok": True, "state": NAVIGATING_TO_CORPSE}
 
     def _st_verify_alive(self):
+        """CONFIRMATION INDEPENDANTE de la resurrection."""
         img = self._world_view()
         st = self.state_reader.read(img, self.ex.board)
-        alive = st["life"] == "alive" and not st["signals"].get(
-            "releaseDialog")
+        alive = (st["life"] == "alive"
+                 and not st["signals"].get("releaseDialog"))
         if alive:
             if self.safety is not None:
                 self.safety.observe_resurrected(st["signals"])
-                self.safety.observe_safe_position({"reached": True})
+                self.safety.observe_safe_position({"resurrected": True})
             if self.memory is not None:
-                self.memory.record_incident(
-                    OUTCOME_RECOVERED, zone=(self.analysis.zone
-                                            if hasattr(self.analysis, "zone")
-                                            else None),
-                    cause="corps retrouve et resurrection confirmee",
-                    confidence=0.9)
+                try:
+                    self.memory.record_incident(
+                        OUTCOME_RECOVERED, zone="corps",
+                        cause="corps retrouve, resurrection confirmee",
+                        confidence=0.9)
+                except Exception:
+                    pass
             self.result = {"ok": True, "outcome": OUTCOME_RECOVERED,
-                           "reason": "personnage vivant confirme",
+                           "reason": "resurrection confirmee par le lecteur "
+                                     "d'etat",
                            "state": PAUSED_SAFE}
-            self._set(PAUSED_SAFE, "resurrection confirmee par StateReader",
+            self._set(PAUSED_SAFE, "resurrection confirmee",
                       signals=st["signals"])
             return self.result
-        # l'etat vivant n'est PAS confirme : on ne pretend rien
-        if self.attempts >= self.max_attempts:
-            return self._abort("resurrection non confirmee (etat lu: %s)"
-                               % st["life"])
-        self._set(CORPSE_APPROACH, "resurrection non confirmee, reprise locale",
-                  life=st["life"])
-        return {"ok": False, "state": CORPSE_APPROACH}
+        if self.resurrect_clicks >= self.max_resurrect_clicks:
+            return self._abort("resurrection non confirmee (etat lu: %s, "
+                               "distance %.0f px)"
+                               % (st["life"], self.last_distance or 0))
+        self._set(CORPSE_INTERACTION, "resurrection non confirmee, "
+                  "on re-essaie localement", life=st["life"],
+                  distance=self.last_distance)
+        return {"ok": False, "state": CORPSE_INTERACTION}
 
     def _st_paused_safe(self):
-        """Arret controle : la peche n'est pas relancee."""
         self.result = {"ok": True, "outcome": OUTCOME_RECOVERED,
-                       "reason": "personnage vivant, position a valider",
+                       "reason": "personnage vivant, position a valider "
+                                 "humainement",
                        "state": PAUSED_SAFE}
         return self.result
 
@@ -711,29 +655,25 @@ class RecoverySession(object):
         self._set(state, note, **evidence)
         return {"ok": True, "state": state}
 
-    # -- execution --------------------------------------------------------
+    # ------------------------------------------------------------------
     _HANDLERS = {
-        RECOVERY_INIT: "_st_init",
+        DEAD_SPECTER: "_st_init",
         MAP_ANALYSIS: "_st_map_analysis",
-        ROUTE_PLANNING: "_st_route_planning",
-        TRAVEL_STEP: "_st_travel_step",
+        NAVIGATING_TO_CORPSE: "_st_navigate",
         PROGRESS_CHECK: "_st_progress_check",
         RELOCALIZATION: "_st_relocalization",
-        CORPSE_APPROACH: "_st_corpse_approach",
-        RESURRECTION_DETECTED: "_st_resurrection",
-        VERIFY_ALIVE: "_st_verify_alive",
+        CORPSE_INTERACTION: "_st_corpse_interaction",
+        RESURRECTION_VERIFY: "_st_verify_alive",
         PAUSED_SAFE: "_st_paused_safe",
     }
 
     def step(self):
-        """UNE transition. Retourne le resultat de la transition."""
         handler = self._HANDLERS.get(self.state)
         if handler is None:
             return self._abort("etat inconnu : %r" % self.state)
         return getattr(self, handler)()
 
-    def run(self, max_transitions=60):
-        """Enchaine les transitions jusqu'a un etat terminal."""
+    def run(self, max_transitions=120):
         for _ in range(int(max_transitions)):
             if self.state in (PAUSED_SAFE, ABORTED):
                 break

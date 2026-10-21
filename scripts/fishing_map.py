@@ -108,10 +108,13 @@ class MapMarkerDetector(object):
     """
 
     def __init__(self, corpse_template=None, player_template=None,
-                 min_score=0.45, ambiguity=0.06, scales=(0.7, 0.85, 1.0, 1.2,
+                 min_score=0.75, ambiguity=0.06, scales=(0.7, 0.85, 1.0, 1.2,
                                                         1.5, 1.9)):
         self.corpse_template = corpse_template
         self.player_template = player_template
+        # Seuil calibre sur captures REELLES : le vrai marqueur du corps
+        # score 0,81-0,91, le meilleur faux positif 0,68 -> 0,75 les
+        # sépare sans ambiguïté.
         self.min_score = min_score
         self.ambiguity = ambiguity
         self.scales = scales
@@ -125,7 +128,7 @@ class MapMarkerDetector(object):
         return img
 
     @classmethod
-    def with_fixtures(cls, min_score=0.45):
+    def with_fixtures(cls, min_score=0.75):
         return cls(corpse_template=cls.load_template(
             os.path.join(FIXTURES, "map_corpse_marker.png")),
             player_template=cls.load_template(
@@ -165,26 +168,119 @@ class MapMarkerDetector(object):
                 break
         return best
 
-    def detect(self, bgr, kind=CORPS, region=MAP_REGION):
-        """Detecte un marqueur. Retourne (marqueur|None, raison)."""
-        tpl = self.corpse_template if kind == CORPS else self.player_template
+    def detect(self, bgr, kind=CORPS, region=MAP_REGION, near=None):
+        """Detecte un marqueur. Retourne (marqueur|None, raison).
+
+        Le score de template seul ne suffit pas : sur une carte complete,
+        des objets divers (rochers, batiments) atteignent 0,6-0,7.  On
+        ajoute donc une VERIFICATION COULEUR propre a chaque marqueur
+        (mesures reelles du 2026-10-21, zoom 7x) :
+
+          * le crane du corps : teinte orange saturée (H 8-32, S > 190) ;
+          * la fleche verte du joueur : vert franc (H 35-85), detectee
+            DIRECTEMENT par couleur (son gabarit etait contamine par le
+            fanion heraldique voisine).
+        """
+        if kind == JOUEUR:
+            return self._detect_player_arrow(bgr, region, near)
+        tpl = self.corpse_template
         cand = self._match(bgr, tpl, region)
         if cand is None:
             return None, "gabarit absent"
         if cand["score"] < self.min_score:
             return None, ("score %.3f < %.3f (marqueur non identifie)"
                           % (cand["score"], self.min_score))
+        if not self._color_ok(bgr, cand, CORPS):
+            return None, ("signature couleur invalide pour %s (score %.3f)"
+                          % (kind, cand["score"]))
         m = MapMarker(kind, cand["x"], cand["y"], cand["w"], cand["h"],
                       cand["score"], cand["scale"])
-        return m, "score %.3f (echelle %.2f)" % (m.score, m.scale)
+        return m, "score %.3f (echelle %.2f) + signature couleur OK" % (
+            m.score, m.scale)
+
+    def _detect_player_arrow(self, bgr, region=MAP_REGION, near=None):
+        """La fleche verte du joueur, detectee par couleur.
+
+        Elle est cherchee dans la zone de carte, et si un marqueur du corps
+        est deja connu (`near`), on privilegie la fleche la plus PROCHE de
+        lui (les deux sont a quelques dizaines de pixels l'un de l'autre).
+        """
+        if bgr is None or cv2 is None:
+            return None, "image absente"
+        h, w = bgr.shape[:2]
+        x0 = int(region[0] * w)
+        x1 = int(region[1] * w)
+        y0 = int(region[2] * h)
+        y1 = int(region[3] * h)
+        roi = bgr[y0:y1, x0:x1]
+        if roi.size == 0:
+            return None, "region vide"
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        hue, sat, val = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        green = ((hue >= 35) & (hue <= 85) & (sat > 110) & (val > 120))
+        n, _lab, stats, cent = cv2.connectedComponentsWithStats(
+            green.astype(np.uint8), 8)
+        best = None
+        for i in range(1, n):
+            x, y, cw, ch, area = stats[i]
+            if area < 12 or area > 1200:
+                continue
+            if not (5 <= cw <= 45 and 5 <= ch <= 45):
+                continue
+            # une fleche est allongee dans UNE direction : on exclut les
+            # carres (bâtiments, buissons)
+            if not (0.25 <= float(cw) / max(1, ch) <= 4.0):
+                continue
+            cx = x0 + int(cent[i][0])
+            cy = y0 + int(cent[i][1])
+            score = float(area)
+            if near is not None:
+                d = math.hypot(cx - near.cx, cy - near.cy)
+                if d > 220:
+                    continue
+                score = 1000.0 - d          # privilegie la fleche proche
+            if best is None or score > best[0]:
+                best = (score, cx, cy, cw, ch, area)
+        if best is None:
+            return None, "fleche verte du joueur introuvable"
+        _sc, cx, cy, cw, ch, area = best
+        m = MapMarker(JOUEUR, cx - cw // 2, cy - ch // 2, cw, ch,
+                      min(1.0, area / 400.0), 1.0)
+        return m, "fleche verte (%.0f, %.0f) aire %d" % (cx, cy, area)
+
+    def _color_ok(self, bgr, cand, kind):
+        """La signature couleur du marqueur est-elle presente ?"""
+        if bgr is None:
+            return True
+        h, w = bgr.shape[:2]
+        x0 = max(0, cand["x"])
+        y0 = max(0, cand["y"])
+        x1 = min(w, cand["x"] + cand["w"])
+        y1 = min(h, cand["y"] + cand["h"])
+        patch = bgr[y0:y1, x0:x1]
+        if patch.size == 0:
+            return False
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        hue, sat, val = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        if kind == CORPS:
+            # crane : orange sature (le batiment/la roche ne le sont pas)
+            ok = ((hue >= 8) & (hue <= 32) & (sat > 170) & (val > 110))
+            return float(ok.mean()) >= 0.30
+        # joueur : la fleche verte
+        ok = ((hue >= 35) & (hue <= 85) & (sat > 90) & (val > 100))
+        return float(ok.mean()) >= 0.20
 
     def detect_all(self, bgr, region=MAP_REGION):
-        """Detecte le corps ET le joueur. Retourne un dict + les raisons."""
+        """Detecte le corps ET le joueur. Retourne un dict + les raisons.
+
+        Le corps d'abord (gabarit + signature couleur), puis le joueur :
+        la fleche verte est cherchee de preference PROCHE du corps.
+        """
         out = {"corpse": None, "player": None, "reasons": []}
         corpse, why = self.detect(bgr, CORPS, region)
         out["corpse"] = corpse
         out["reasons"].append("corps: %s" % why)
-        player, why = self.detect(bgr, JOUEUR, region)
+        player, why = self.detect(bgr, JOUEUR, region, near=corpse)
         out["player"] = player
         out["reasons"].append("joueur: %s" % why)
         return out
@@ -255,15 +351,25 @@ def analyze_map(bgr, detector=None, region=MAP_REGION):
     # Severe : un score de 0,62 sur un second marqueur est une bonne
     # detection), penalisee quand les marqueurs sont quasi confondus.
     conf = math.sqrt(max(0.0, corpse.score) * max(0.0, player.score))
-    # Le vecteur joueur -> corps reste la MEILLEURE estimation de la
-    # direction, meme quand les marqueurs sont proches (8 px => erreur
-    # angulaire de l'ordre de 15 degres, largement suffisant : le corps est
-    # a quelques metres).  Sous 3 px le vecteur n'est plus exploitable.
+    # La fleche verte du joueur est un PETIT blob : son "score" (aire/400)
+    # est petit alors que la detection est fiable.  On ne mixe donc pas les
+    # deux natures : la confiance vient de la qualite du gabarit du CORPS
+    # (qui est un gros objet) et de la coherence geometrique (les deux
+    # marqueurs doivent etre proches : le joueur est sur sa propre carte).
+    player_quality = 1.0 if (player.score > 0.0 and player.w and player.h
+                             and max(player.w, player.h) <= 45) else 0.5
+    conf = float(corpse.score) * player_quality
+    # Le vecteur joueur -> corps n'est exploitable que si les deux
+    # marqueurs sont separes (sinon ils sont confondus et le cap est du
+    # bruit : c'est EXACTEMENT le bug du 2026-10-21).
     reliable = dist >= 3.0
     if not reliable:
-        conf *= 0.8
+        conf *= 0.4
         reasons.append("marqueurs a %.1f px : cap non exploitable -> "
                        "recherche locale" % dist)
+    if dist > 400.0:
+        conf *= 0.6
+        reasons.append("distance carte %.0f px : direction peu sure" % dist)
     return MapAnalysis(corpse, player, bearing, dist, conf, reasons,
                        bearing_reliable=reliable)
 

@@ -181,6 +181,15 @@ class StateReader(object):
         bgr = as_bgr(img)
         if bgr is None:
             return None
+        # la carte du monde n'est pas une scene de jeu : elle a elle aussi un
+        # bouton ROUGE ("Zoom Out"), qui faisait passer la capture pour un
+        # ecran de mort (faux positif observe le 2026-10-21).
+        try:
+            from fishing_map import map_is_open
+            if map_is_open(bgr):
+                return False
+        except Exception:
+            pass
         h, w = bgr.shape[:2]
         b, g, r = (bgr[:, :, 0].astype(np.int16), bgr[:, :, 1].astype(np.int16),
                    bgr[:, :, 2].astype(np.int16))
@@ -485,18 +494,16 @@ class Analyzer(object):
 class Executor(object):
     """Execute un plan etat par etat.
 
-    Un etat est un dict :
-        {"type": "click", "at": [x, y], "button": "left"}
-        {"type": "key", "key": "Z"}
-        {"type": "wait", "sec": 1.0}
-        {"type": "goto", "at": [x, y], "min_px": 0.3, "tries": 2,
-         "direction_tol": 70.0, "unsafe": "stop"}
-        {"type": "expect", "life": "alive"}
-        {"type": "expect", "no_release_dialog": True}
+    APRES CHAQUE ACTION, l'etat du client est VALIDE par une capture
+    (exigence du 2026-10-21) : un panneau ouvert (sac, amis, fiche
+    personnage), la carte du monde, ou une capture invalide sont detectes
+    et REPARES ; la suite n'est autorisee que si la vue de jeu est
+    propre.  Chaque verdict est journalise : le moteur peut ainsi
+    s'auto-diagnostiquer a partir des logs, sans intervention humaine.
     """
 
     def __init__(self, screen, state, actions, log=None, memory=None,
-                 board=None, safety=None):
+                 board=None, safety=None, validator=None):
         self.screen = screen
         self.state = state
         self.actions = actions            # adaptateur client (injecte)
@@ -504,6 +511,8 @@ class Executor(object):
         self.memory = memory
         self.board = board or Blackboard()
         self.safety = safety or RecoveryStateMachine(log=None)
+        self.validator = validator
+        self.diagnostics = []
 
     # -- primitives ----------------------------------------------------
     def _measure(self, before):
@@ -531,20 +540,49 @@ class Executor(object):
                 unsafe="stop", max_px=MAX_ACTION_DISTANCE_PX, settle=1.2):
         """Deplace le personnage vers une cible ecran, avec garde-fous.
 
-        Protocole (corrige apres mesure reelle du 2026-10-21) :
+        Protocole (corrige apres mesures reelles du 2026-10-21) :
           1. une SEULE capture avant ;
           2. controle de securite (eau/rive) AVANT tout clic ;
-          3. l'auto-run est mis dans un etat CONNU (et non bascule a
-             l'aveugle) : off -> on -> clic ;
-          4. clic sur la cible ;
-          5. MESURE du deplacement ;
-          6. si rien n'a bouge : un seul nouvel essai (on/off + clic) ;
-          7. verification de la DIRECTION mesuree vs commandee.
+          3. la cible est REPLACEE dans la vue monde : un clic sur l'UI
+             (sac, amis, fiche personnage) ouvre un PANNEAU au lieu de
+             deplacer le personnage (constat : "il a ouvert les sacs") ;
+          4. l'auto-run est remis dans un etat CONNU (rien n'est suppose) ;
+          5. clic, puis MESURE du deplacement ;
+          6. si rien n'a bouge : UN essai de plus (re-armement + re-clic) ;
+          7. VALIDATION de l'ecran apres l'action (panneau ouvert ? carte
+             ouverte ?) : le moteur se repare seul, sans intervention.
         """
+        from fishing_screen import clamp_to_world, in_world_zone, looks_like_ui
+        img0 = as_bgr(self.screen.grab(force=True))
+        h0 = img0.shape[0] if img0 is not None else 1328
+        w0 = img0.shape[1] if img0 is not None else 2345
         x, y = int(at[0]), int(at[1])
+        if not in_world_zone(x, y, w0, h0):
+            x, y = clamp_to_world(x, y, w0, h0)
+            self.log.record("goto", {"at": [x, y], "clamped": True},
+                            OUTCOME_OK, None,
+                            "cible ramenee dans la vue monde")
+        # Un clic sur un PANNEAU (sac, amis, fiche personnage) ouvre le
+        # panneau au lieu de deplacer le personnage : on refuse donc les
+        # surfaces plates (interface) et on decale la cible.
+        if img0 is not None and looks_like_ui(img0, x, y):
+            for radius in (140, 220, 320):
+                for sign in (1, -1):
+                    nx = int(x + sign * radius)
+                    ny = int(y - radius // 3)
+                    if in_world_zone(nx, ny, w0, h0) and \
+                            not looks_like_ui(img0, nx, ny):
+                        x, y = nx, ny
+                        break
+                else:
+                    continue
+                break
+            self.log.record("goto", {"at": [x, y], "ui_avoided": True},
+                            OUTCOME_OK, None,
+                            "cible deplacee hors d'un panneau d'interface")
+        before = img0
         last = None
         for attempt in range(1, max(1, int(tries)) + 1):
-            before = self.screen.grab(force=True)
             if before is not None and unsafe != "allow":
                 ok, why = safe_click_target(before, x, y)
                 if not ok:
@@ -552,11 +590,11 @@ class Executor(object):
                                     OUTCOME_WATER, None, why)
                     return {"ok": False, "outcome": OUTCOME_WATER, "reason": why}
             # AUTO-RUN : protocole EMPIRIQUE (etat initial inconnu).
-            # Mesure reelle du 2026-10-21 : un clic NE RE-CIBLE PAS un
-            # auto-run deja actif -> le personnage continuait vers son
-            # ANCIENNE cible (donc vers le mur) et les commandes suivantes
-            # etaient ignorees.  Protocole retenu : clic -> MESURE -> si
-            # rien ne bouge, bascule Z puis re-clic (2 tentatives max).
+            # Un clic NE RE-CIBLE PAS un auto-run deja actif -> le
+            # personnage continuait vers son ANCIENNE cible (donc vers le
+            # mur).  Protocole : clic -> MESURE -> si rien ne bouge,
+            # re-armer l'auto-run et re-cliquer (2 tentatives max).
+            # (bail de focus obligatoire : sans focus reel, 0,00 px.)
             self.actions.click(x, y, button="right")
             time.sleep(settle)
             disp, px = self._measure(before)
@@ -578,23 +616,37 @@ class Executor(object):
                 ok, reason, outcome = (False,
                                        "deplacement aberrant (%.0f px)" % px,
                                        OUTCOME_BLOCKED)
+            verdict = self._validate_after_action()
             if ok:
                 self.log.record("goto", {"at": [x, y], "attempt": attempt},
-                                OUTCOME_OK, {"px": round(px, 2), "angle": ang})
+                                OUTCOME_OK, {"px": round(px, 2), "angle": ang,
+                                            "screen": verdict})
                 return {"ok": True, "outcome": OUTCOME_OK, "px": px,
-                        "angle": ang, "reason": reason}
+                        "angle": ang, "reason": reason, "screen": verdict}
             last = {"ok": False, "outcome": outcome, "reason": reason,
-                    "px": px}
+                    "px": px, "screen": verdict}
             self.log.record("goto", {"at": [x, y], "attempt": attempt},
-                            outcome, {"px": None if px is None else round(px, 2)},
-                            reason)
+                            outcome,
+                            {"px": None if px is None else round(px, 2),
+                             "screen": verdict}, reason)
             if attempt < tries:
                 # on/off pour re-cibler (un clic ne re-cible pas l'auto-run)
                 self.actions.key("Z")
-                self.board.auto_run = False
+                self.board.auto_run = None
                 time.sleep(0.3)
         return last or {"ok": False, "outcome": OUTCOME_BLOCKED,
                         "reason": "aucune tentative"}
+
+    def _validate_after_action(self):
+        """Verifie (et repare) l'etat du client apres une action."""
+        if self.validator is None:
+            return "no_validator"
+        res = self.validator.validate(expected="world")
+        verdict = res.get("verdict", "?")
+        if verdict != "ok":
+            self.diagnostics.append({"verdict": verdict, "at": time.time()})
+            del self.diagnostics[:-50]
+        return verdict
 
     # -- etat "click" / "key" / "wait" ---------------------------------
     def do_click(self, at, button="left"):
