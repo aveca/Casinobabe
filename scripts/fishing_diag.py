@@ -131,7 +131,7 @@ def read_wtf_payload(wtf_path):
         if m:
             out[key] = m.group(1).strip()
     for key in ("playerMap", "corpseMap"):
-        m = re.search(r'\["%s"\]\s*=\s*\{(.*?)\}', raw, re.S)
+        m = re.search(r'\["%s"\]\s*=\s*\{([^}]*)\}' % key, raw, re.S)
         if m:
             block = m.group(1)
             xs = re.search(r'\["x"\]\s*=\s*([-\d.eE+]+)', block)
