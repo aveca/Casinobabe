@@ -93,7 +93,11 @@ jobs:
           # controleur de deplacement) n'utilisent que la bibliotheque
           # standard : ils sont donc jouables partout.
           for t in tests/test_fishing_v2.py \
-                   tests/test_fishing_navigator.py; do
+                   tests/test_fishing_navigator.py \
+                   tests/test_fishing_navigation.py \
+                   tests/test_fishing_controls.py \
+                   tests/test_fishing_skills.py \
+                   tests/test_fishing_metrics.py; do
             if [ -f "$t" ]; then
               echo "::group::$t"
               python "$t"
