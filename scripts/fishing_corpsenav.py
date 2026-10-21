@@ -30,8 +30,10 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 try:
+    import cv2
     import numpy as np
 except ImportError:                                    # pragma: no cover
+    cv2 = None
     np = None
 
 import fishing_diag as FD  # noqa: E402
@@ -145,6 +147,80 @@ class NativeCorpseNav(object):
         self.history.append(res)
         del self.history[:-50]
         return res
+
+    # -- interaction ------------------------------------------------------
+    def try_resurrect(self, native):
+        """Tente l'interaction AUTORISEE avec le corps.
+
+        Le sort 'Retrieve Corpse' (5026) est PROTGE pour les addons
+        ('Interaction action failed because of an AddOn') : la
+        resurrection doit etre une ACTION JOUEUR.  On tente donc :
+          1. le clic GAUCHE sur le bouton d'action correspondant dans la
+             barre du fantome (detecte par sa signature DORE) ;
+          2. a defaut, le clic droit sur le corps (menu de gossip
+             'Resurrect').
+        Retourne (ok, methode, note).
+        """
+        res = self.ex.do_click  # present pour l'interface
+        img = self.ex.screen.grab(force=True)
+        if img is None:
+            return False, "aucune capture"
+        try:
+            arr = np.asarray(img)
+            if arr.ndim == 3:
+                arr = arr[:, :, ::-1]
+            bgr = arr
+        except Exception:
+            return False, "capture illisible"
+        h, w = bgr.shape[:2]
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        # boutons dore de la barre d'action (le sort du fantome)
+        band = bgr[int(h * 0.94):, int(w * 0.50):int(w * 0.75)]
+        if band.size:
+            bh = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
+            gold = ((bh[:, :, 0] >= 12) & (bh[:, :, 0] <= 45) &
+                    (bh[:, :, 1] > 80) & (bh[:, :, 2] > 100)).astype(np.uint8)
+            n, _l, stats, _c = cv2.connectedComponentsWithStats(gold, 8)
+            cands = []
+            for i in range(1, n):
+                x, y, cw, ch, area = stats[i]
+                if 12 <= area <= 2000 and 8 <= cw <= 60 and 8 <= ch <= 60:
+                    cands.append((int(x + cw // 2) + int(w * 0.50),
+                                  int(y + ch // 2) + int(h * 0.94)))
+            # on tente chaque bouton dore de la barre
+            for bx, by in cands:
+                res = self.ex.do_click([bx, by], button="left")
+                time.sleep(1.2)
+                if self._is_alive():
+                    return True, "bouton d'action", "clic en (%d,%d)" % (bx, by)
+        # sinon : clic droit au centre (le corps est sous les pieds)
+        res = self.ex.do_click([int(w * 0.5), int(h * 0.66)], button="right")
+        time.sleep(1.2)
+        if self._is_alive():
+            return True, "clic droit sur le corps", ""
+        return False, "", "aucun bouton n'a ressuscite le personnage"
+
+    def _is_alive(self):
+        """Le personnage est-il vivant ? (le monde n'est plus monochrome
+        cyan : le client ne rend plus la vue fantome)."""
+        img = self.ex.screen.grab(force=True)
+        if img is None:
+            return False
+        try:
+            arr = np.asarray(img)
+            if arr.ndim == 3:
+                arr = arr[:, :, ::-1]
+            bgr = arr
+        except Exception:
+            return False
+        h, w = bgr.shape[:2]
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        reg = hsv[int(h * 0.06):int(h * 0.55), int(w * 0.10):int(w * 0.85)]
+        if reg.size == 0:
+            return False
+        cyan = float(((reg[:, :, 0] >= 90) & (reg[:, :, 0] <= 118)
+                      & (reg[:, :, 1] > 40)).mean())
+        return cyan <= 0.80
 
     # -- boucle ------------------------------------------------------------
     def approach(self, max_steps=30, wtf_path=None, on_step=None):
