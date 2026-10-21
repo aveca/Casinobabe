@@ -176,7 +176,11 @@ class RecoverySession(object):
         self.attempts = 0
         self.max_attempts = int(self.cfg.get("maxAttempts", 24))
         self.map_attempts = int(self.cfg.get("maxMapAttempts", 4))
-        self.step_px = int(self.cfg.get("stepPx", 240))
+        # Distance du clic : le point vise doit etre LOINTAIN (bord de
+        # l'ecran).  Mesure du 2026-10-21 : viser un point proche situé
+        # derrière un obstacle (l'epave du cimetière) fait echouer le
+        # pathing ; viser loin fait contourner l'obstacle.
+        self.step_px = int(self.cfg.get("stepPx", 900))
         self.min_px = float(self.cfg.get("minProgressPx", 1.0))
         self.direction_tol = float(self.cfg.get("directionTolDeg", 70.0))
         self.click_rotation = float(self.cfg.get("clickRotationDeg", 0.0))
@@ -391,6 +395,13 @@ class RecoverySession(object):
         if self.attempts >= self.max_attempts:
             return self._abort("budget de deplacements epuise (%d)"
                                % self.max_attempts)
+        # CAP FRAIS : la camera tourne a chaque virage du personnage (le
+        # clic-to-move le fait pivoter).  Un cap perime donne un angle vise
+        # faux -> le personnage fait des detours et tourne en rond.  On relit
+        # donc le cap reel (fleche de la minicarte) AVANT chaque commande.
+        fresh = self._read_heading()
+        if fresh is not None:
+            self.heading_deg = fresh
         # l'angle de clic tient compte de la rotation mesuree
         click = angle - (self.click_rotation or 0.0)
         img = _bgr(self._capture())
@@ -402,7 +413,35 @@ class RecoverySession(object):
         ty = int(max(40, min(h - 120, cy + math.sin(math.radians(click))
                              * self.step_px)))
         self.attempts += 1
-        res = self.ex.do_goto([tx, ty], tries=2, unsafe="allow", settle=2.0)
+        # VITESSE : si le personnage DEJA COURT dans la bonne direction, on
+        # le LAISSE COURIR (un clic reinitialiserait l'auto-run et
+        # annulerait l'elan).  On ne re-clique que s'il est a l'arret ou
+        # s'il part dans la mauvaise direction.
+        before = _bgr(self._capture())
+        time.sleep(1.2)
+        probe = _bgr(self._capture())
+        moved = None
+        ang = None
+        if before is not None and probe is not None:
+            fdx, fdy, _fc = self.ex.actions.displacement(before, probe)
+            moved = math.hypot(fdx, fdy)
+            if moved >= 0.3:
+                ang = math.degrees(math.atan2(fdy, fdx))
+        aimed = math.degrees(math.atan2(math.sin(math.radians(click)),
+                                         math.cos(math.radians(click))))
+        err = None
+        if ang is not None:
+            err = abs((ang - aimed + 180.0) % 360.0 - 180.0)
+        if moved is not None and moved >= self.min_px and (
+                err is None or err <= self.direction_tol):
+            # deja en route : on attend (le fantome continue de nager)
+            time.sleep(float(self.cfg.get("followSeconds", 4.0)))
+            res = {"ok": True, "outcome": OUTCOME_OK, "px": moved,
+                   "angle": ang, "reason": "en course (%.1f px)" % moved}
+        else:
+            res = self.ex.do_goto([tx, ty], tries=2, unsafe="allow",
+                                  settle=float(self.cfg.get("settleSeconds",
+                                                            3.0)))
         self._last_move = res
         # CALIBRATION EN VOL : l'angle mesure du deplacement corrige la
         # relation clic -> deplacement (une MESURE, pas une supposition).
@@ -446,7 +485,7 @@ class RecoverySession(object):
                       hit=hit)
             return {"ok": True, "state": RESURRECTION_DETECTED, "hit": hit}
         # recalage periodique : la carte corrige la derive de l'odometre
-        if self.steps_since_reloc >= int(self.cfg.get("relocalizeEvery", 2)):
+        if self.steps_since_reloc >= int(self.cfg.get("relocalizeEvery", 6)):
             self.steps_since_reloc = 0
             self._set(RELOCALIZATION, "progression %.1f px -> recalage carte"
                       % px, px=px)

@@ -258,29 +258,36 @@ FATAL = "FATAL_ERROR"
 
 
 def player_health(img_bgr):
-    """Vérifie que le personnage est vivant, sans OCR ni référence externe :
-    - MORT CERTAINE : dialogue 'Release Spirit' (parchemin + bouton bleu
-      simultanés au centre de l'écran) ;
-    - MORTE SUSPECTÉE : monde 3D désaturé (fantôme, saturation < 30) ;
-    - sinon VIVANT.
-    Seuils calibrés 2026-10-13 sur 6 frames vivant (sat 53-115, jamais
-    parchemin+bleu simultanés). Retourne (état, preuves)."""
-    h, w = img_bgr.shape[:2]
-    if h < 400 or w < 400:
-        return "uncertain", {"reason": "image trop petite"}
-    x0, x1, y0, y1 = int(w * 0.20), int(w * 0.80), int(h * 0.15), int(h * 0.70)
-    hsv = cv2.cvtColor(img_bgr[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
-    sat = float(hsv[:, :, 1].mean())
-    cx0, cx1, cy0, cy1 = int(w * 0.30), int(w * 0.70), int(h * 0.35), int(h * 0.65)
-    c = cv2.cvtColor(img_bgr[cy0:cy1, cx0:cx1], cv2.COLOR_BGR2HSV)
-    H, S, V = c[:, :, 0], c[:, :, 1], c[:, :, 2]
-    parch = float((((H > 18) & (H < 48) & (S > 60) & (S < 170) & (V > 140) & (V < 230))).mean())
-    blue = float((((H > 95) & (H < 115) & (S > 80) & (V > 80))).mean())
-    ev = {"satMean": round(sat, 1), "parch": round(parch, 4), "blue": round(blue, 4)}
-    if parch > 0.03 and blue > 0.02:
-        return "dead", dict(ev, reason="dialogue release (parchemin+bouton)")
-    if sat < 30.0:
-        return "suspected", dict(ev, reason="monde desature (fantome ?)")
+    """État de vie du personnage (délégué au StateReader multi-signaux).
+
+    2026-10-21 : l'ancien détecteur (parchemin + bouton bleu, saturation
+    moyenne) rendait « alive » sur l'écran de mort et NE DÉTECTAIT PAS le
+    mode fantôme -> après la noyade, le bot continuait de lancer la canne.
+    Le détecteur actuel combine trois signaux indépendants :
+      * dialogue de libération (barre rouge désaturée dans un panneau
+        sombre) ;
+      * mode fantôme (vue 3D monochrome cyan, ratio mesuré 0,96 contre
+        0,39 pour un vivant et 0,53 sur l'écran de mort) ;
+      * absence de tout signal de mort.
+    Retourne (état, preuves) ; états compatibles avec les appelants
+    existants : "dead", "suspected", "alive", "uncertain".
+    """
+    try:
+        from fishing_process import StateReader
+        st = StateReader().read(img_bgr)
+    except Exception as exc:                       # pragma: no cover
+        return "uncertain", {"reason": "détecteur indisponible: %r" % exc}
+    ev = dict(st.get("signals") or {})
+    ev["reason"] = "; ".join(st.get("why") or [])
+    ev["confidence"] = st.get("confidence")
+    life = st.get("life")
+    if life == "dead":
+        return "dead", ev
+    if life == "ghost":
+        # un fantôme est une mort CERTAINE : le bot doit arreter de pêcher
+        return "dead", ev
+    if life == "unknown":
+        return "uncertain", ev
     return "alive", ev
 
 
@@ -1687,10 +1694,12 @@ class FishingBot:
                         self.state = READY
                     continue
                 if self.state == DEAD:
-                    # Personnage mort : AUCUN lancer. Sondage lent jusqu'à
-                    # résurrection vérifiée, abandon après 30 min (il faut un
-                    # humain pour le retour au corps de toute façon).
-                    time.sleep(15.0)
+                    # Personnage mort : AUCUN lancer.
+                    # 2026-10-21 : la recuperation du corps est desormais
+                    # AUTOMATIQUE (la machine a etats fishing_recovery :
+                    # carte -> marche -> invite "Resurrect" -> verification
+                    # vivant).  La peche NE RELANCE JAMAIS automatiquement :
+                    # fin de session en PAUSED_SAFE (validation humaine).
                     if time.time() - (self._dead_since or time.time()) > 1800:
                         self.state = FATAL
                         self._mem(memory.session_end, self._mem_session, "FATAL",
@@ -1698,16 +1707,64 @@ class FishingBot:
                                    "reason": "mort sans resurrection 30 min"})
                         self.log("FATAL_ERROR", reason="mort sans resurrection (30 min) - intervention humaine requise")
                         break
+                    if not getattr(self, "_recovery_done", False):
+                        try:
+                            from fishing_client import WowActions
+                            from fishing_process import (ActionLog, Blackboard,
+                                                         Executor, ProcedureMemory,
+                                                         Screen, StateReader)
+                            from fishing_recovery import RecoverySession
+                            from fishing_safety import (IncidentMemory,
+                                                        RecoveryStateMachine)
+                            acts = WowActions()
+                            scr = Screen(acts.capture, 0.05)
+                            board = Blackboard()
+                            st_reader = StateReader()
+                            ex = Executor(scr, st_reader, acts,
+                                          log=ActionLog(None),
+                                          memory=ProcedureMemory(None),
+                                          board=board)
+                            safety = RecoveryStateMachine(log=self.log)
+                            incidents = IncidentMemory(
+                                os.path.join(self.state_dir, "incidents.json"))
+                            sess = RecoverySession(
+                                ex, state_reader=st_reader, safety=safety,
+                                memory=incidents, log=self.log,
+                                config={"maxAttempts": 60, "maxMapAttempts": 3,
+                                        "stepPx": 900, "relocalizeEvery": 6})
+                            res = sess.run(max_transitions=25)
+                            self.log("RECOVERY_RUN", state=sess.state,
+                                     ok=bool(res.get("ok")),
+                                     reason=res.get("reason"))
+                            if res.get("ok"):
+                                self._recovery_done = True
+                                self.state = STOPPED
+                                self._mem(memory.session_end, self._mem_session,
+                                          "PAUSED_SAFE",
+                                          {"counters": self.counters,
+                                           "reason": "corps retrouve, "
+                                                     "resurrection confirmee"})
+                                self.log("PAUSED_SAFE",
+                                          note="resurrection confirmee - la peche "
+                                               "n'est PAS relancee (validation "
+                                               "humaine requise)")
+                                break
+                        except Exception as exc:      # pragma: no cover
+                            self.log("RECOVERY_ERROR", error=repr(exc))
+                    time.sleep(5.0)
                     img, _e = capture_window(hwnd)
                     if img is not None:
                         st, ev = player_health(to_bgr(img))
                         if st == "alive":
-                            self.state = READY
+                            # ressuscite par un autre moyen : on s'arrete
+                            # aussi (la peche ne repart pas seule)
+                            self.state = STOPPED
                             self._dead_streak = 0
                             self._mem(memory.observe, "error", zone="The Barrens",
                                       source="bot", confidence="verifie (dialogue disparu, monde en couleur)",
                                       evidence={"event": "resurrected", "prev": ev})
-                            self.log("RESURRECTED", note="personnage vivant verifie - reprise")
+                            self.log("PAUSED_SAFE",
+                                      note="personnage vivant verifie - peche NON relancee")
                     continue
             self.state = STOPPED
             self._mem_end_cycle("unknown", {"note": "arret demande"})
