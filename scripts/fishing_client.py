@@ -64,6 +64,8 @@ class WowActions(object):
         self.rect = None
         self.clicks = []
         self.keys = []
+        self.left_down = False
+        self.camera_moves = []
 
     def _win(self):
         if not self.hwnd:
@@ -115,6 +117,29 @@ class WowActions(object):
         time.sleep(0.05)
         u.SendMessageW(h, WM_KEYUP, vk, flags | (1 << 31))
         self.keys.append(k)
+
+    def press_left(self, down=True):
+        """Maintient ou relache le bouton GAUCHE (rotation de camera)."""
+        h = self._win()
+        flags = 0x00000001 | (0x01 << 16) | (1 << 30)
+        if not down:
+            flags |= 1 << 31
+        u.SendMessageW(h, 0x0100 if down else 0x0101, 0x01, flags)
+        self.left_down = bool(down)
+
+    def rotate_camera(self, dx, dy=0):
+        """Tourne la camera : clic gauche enfonce + deplacement de souris.
+
+        C'est le mecanisme standard du client pour s'orienter ; le bot
+        l'utilise pour faire pointer le personnage vers le corps, et la
+        SENSIBILITE (px de souris -> degres) est APPRISE par mesure.
+        """
+        self.press_left(True)
+        time.sleep(0.06)
+        self.move_mouse(int(dx), int(dy))
+        time.sleep(0.10)
+        self.press_left(False)
+        self.camera_moves.append((int(dx), int(dy)))
 
     def move_mouse(self, dx, dy):
         cx, cy = win32api.GetCursorPos()

@@ -191,6 +191,7 @@ class RecoverySession(object):
         self.last_distance = None
         self.stuck_count = 0
         self.block_turn = 0
+        self.camera_px_per_deg = None
         self.result = None
         self.spiral = [(0, -1), (0.7, -0.7), (1, 0), (0.7, 0.7),
                        (0, 1), (-0.7, 0.7), (-1, 0), (-0.7, -0.7)]
@@ -270,6 +271,55 @@ class RecoverySession(object):
         except Exception as exc:                        # pragma: no cover
             self.log("RECOVERY_HEADING_ERROR", error=str(exc))
             return None
+
+    # -- ORIENTATION : la camera, APPRISE par mesure ----------------------
+    def calibrate_camera(self, probe_px=120):
+        """Apprend la sensibilite de la camera (px de souris -> degres).
+
+        Un deplacement de souris connu est applique (clic gauche enfonce),
+        puis le cap resultant est relu sur la fleche de la minicarte : le
+        rapport donne les pixels par degree.  Rien n'est suppose.
+        """
+        h0 = self._read_heading()
+        if h0 is None:
+            return None
+        rotate = getattr(self.ex.actions, "rotate_camera", None)
+        if rotate is None:
+            return None
+        rotate(probe_px, 0)
+        time.sleep(0.6)
+        h1 = self._read_heading()
+        if h1 is None:
+            return None
+        delta = (h1 - h0 + 180.0) % 360.0 - 180.0
+        if abs(delta) < 1.0:
+            return None
+        sens = float(probe_px) / abs(delta)
+        self.camera_px_per_deg = sens
+        self.log("CAMERA_CALIBRATED", probePx=probe_px,
+                 deltaDeg=round(delta, 1), pxPerDeg=round(sens, 2))
+        return sens
+
+    def turn_to(self, bearing_deg, tolerance=8.0):
+        """Tourne la camera pour pointer le personnage vers le cap vise."""
+        sens = self.camera_px_per_deg or self.calibrate_camera()
+        if not sens:
+            return None
+        rotate = getattr(self.ex.actions, "rotate_camera", None)
+        if rotate is None:
+            return None
+        for _ in range(4):
+            h = self._read_heading()
+            if h is None:
+                return None
+            d = (bearing_deg - h + 180.0) % 360.0 - 180.0
+            if abs(d) <= tolerance:
+                return h
+            # un deplacement souris horizontal NEGatif tourne la camera a
+            # gauche (cap augmente) : signe inverse de l'ecart vise.
+            rotate(-d * sens, 0)
+            time.sleep(0.45)
+        return self._read_heading()
 
     # -- etats ------------------------------------------------------------
     def _st_init(self):
@@ -365,6 +415,14 @@ class RecoverySession(object):
         if self.heading_deg is None:
             self.heading_deg = self._read_heading()
         if a.bearing_reliable and self.heading_deg is not None:
+            # ORIENTATION : on tourne la CAMERA (clic gauche + souris,
+            # sensibilite APPRISE par mesure) pour que le personnage pointe
+            # le corps.  Le clic vise alors "tout droit" : la direction
+            # visee est directe, sans conversion delicate.
+            try:
+                self.turn_to(a.bearing_deg)
+            except Exception as exc:                  # pragma: no cover
+                self.log("CAMERA_TURN_ERROR", error=str(exc))
             screen = map_bearing_to_screen(a.bearing_deg, self.heading_deg)
             self.route = [screen] if screen is not None else []
             reason = ("cap carte %.1f deg -> deplacement ecran %.1f deg "

@@ -89,6 +89,10 @@ class FakeActions(object):
     def click(self, x, y, button="right"):
         self.clicks.append((button, int(x), int(y)))
 
+    def displacement(self, a, b):
+        """Le client simule ne bouge pas (0 px)."""
+        return 0.0, 0.0, 0.0
+
 
 class FakeScreen(object):
     """Ecran simule : renvoie toujours la meme image."""

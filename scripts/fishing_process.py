@@ -397,6 +397,91 @@ class ProcedureMemory(object):
 # --------------------------------------------------------------------------
 # 5. EXECUTEUR : agir -> mesurer -> verifier -> decider (essais bornes)
 # --------------------------------------------------------------------------
+class Analyzer(object):
+    """Analyse apres CHAQUE action : verdict + post-mortem exploitable.
+
+    Le principe impose : on ne clique pas en boucle sans analyser ce qui a
+    ete fait ou rate.  Apres chaque commande, l'analyseur produit un
+    VERDICT structure :
+
+        ok | no_progress | wrong_direction | blocked | state_changed |
+        uncertain
+
+    et ecrit un "post-mortem" (capture + resume de la decision) dans un
+    dossier : c'est ce materiau qu'un agent (ou un LLM local, si configure)
+    peut relire pour corriger la tache programmee.  Aucun appel reseau
+    n'est fait par defaut (contrainte : solution locale et gratuite).
+    """
+
+    VERDICTS = ("ok", "no_progress", "wrong_direction", "blocked",
+                "state_changed", "uncertain")
+
+    def __init__(self, log=None, out_dir=None, memory=None):
+        self.log = log or ActionLog(None)
+        self.out_dir = out_dir
+        self.memory = memory
+        self.last_verdict = None
+        self.history = []
+
+    def analyze(self, img=None, action=None, measured=None, state=None,
+                expected=None, tolerance=45.0):
+        """Verdict sur la derniere action. Retourne le dict de verdict."""
+        px = (measured or {}).get("px")
+        angle = (measured or {}).get("angle")
+        verdict = "uncertain"
+        reasons = []
+        if state and state.get("life") and state.get("life") != expected:
+            verdict = "state_changed"
+            reasons.append("etat de vie : %s" % state.get("life"))
+        elif px is None:
+            verdict = "uncertain"
+            reasons.append("deplacement non mesure")
+        elif px < 0.3:
+            verdict = "no_progress"
+            reasons.append("progression nulle (%.2f px)" % px)
+        elif angle is not None and expected is not None and \
+                isinstance(expected, (int, float)) and \
+                abs((angle - expected + 180.0) % 360.0 - 180.0) > tolerance:
+            verdict = "wrong_direction"
+            reasons.append("ecart de direction %.0f deg" %
+                           abs((angle - expected + 180.0) % 360.0 - 180.0))
+        else:
+            verdict = "ok"
+            reasons.append("progression %.1f px" % px)
+        entry = {"verdict": verdict, "reasons": reasons, "action": action,
+                 "measured": measured, "state": (state or {}).get("life"),
+                 "at": time.time()}
+        self.last_verdict = entry
+        self.history.append(entry)
+        del self.history[:-200]
+        self.log.record("ANALYSIS", action, verdict, measured, "; ".join(reasons))
+        self._postmortem(img, entry)
+        return entry
+
+    def _postmortem(self, img, entry):
+        """Ecrit la capture + le verdict pour relecture (IA comprise)."""
+        if not self.out_dir:
+            return None
+        try:
+            os.makedirs(self.out_dir, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            name = "pm-%s-%s" % (stamp, entry.get("verdict"))
+            if img is not None:
+                try:
+                    import cv2
+                    bgr = as_bgr(img)
+                    if bgr is not None:
+                        cv2.imwrite(os.path.join(self.out_dir, name + ".png"), bgr)
+                except Exception:
+                    pass
+            with open(os.path.join(self.out_dir, name + ".json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(entry, fh, indent=2, ensure_ascii=False, default=str)
+            return name
+        except OSError:
+            return None
+
+
 class Executor(object):
     """Execute un plan etat par etat.
 
