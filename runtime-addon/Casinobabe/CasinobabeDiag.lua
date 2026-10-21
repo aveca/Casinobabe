@@ -76,15 +76,20 @@ function D.collect()
         apis = {},
     }
 
-    -- etat du personnage
+    -- etat du personnage.
+    -- ATTENTION : UnitIsPlayer("player") renvoie TRUE pour un fantome
+    -- (le fantome est toujours "un joueur" pour le client) : c'est
+    -- UnitIsGhost qui fait foi.  On garde les deux mais l'etat retenu est
+    -- base sur le fantome.
     if UnitIsGhost then
         local ok, g = pcall(UnitIsGhost, "player")
-        out.ghost = ok and g or nil
+        out.ghost = ok and g or false
     end
     if UnitIsPlayer then
         local ok, a = pcall(UnitIsPlayer, "player")
-        out.alive = ok and a or nil
+        out.isPlayer = ok and a or false
     end
+    out.alive = (out.ghost == false) and (out.isPlayer == true)
 
     -- 1. mapID
     local mapID, mapErr = probe("C_Map.GetBestMapForUnit",
@@ -161,6 +166,27 @@ function D.collect()
     out.hasCorpseApi = (C_DeathInfo ~= nil)
     out.retrieveCorpseExists = (_G["RetrieveCorpse"] ~= nil)
 
+    -- 7. VECTEUR DE NAVIGATION, en systeme de coordonnees de la carte de
+    --    zone (x = ouest->est, y = nord->sud, normalise 0..1) :
+    --    c'est la meme reference que celle de la carte du monde, donc
+    --    exploitable telle quelle pour viser le corps.
+    if o.playerMap and o.corpseMap then
+        local dx = o.corpseMap.x - o.playerMap.x
+        local dy = o.corpseMap.y - o.playerMap.y
+        out.navDX, out.navDY = dx, dy
+        out.navDist = math.sqrt(dx * dx + dy * dy)
+        -- cap vers le corps, repere NORD (0 = est, +90 = nord)
+        out.navBearingDeg = math.degrees(math.atan2(-dy, dx))
+        -- position monde du corpse, si l'API la donne
+        if C_DeathInfo and C_DeathInfo.GetCorpsePosition then
+            local cx, cy, cz = probe("C_DeathInfo.GetCorpsePosition",
+                                     C_DeathInfo.GetCorpsePosition)
+            if type(cx) == "table" then
+                out.corpseWorld = { x = cx.x, y = cx.y, z = cx.z }
+            end
+        end
+    end
+
     return out
 end
 
@@ -169,7 +195,7 @@ end
 -- ------------------------------------------------------------------
 function D.format(o)
     local L = {}
-    L[#L + 1] = "ghost=" .. tostring(o.ghost)
+    L[#L + 1] = "ghost=" .. tostring(o.ghost) .. " alive=" .. tostring(o.alive)
     L[#L + 1] = "mapID=" .. tostring(o.mapID) .. (o.mapErr and (" [" .. o.mapErr .. "]") or "")
     if o.playerMap then
         L[#L + 1] = "playerMap=" .. num(o.playerMap.x) .. "," .. num(o.playerMap.y)
@@ -201,8 +227,49 @@ function D.format(o)
         local dy = o.corpseMap.y - o.playerMap.y
         L[#L + 1] = "deltaCarte=" .. num(dx) .. "," .. num(dy)
             .. " dist=" .. num(math.sqrt(dx * dx + dy * dy))
+            .. " capVersCorps=" .. num(o.navBearingDeg, 1) .. "deg(repere nord)"
+    end
+    if o.corpseWorld then
+        L[#L + 1] = "corpsMonde=" .. num(o.corpseWorld.x, 2) .. ","
+            .. num(o.corpseWorld.y, 2) .. "," .. num(o.corpseWorld.z, 2)
+            .. " (yards, repere monde WoW)"
     end
     return table.concat(L, " | ")
+end
+
+-- Format COMPACT pour la bande de pixels (canal vivant) : tout ce dont le
+-- bot a besoin pour se diriger vers le corps, en quelques dizaines de
+-- caracteres, plus les presence/erreurs d'API.
+function D.formatCompact(o)
+    local L = {}
+    -- separateur ";" : les valeurs (message d'erreur) contiennent des
+    -- espaces, qui casseraient un separateur espace.
+    L[#L + 1] = "g=" .. (o.ghost and "1" or "0")
+    L[#L + 1] = "m=" .. tostring(o.mapID)
+    if o.playerMap then
+        L[#L + 1] = "p=" .. string.format("%.4f,%.4f", o.playerMap.x, o.playerMap.y)
+    else
+        L[#L + 1] = "p=ERR"
+    end
+    if o.corpseMap then
+        L[#L + 1] = "c=" .. string.format("%.4f,%.4f", o.corpseMap.x, o.corpseMap.y)
+    else
+        L[#L + 1] = "c=ERR"
+    end
+    if o.navBearingDeg then
+        L[#L + 1] = "b=" .. string.format("%.1f", o.navBearingDeg)
+        L[#L + 1] = "d=" .. string.format("%.4f", o.navDist)
+    end
+    L[#L + 1] = "cd=" .. tostring(o.hasCorpseApi and 1 or 0)
+    L[#L + 1] = "rc=" .. tostring(o.retrieveCorpseExists and 1 or 0)
+    L[#L + 1] = "sp=" .. tostring(o.retrieveSpellKnown and 1 or 0)
+    -- l'erreur de cast est isolee ET tronquee : elle peut contenir des
+    -- espaces, qui casseraient le format compact.
+    local ce = tostring(o.castErr or "")
+    ce = string.gsub(ce, "[%c;]", " ")
+    ce = string.sub(ce, 1, 40)
+    L[#L + 1] = "ce=" .. ce
+    return table.concat(L, ";")
 end
 
 -- ------------------------------------------------------------------
@@ -234,7 +301,7 @@ end
 --    distinctive : 160,0,200) : sa presence prouve que le module a
 --    tourne, et sa position donne l'origine de lecture.
 -- ------------------------------------------------------------------
-local STRIP_SQ = 12
+local STRIP_SQ = 16
 local STRIP_MAX = 60
 local SYNC = {160 / 255, 0, 200 / 255}
 
@@ -273,10 +340,14 @@ function D.drawStrip(txt)
             c = f:CreateTexture(nil, "ARTWORK")
             c:SetSize(STRIP_SQ, STRIP_SQ)
             c:SetPoint("TOPLEFT", f, "TOPLEFT", col * STRIP_SQ, -row * STRIP_SQ)
+            -- SetTexture(r,g,b,a) cree une couleur UNIE reellement rendue
+            -- (SetTexture(nil) ne dessine rien : c'etait le bug du premier
+            -- decodage, la bande restait invisible).
+            c:SetTexture(colr[1], colr[2], colr[3], 1)
             f.__cells[i] = c
         end
-        c:SetTexture(nil)
-        c:SetVertexColor(colr[1], colr[2], colr[3], 1)
+        c:SetTexture(colr[1], colr[2], colr[3], 1)
+        c:SetVertexColor(1, 1, 1, 1)
         c:Show()
     end
     local row, col = 0, 0
@@ -318,6 +389,12 @@ end
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("PLAYER_DEAD")
+-- ZONE_CHANGED : le fantome qui se deplace change de zone -> on
+-- republie la reference native, qui reste ainsi FRAICHE pendant
+-- l'approche du corps (le canal WTF est ecrit periodiquement par le
+-- client).
+pcall(frame.RegisterEvent, frame, "ZONE_CHANGED")
+pcall(frame.RegisterEvent, frame, "ZONE_CHANGED_NEW_AREA")
 frame:SetScript("OnEvent", function(self, event)
     local isGhost = false
     if UnitIsGhost then
@@ -329,3 +406,23 @@ frame:SetScript("OnEvent", function(self, event)
         C_Timer.After(3.0, function() D.run() end)
     end
 end)
+
+-- Publication periodique : la BANDE DE PIXELS est le canal vivant (le
+-- chat n'est pas lisible de facon fiable et les SavedVariables ne sont
+-- ecrits qu'a la deconnexion).  Le bot lit ainsi la position native a
+-- chaque instant et peut mesurer sa progression.
+local ticker
+if C_Timer and C_Timer.NewTicker then
+    ticker = C_Timer.NewTicker(2.0, function()
+        if not _G["UIParent"] then return end
+        local isGhost = false
+        if UnitIsGhost then
+            local ok, g = pcall(UnitIsGhost, "player")
+            isGhost = ok and g or false
+        end
+        if not isGhost then return end
+        local o = D.collect()
+        D.lastPayload = o
+        D.drawStrip(D.formatCompact(o))
+    end)
+end
