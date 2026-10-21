@@ -213,6 +213,29 @@ DEFAULT_CONFIG = {
     "baitKey": "S",            # touche de l'appât (clic droit sur l'objet dans l'inventaire)
     "rodKey": "3",             # touche de la canne à pêche (clic sur la canne équipée)
     "baitRefreshSec": 600,     # ré-appliquer l'appât toutes les 10 minutes (600 s)
+    # --- Navigation V2 (FONCTION SEPAREE, desactivee par defaut) ----------
+    # La navigation V2 est une brique OPTIONNELLE : desactivee, le bot se
+    # comporte exactement comme la branche de stabilisation (peche au meme
+    # endroit, meme boucle, memes tests). Activee, le bot peut se deplacer
+    # vers un banc entre deux cycles.
+    # `dryRun` = decisions calculees et journalisees, AUCUNE commande de
+    # deplacement envoyee (mode de validation par defaut).
+    "navigationV2": {
+        "enabled": False,        # OFF par defaut : la stabilisation reste autonome
+        "dryRun": True,         # aucune commande de deplacement par defaut
+        "maxTravelSec": 120.0,   # duree maximale d'un trajet
+        "maxRecoveries": 3,     # tentatives de recuperation apres blocage
+        "maxDistancePx": 400.0,  # distance max (px de minicarte) depuis le depart
+        "arriveTolerancePx": 10.0,   # la cible doit etre vue a ce rayon du centre
+        "stepSeconds": 0.35,    # duree d'un pas de marche
+        "probeSeconds": 0.25,   # duree de la sonde de cap
+        "forwardKey": "w",      # touche d'avance
+        "strafeKey": "a",       # touche de strafe (recuperation)
+        "pixelsPerRadian": 500.0,   # ratio souris->radians (RECALIBRE en jeu)
+        "idleCyclesBeforeMove": 3,  # cycles sans prise avant de changer de banc
+        "minIntervalSec": 60.0, # temps minimum entre deux deplacements
+        "trigger": "idle",       # "idle" (defaut) | "always" (validation)
+    },
 }
 
 READY = "READY"
@@ -357,6 +380,103 @@ def _key_down_up_wm(hwnd, vk):
     user32.SendMessageW(hwnd, WM_KEYUP, scan, lparam_up)
     time.sleep(0.05)
     return True
+
+
+def hold_key(hwnd, vk, seconds):
+    """Maintient une touche enfoncée (WM_KEYDOWN ... WM_KEYUP).
+
+    Utilisé par la navigation V2 (marcher). Même protocole que
+    `_key_down_up_wm` (scan = vk, validé en jeu le 2026-10-17), mais avec une
+    DURÉE au lieu d'un tap.
+    """
+    if not hwnd or seconds <= 0:
+        return False
+    scan = vk
+    lparam_down = 0x00000001 | (scan << 16) | (1 << 30)
+    user32.SendMessageW(hwnd, WM_KEYDOWN, scan, lparam_down)
+    t0 = time.time()
+    while (time.time() - t0) < seconds:
+        time.sleep(0.02)
+    lparam_up = lparam_down | (1 << 31)
+    user32.SendMessageW(hwnd, WM_KEYUP, scan, lparam_up)
+    return True
+
+
+class _NavigationActions(object):
+    """Adaptateur entre le contrôleur V2 et les entrées Windows du bot.
+
+    Le contrôleur parle « capture / maintenir une touche / tourner la
+    caméra » ; cet adaptateur exécute avec EXACTEMENT les mêmes garde-fous
+    que la pêche :
+
+    * aucune entrée n'est envoyée si l'utilisateur est actif
+      (`focus_broker_is_user_active`) — la protection anti-vol de souris est
+      donc conservée pour la navigation ;
+    * la caméra est tournée en déplaçant le curseur physique d'un DELTA
+      (la caméra suit la souris) ; si l'humain a repris la souris
+      (divergence > cursorDivergePx), on ne bouge rien ;
+    * l'arrêt d'urgence (F9) interrompt immédiatement le trajet.
+    """
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    def capture(self):
+        hwnd, _t, _r = find_wow_window()
+        if not hwnd:
+            return None
+        img, _err = capture_window(hwnd)
+        if isinstance(img, tuple):
+            img = img[0]
+        if img is None:
+            return None
+        try:
+            import cv2
+            import numpy as np
+            return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        except Exception:
+            return None
+
+    def hold_key(self, key, seconds):
+        if focus_broker_is_user_active():
+            return False
+        hwnd, _t, _r = find_wow_window()
+        if not hwnd:
+            return False
+        vk = key_to_vk(key)
+        if not vk:
+            return False
+        return hold_key(hwnd, vk, seconds)
+
+    def move_mouse(self, dx, dy):
+        if focus_broker_is_user_active():
+            return False
+        try:
+            import win32api
+        except ImportError:
+            return False
+        try:
+            cx, cy = win32api.GetCursorPos()
+        except Exception:
+            return False
+        prev = getattr(self.bot, "_cursor_set", None)
+        if prev is not None:
+            div = ((cx - prev[0]) ** 2 + (cy - prev[1]) ** 2) ** 0.5
+            if div > self.bot.config["cursorDivergePx"]:
+                return False        # l'humain a repris la souris : on ne bouge pas
+        nx, ny = int(cx + dx), int(cy + dy)
+        try:
+            win32api.SetCursorPos((nx, ny))
+        except Exception:
+            return False
+        self.bot._cursor_set = (nx, ny)
+        return True
+
+    def user_active(self):
+        return focus_broker_is_user_active()
+
+    def emergency_stop(self):
+        return emergency_stop_pressed()
 
 
 def send_escape():
@@ -978,16 +1098,29 @@ def _safe_print(s):
 class FishingBot:
     def __init__(self, config=None, log_fn=None):
         self.config = dict(DEFAULT_CONFIG, **(config or {}))
+        # Fusion PROFONDE du bloc navigationV2 : un fichier de config qui ne
+        # fournit qu'une cle ne doit pas ecraser toutes les autres.
+        nav = dict(DEFAULT_CONFIG["navigationV2"])
+        nav.update(self.config.get("navigationV2") or {})
+        self.config["navigationV2"] = nav
         self.log_fn = log_fn or _safe_print
         self.state = STOPPED
         self.stop_requested = True
         self.thread = None
         self.lock = threading.Lock()
         self.counters = {"casts": 0, "bites": 0, "clicks": 0, "errors": 0,
-                         "unreliable": 0, "popups": 0, "deferred": 0}
+                         "unreliable": 0, "popups": 0, "deferred": 0,
+                         "navMoves": 0, "navArrived": 0, "navBlocked": 0,
+                         "navDryRuns": 0}
         self.calib = load_json(CALIB_FILE, {})
         self._bind_checked = None
         self._bait_applied_at = 0.0  # dernier temps d'application d'appât (epoch)
+        # --- Navigation V2 (initialisee a la demande) ---------------------
+        self._nav = None
+        self._nav_reader = None
+        self._nav_actions = None
+        self._nav_last_move_at = 0.0
+        self._nav_idle_cycles = 0
 
     # --- journalisation ---------------------------------------------------
     def log(self, event, **kw):
@@ -1305,6 +1438,16 @@ class FishingBot:
                     # porte elargie, il aurait pu cliquer le TAPIS ROUGE.
                     if not self._scene_has_water(hwnd):
                         continue
+                    # NAVIGATION V2 (optionnelle, OFF par defaut) : si le banc
+                    # courant ne donne plus rien, on peut changer de banc.
+                    # Le deplacement se fait AVANT le lancer : la boucle de
+                    # peche (lancer -> morsure -> clic) n'est jamais modifiee.
+                    if self._nav_enabled():
+                        nav_cfg = self.config.get("navigationV2", {})
+                        trigger = nav_cfg.get("trigger", "idle")
+                        idle_needed = int(nav_cfg.get("idleCyclesBeforeMove", 3))
+                        if trigger == "always" or self._nav_idle_cycles >= idle_needed:
+                            self._maybe_navigate(hwnd)
                     self._cast(vk)
                     continue
                 if self.state == CASTING:
@@ -1318,6 +1461,12 @@ class FishingBot:
                     continue
                 if self.state == WAITING:
                     self._wait_bite(hwnd, rect)
+                    # Compteur de cycles sans prise (declencheur du changement
+                    # de banc pour la navigation V2).
+                    if self.state == CATCH:
+                        self._nav_idle_cycles = 0
+                    else:
+                        self._nav_idle_cycles += 1
                     continue
                 if self.state == CATCH:
                     time.sleep(1.6)          # loot window / récupération
@@ -1583,6 +1732,98 @@ class FishingBot:
             self.state = PAUSED
             self.log("CAST_NOT_SENT", key=self.config["castKey"],
                      note="touche non envoyee (utilisateur actif)")
+
+    # ---------------------------------------------------------------
+    # Navigation V2 (optionnelle, desactivee par defaut)
+    # ---------------------------------------------------------------
+    def _nav_enabled(self):
+        return bool(self.config.get("navigationV2", {}).get("enabled"))
+
+    def _maybe_navigate(self, hwnd):
+        """Déplace le personnage vers un banc (navigation V2).
+
+        Appelée AVANT un lancer, lorsque le banc courant ne donne plus rien
+        (cycles consécutifs sans prise confirmée) ou pour valider la
+        chaîne de décision.
+
+        En `dryRun`, AUCUNE commande n'est envoyée : la décision est
+        calculée (cible observée, cap voulu, distance) et journalisée. C'est
+        le mode de validation par défaut.
+
+        Retourne None si rien n'a été fait (le bot continue de pêcher).
+        """
+        cfg = self.config.get("navigationV2", {})
+        try:
+            from fishing_navigation import NavigationController
+            from fishing_minimap import MinimapReader
+        except Exception as exc:            # pragma: no cover
+            self.log("NAV_UNAVAILABLE", error=repr(exc))
+            return None
+        if self._nav is None:
+            self._nav_reader = MinimapReader()
+            self._nav_actions = _NavigationActions(self)
+            self._nav = NavigationController(self._nav_reader,
+                                            self._nav_actions, cfg, self.log)
+        interval = float(cfg.get("minIntervalSec", 60.0))
+        if (time.time() - self._nav_last_move_at) < interval:
+            return None
+        res = self._nav.navigate_to()
+        self._nav_last_move_at = time.time()
+        dry = bool(cfg.get("dryRun", True))
+        self.log("NAV_RESULT",
+                 status=res.get("status"), reason=res.get("reason"),
+                 dryRun=dry, travelled=res.get("travelled"),
+                 seconds=res.get("seconds"), turns=res.get("turns"),
+                 recoveries=res.get("recoveries"), samples=res.get("samples"),
+                 start=res.get("start"), end=res.get("end"),
+                 target=res.get("target"),
+                 pixelsPerRadian=res.get("pixelsPerRadian"),
+                 counters=dict(self.counters))
+        if res.get("status") == "arrived":
+            self.counters["navArrived"] += 1
+            self._nav_idle_cycles = 0
+            self._record_nav_spot(res)
+        elif res.get("status") in ("blocked", "timeout"):
+            self.counters["navBlocked"] += 1
+        elif res.get("status") == "dry_run":
+            self.counters["navDryRuns"] += 1
+        if dry:
+            return None                    # dry-run : on continue de pêcher
+        if res.get("status") == "arrived":
+            self.counters["navMoves"] += 1
+            return None
+        return None
+
+    def _record_nav_spot(self, res):
+        """Mémorise le banc atteint dans la carte V2 (si la carte existe)."""
+        try:
+            import fishing_spots as fspots
+        except Exception:                   # pragma: no cover
+            return
+        path = os.path.join(ROOT, "state", "fishing-spots.json")
+        if not os.path.isfile(path):
+            return
+        try:
+            db = fspots.load(path)
+            end = res.get("end")
+            if not end:
+                return
+            marker = res.get("target") or {}
+            kind = {"jaune": "cible", "vert": "cible", "rose": "appat"}.get(
+                marker.get("kind"), None)
+            spot, status = fspots.observe_spot(
+                db, "Lushwater Oasis", coords=(float(end[0]), float(end[1])),
+                score=0.7, kind=kind, reference="minimap",
+                reasons=["arrivee observee (marqueur de minicarte)"],
+                detector_version="nav-v2")
+            if spot is not None:
+                fspots.record_result(db, spot["id"], "catch",
+                                     access_sec=res.get("seconds"))
+                fspots.save(db, path)
+                self.log("NAV_SPOT_RECORDED", spot=spot["id"], status=status,
+                         position=[round(float(end[0]), 2), round(float(end[1]), 2)])
+        except Exception as exc:           # pragma: no cover
+            self.log("NAV_SPOT_ERROR", error=repr(exc))
 
     def _handle_popup(self, hwnd, img):
         """Detecte et confirme un popup modal bloquant (clic souris).
