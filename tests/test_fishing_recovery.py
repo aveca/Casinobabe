@@ -93,6 +93,14 @@ class FakeActions(object):
         """Le client simule ne bouge pas (0 px)."""
         return 0.0, 0.0, 0.0
 
+    def rotate_camera(self, dx, dy=0):
+        """Rotation de camera simulee (aucun effet)."""
+        self.camera = getattr(self, "camera", []) + [(dx, dy)]
+
+    def hold_key(self, key, seconds=1.5):
+        """Maintien de touche simule."""
+        self.keys.append("%s(%.1fs)" % (key, seconds))
+
 
 class FakeScreen(object):
     """Ecran simule : renvoie toujours la meme image."""

@@ -412,6 +412,9 @@ class RecoverySession(object):
         et mesures, avec un recalage periodique sur la carte.
         """
         a = self.analysis
+        # la carte doit etre FERMEE pour lire le cap (fleche de la
+        # minicarte) : sur la carte, la minicarte est masquee.
+        self._ensure_map(False)
         if self.heading_deg is None:
             self.heading_deg = self._read_heading()
         if a.bearing_reliable and self.heading_deg is not None:
@@ -497,9 +500,28 @@ class RecoverySession(object):
             res = {"ok": True, "outcome": OUTCOME_OK, "px": moved,
                    "angle": ang, "reason": "en course (%.1f px)" % moved}
         else:
-            res = self.ex.do_goto([tx, ty], tries=2, unsafe="allow",
-                                  settle=float(self.cfg.get("settleSeconds",
-                                                            3.0)))
+            # DEPLACEMENT PAR TOUCHE (plus fluide que le clic) : la camera
+            # a ete orientee vers le corps (turn_to), donc W avance dans la
+            # bonne direction.  Le clic reste le secours si rien ne bouge.
+            hold = getattr(self.ex.actions, "hold_key", None)
+            res = None
+            if hold is not None and self.heading_deg is not None:
+                before = _bgr(self._capture())
+                hold(self.cfg.get("forwardKey", "W"),
+                     float(self.cfg.get("holdSeconds", 1.6)))
+                after = _bgr(self._capture())
+                if before is not None and after is not None:
+                    fdx, fdy, _fc = self.ex.actions.displacement(before, after)
+                    px = math.hypot(fdx, fdy)
+                    ang = (math.degrees(math.atan2(fdy, fdx)) if px >= 0.2
+                           else None)
+                    res = {"ok": px >= self.min_px, "outcome": OUTCOME_OK,
+                           "px": px, "angle": ang,
+                           "reason": "avance %.1f px" % px}
+            if res is None or not res.get("ok"):
+                res = self.ex.do_goto([tx, ty], tries=2, unsafe="allow",
+                                      settle=float(self.cfg.get(
+                                          "settleSeconds", 3.0)))
         self._last_move = res
         # CALIBRATION EN VOL : l'angle mesure du deplacement corrige la
         # relation clic -> deplacement (une MESURE, pas une supposition).

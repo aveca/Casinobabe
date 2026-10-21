@@ -118,6 +118,33 @@ class WowActions(object):
         u.SendMessageW(h, WM_KEYUP, vk, flags | (1 << 31))
         self.keys.append(k)
 
+    def hold_key(self, key, seconds=1.5):
+        """Maintient une touche pendant N secondes (deplacement fluide).
+
+        W (forward) est plus fluide que le clic-to-move : pas d'arret a
+        chaque cible, pas de re-ciblage.  Le deplacement se fait dans
+        l'axe de la CAMERA : on oriente donc d'abord la camera (rotation
+        clic gauche + souris), puis on avance.
+        """
+        h = self._win()
+        try:
+            if u.GetForegroundWindow() != h:
+                u.SetForegroundWindow(h)
+                time.sleep(0.15)
+        except Exception:
+            pass
+        vk = VK.get(key.upper() if isinstance(key, str) else key)
+        if vk is None and isinstance(key, str) and len(key) == 1:
+            vk = ord(key.upper())
+        if vk is None:
+            return
+        down = 0x00000001 | (vk << 16) | (1 << 30)
+        up = down | (1 << 31)
+        u.SendMessageW(h, WM_KEYDOWN, vk, down)
+        time.sleep(float(seconds))
+        u.SendMessageW(h, WM_KEYUP, vk, up)
+        self.keys.append("%s(%.1fs)" % (key, seconds))
+
     def press_left(self, down=True):
         """Maintient ou relache le bouton GAUCHE (rotation de camera)."""
         h = self._win()
