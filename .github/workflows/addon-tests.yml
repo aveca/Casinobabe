@@ -85,13 +85,14 @@ jobs:
             python -m pip install --quiet pywin32
           fi
 
-      - name: Run fishing bot python tests
+      - name: Run V2 and navigation tests (all OS)
         shell: bash
         run: |
           set -euo pipefail
-          for t in tests/test_fishing_detector.py \
-                   tests/test_fishing_popup.py \
-                   tests/test_fishing_v2.py \
+          # Ces deux modules (memoire des bancs / carte, planificateur,
+          # controleur de deplacement) n'utilisent que la bibliotheque
+          # standard : ils sont donc jouables partout.
+          for t in tests/test_fishing_v2.py \
                    tests/test_fishing_navigator.py; do
             if [ -f "$t" ]; then
               echo "::group::$t"
@@ -100,6 +101,21 @@ jobs:
             else
               echo "absent (ignore) : $t"
             fi
+          done
+
+      - name: Run detector and popup tests (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ces tests importent fishing_bot / fishing_observer, qui utilisent
+          # ctypes.windll et pywin32 au niveau module : ils ne tournent que
+          # sous Windows (le bot est une application Windows).
+          for t in tests/test_fishing_detector.py \
+                   tests/test_fishing_popup.py; do
+            echo "::group::$t"
+            python "$t"
+            echo "::endgroup::"
           done
 
       - name: Run bot contract test (Windows only)
@@ -111,8 +127,8 @@ jobs:
           python tests/test_fishing_bot_contract.py
           echo "::endgroup::"
 
-      - name: Explain why the contract test is skipped on Linux
+      - name: Explain why the Windows-only tests are skipped on Linux
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          echo "tests/test_fishing_bot_contract.py : ignore hors Windows (depend de pywin32)"
+          echo "detecteur, popup et contrat du bot : ignores hors Windows (ctypes.windll, pywin32)"
