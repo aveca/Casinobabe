@@ -37,6 +37,7 @@ GARDE-FOUS (toujours actifs, meme en dry-run)
 """
 
 import math
+import os
 import time
 
 try:
@@ -97,6 +98,12 @@ class NavigationController(object):
         self.target = None
         self.turns = 0
         self.recoveries = 0
+        self.forward_world_angle = None   # etalonnage ecran -> monde
+        self.forward_screen_angle = None  # angle ecran du point de reference
+        self.clicks = 0
+        self.click_radius = None         # rayon de clic (adapte a la distance)
+        self._map_db = None
+        self._map_loaded = False
 
     # ------------------------------------------------------------- config
     def enabled(self):
@@ -124,26 +131,144 @@ class NavigationController(object):
         return r if r.get("ok") else None
 
     # ------------------------------------------------- selection de cible
-    def select_target(self, read, preferred=None):
-        """Choisit la cible a atteindre parmi les marqueurs observes.
+    def load_map(self):
+        """Charge la carte V2 des bancs (state/fishing-spots.json)."""
+        if self._map_loaded:
+            return self._map_db
+        self._map_loaded = True
+        try:
+            import fishing_spots as fspots
+        except Exception:
+            self._map_db = None
+            return None
+        path = os.path.join(self.config.get("mapPath", ""), "fishing-spots.json") \
+            if self.config.get("mapPath") else None
+        if not path:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            path = os.path.join(root, "state", "fishing-spots.json")
+        try:
+            self._map_db = fspots.load(path) if os.path.isfile(path) else None
+        except Exception:
+            self._map_db = None
+        return self._map_db
 
-        `preferred` : un identifiant de marqueur (index) impose par le
-        planificateur ; sinon on prend le marqueur valide le plus proche
-        (le plus proche minimap = le plus proche a l'echelle du jeu).
+    def select_target(self, read, preferred=None):
+        """Choisit la cible a atteindre.
+
+        1. la CARTE V2 : un banc memorise (position absolue dans le repere
+           integre) — c'est la cible du produit (« aller pêcher ailleurs ») ;
+        2. sinon, en repli, un MARQUEUR de cible suivi observe sur la
+           minicarte (position relative au joueur).
+
+        Les marqueurs sont des unites SUIVIES : ils bougent. Ils servent donc
+        de repli, pas de destination de ronde.
         """
+        want = (self.config.get("targetMode", "map") or "map").lower()
+        if want in ("map", "auto"):
+            db = self.load_map()
+            if db:
+                try:
+                    import fishing_spots as fspots
+                    ref = db.get("referenceName", "minimap")
+                    cur = read["position"]
+                    banks = []
+                    for s in fspots.confirmed_spots(db):
+                        c = (s.get("coords") or {}).get(ref)
+                        if not c:
+                            continue
+                        d = math.hypot(c[0] - cur["x"], c[1] - cur["y"])
+                        if d < 4.0:          # on est deja sur ce banc
+                            continue
+                        banks.append((d, s, c))
+                    if banks:
+                        banks.sort(key=lambda b: b[0])
+                        d, s, c = banks[0]
+                        return {"kind": "bank", "id": s["id"],
+                                "pos": (float(c[0]), float(c[1])),
+                                "dist": round(d, 2),
+                                "type": s.get("kind"),
+                                "reliability": round(fspots.reliability(s), 3)}
+                except Exception:
+                    pass
         markers = read.get("markers") or []
         if not markers:
             return None
         if preferred is not None and 0 <= preferred < len(markers):
             return markers[preferred]
-        # on ecarte les cibles deja atteintes (dist < tolerance) sauf si
-        # c'est la seule : dans ce cas on peut la re-visiter.
         tol = self.limit("arriveTolerancePx", DEFAULT_ARRIVE_PX)
         far = [m for m in markers if m["dist"] > tol]
         pool = far or markers
         return pool[0]
 
     # ------------------------------------------------------ deplacement
+    def _screen_offset(self, world_angle):
+        """Decalage ecran (dx, dy) a cliquer pour aller dans la direction monde.
+
+        Le repere ecran a y vers le bas ; « devant la camera » correspond a
+        l'angle ecran -90 deg. La correspondance avec le monde (reference
+        nord de la minicarte) est ETALONNEE : `forward_world_angle` est
+        l'angle monde de « devant la camera », mesure par un deplacement
+        reel. Le reste n'est qu'une rotation.
+        """
+        if self.forward_world_angle is None or self.forward_screen_angle is None:
+            return None
+        offset = _norm(world_angle - self.forward_world_angle)
+        screen_angle = self.forward_screen_angle + offset
+        r = self.click_radius or self.limit("clickRadiusPx", 320.0)
+        return (math.cos(screen_angle) * r, math.sin(screen_angle) * r)
+
+    def _calibrate_forward(self):
+        """Etalonne la direction « devant la camera » (deplacement reel).
+
+        On clique droit sur le sol dans la direction « devant » de l'ecran,
+        on laisse le personnage marcher, puis on mesure la direction du
+        deplacement observe sur la minicarte : c'est l'angle monde de
+        « devant la camera ». Une seule mesure suffit (la camera ne change
+        pas d'orientation pendant un trajet).
+        """
+        if self.forward_world_angle is not None:
+            return self.forward_world_angle
+        if self.dry_run():
+            return None
+        before = self.last_read["position"] if self.last_read else None
+        if before is None:
+            return None
+        dx, dy = 0.0, -self.limit("clickRadiusPx", 320.0)
+        angle_used = self.actions.click_screen(dx, dy)
+        if angle_used is None:
+            return None
+        self.actions.sleep(self.limit("calibrateSeconds", 1.6))
+        read = self.read()
+        mx = my = 0.0
+        if read:
+            before = before or read["position"]
+            mx = read["position"]["x"] - before["x"]
+            my = read["position"]["y"] - before["y"]
+        if abs(mx) < 0.05 and abs(my) < 0.05:
+            # Aucun deplacement observe : l'auto-run est peut-etre desactive.
+            # On le (re)declenche (TOGGLEAUTORUN est lie a Z dans le client)
+            # et on recommence une fois.
+            if hasattr(self.actions, "toggle_autorun"):
+                self.actions.toggle_autorun()
+                self.actions.sleep(0.4)
+                angle_used = self.actions.click_screen(dx, dy)
+                if angle_used is not None:
+                    self.actions.sleep(self.limit("calibrateSeconds", 1.6))
+                    read2 = self.read()
+                    if read2:
+                        mx = read2["position"]["x"] - before["x"]
+                        my = read2["position"]["y"] - before["y"]
+        if abs(mx) < 0.05 and abs(my) < 0.05:
+            # aucun deplacement observe : l'etalonnage est impossible ici
+            # (clic sur un point non praticable, ou personnage bloque)
+            return None
+        self.forward_world_angle = math.atan2(my, mx)
+        self.forward_screen_angle = angle_used
+        self.log("NAV_CALIBRATED", forwardWorldDeg=round(math.degrees(self.forward_world_angle), 1),
+                 forwardScreenDeg=round(math.degrees(angle_used), 1),
+                 movePx=round(math.hypot(mx, my), 2))
+        return self.forward_world_angle
+
     def _measure_heading(self, read, step_seconds):
         """Mesure le cap par une breve avancee (deplacement observe).
 
@@ -225,20 +350,35 @@ class NavigationController(object):
         self.heading = None
         self.turns = 0
         self.recoveries = 0
+        # L'etalonnage ecran->monde est REFAIT a chaque trajet : la camera
+        # tourne entre deux peches (le bot suit le flotteur a la souris), un
+        # etalonnage perime enverrait le personnage dans la mauvaise direction
+        # (constate en jeu : 125 deg puis 3 deg sur deux trajets consecutifs).
+        self.forward_world_angle = None
+        self.forward_screen_angle = None
+        self.click_radius = None
 
         marker = target_marker or self.select_target(read, preferred)
         if not marker:
             result["status"] = "no_target"
-            result["reason"] = "aucune cible observee sur la minicarte"
+            result["reason"] = "aucune cible observee (ni banc memorise, ni marqueur)"
             return result
         result["target"] = marker
 
-        # La cible observee est un OFFSET relatif au joueur. On la suit
-        # dans le repere integre : a chaque boucle, sa position absolue
-        # est (position joueur + offset observe).
-        target_rel = (marker["x"], marker["y"])
+        # Position ABSOLUE de la cible dans le repere integre :
+        #  - un banc memorise a deja sa position absolue ;
+        #  - un marqueur de minicarte est RELATIF au joueur : on le reconvertit
+        #    a chaque boucle (le joueur, lui, bouge).
+        is_bank = marker.get("kind") == "bank"
+        target_rel = (marker.get("x", 0.0), marker.get("y", 0.0))
+
+        def target_abs_now(position):
+            if is_bank:
+                return marker["pos"]
+            return (position["x"] + target_rel[0], position["y"] + target_rel[1])
         last_pos = start
         stuck = 0
+        prev_dist = None
         status = "timeout"
         reason = "duree maximale atteinte"
 
@@ -263,27 +403,32 @@ class NavigationController(object):
             result["travelled"] += moved
             last_pos = pos
 
-            # 1. la cible observee est-elle atteinte ?
-            #    On relit les marqueurs : la cible peut avoir disparu
-            #    (arrivee) ou change de place.
+            # 1. la cible est-elle atteinte ? (preuve par l'OBSERVATION)
             markers = read.get("markers") or []
-            best = None
-            for m in markers:
-                if m["kind"] == marker["kind"] and abs(m["x"] - target_rel[0]) < 6 \
-                        and abs(m["y"] - target_rel[1]) < 6:
-                    best = m
-                    break
-            if best is None and markers:
-                best = min(markers, key=lambda m: m["dist"])
-            if best is not None:
-                marker = best
-                target_rel = (marker["x"], marker["y"])
-                if marker["dist"] <= tol:
-                    # ARRIVEE PROUVEE par l'observation : la cible observee
-                    # est au centre de la minicarte.
-                    status = "arrived"
-                    reason = "cible observee a %.1f px du centre" % marker["dist"]
-                    break
+            if not is_bank:
+                best = None
+                for m in markers:
+                    if m["kind"] == marker["kind"] and abs(m["x"] - target_rel[0]) < 6 \
+                            and abs(m["y"] - target_rel[1]) < 6:
+                        best = m
+                        break
+                if best is None and markers:
+                    best = min(markers, key=lambda m: m["dist"])
+                if best is not None:
+                    marker = best
+                    target_rel = (marker["x"], marker["y"])
+            t_abs = target_abs_now(read["position"])
+            dist_target = math.hypot(t_abs[0] - pos[0], t_abs[1] - pos[1])
+            if dist_target <= tol:
+                # ARRIVEE PROUVEE par l'observation : la cible observee
+                # est a moins de la tolerance du personnage.
+                status = "arrived"
+                reason = ("cible observee a %.1f px (tolerance %.1f)"
+                          % (dist_target, tol))
+                self.log("NAV_ARRIVED", dist=round(dist_target, 2),
+                         target=marker.get("id") or marker.get("kind"),
+                         targetKind="bank" if is_bank else "marker")
+                break
 
             # 2. la distance parcourue est-elle bornee ?
             if _dist(pos, start) > max_distance:
@@ -291,11 +436,27 @@ class NavigationController(object):
                 reason = "distance maximale depassee (%.0f px)" % max_distance
                 break
 
-            # 3. detection de blocage
-            if moved < 0.3:
+            # 3. detection de blocage : on ne bloque pas si le personnage
+            #    avance, meme si la distance a la cible ne diminue pas encore
+            #    (l'auto-run peut eloigner puis rapprocher).
+            if moved < 0.05:
                 stuck += 1
             else:
                 stuck = 0
+            # Suivi de la distance a la cible : elle doit diminuer.
+            cur_dist = marker["dist"] if marker else None
+            if cur_dist is not None and prev_dist is not None:
+                if cur_dist < prev_dist - 0.05:
+                    # PROGRESSION : on peut augmenter le rayon de clic pour
+                    # couvrir une distance plus grande.
+                    self.click_radius = min(self.limit("maxClickRadiusPx", 420.0),
+                                            (self.click_radius or 200.0) * 1.35)
+                elif cur_dist > prev_dist + 0.05:
+                    # La cible s'eloigne : la direction est peut-etre fausse
+                    # (etalonnage perime : la camera a tourne entre-temps).
+                    self.forward_world_angle = None
+            if cur_dist is not None:
+                prev_dist = cur_dist
             if stuck >= 3:
                 stuck = 0
                 self.recoveries += 1
@@ -303,61 +464,65 @@ class NavigationController(object):
                     status = "blocked"
                     reason = "blocage persistant apres %d recuperations" % max_recoveries
                     break
-                # RECUPERATION : un quart de tour + un pas de cote.
+                # RECUPERATION : on re-tente dans une direction decalee
+                # (contournement) : l'auto-run est de nouveau declenche par
+                # un clic decale de 60 degres, ce qui fait longer l'obstacle.
                 if not self.dry_run():
-                    self.actions.move_mouse(int(self.pixels_per_radian * math.pi / 2), 0)
-                    self.actions.hold_key(self.config.get("strafeKey", "a"), step_seconds)
+                    base = math.atan2(target_rel[1], target_rel[0])
+                    alt = base + (math.radians(60) if self.recoveries % 2 else -math.radians(60))
+                    off2 = self._screen_offset(alt)
+                    if off2:
+                        self.actions.click_screen(off2[0], off2[1])
+                        self.clicks += 1
+                        self.actions.sleep(self.limit("stepSeconds", 0.6))
                 self.heading = None
                 continue
 
-            # 4. cap courant et cap voulu
-            wanted = math.atan2(target_rel[1], target_rel[0])
-            if self.heading is None:
+            # 4. direction monde vers la cible
+            wanted = math.atan2(t_abs[1] - pos[1], t_abs[0] - pos[0])
+            if self.forward_world_angle is None:
+                # Etalonnage « devant la camera » : indispensable pour
+                # traduire une direction monde en point ecran.
                 if self.dry_run():
                     status = "dry_run"
-                    reason = ("cible a %.1f px ; cap voulu %.0f deg ; "
-                              "cap courant inconnu (sonde necessaire)"
-                              % (marker["dist"], math.degrees(wanted)))
+                    reason = ("cible a %.1f px ; direction monde %.0f deg ; "
+                              "etalonnage ecran->monde necessaire (deplacement "
+                              "reel requis)" % (marker["dist"], math.degrees(wanted)))
                     break
-                read2, heading = self._measure_heading(read, probe_seconds)
-                if heading is None:
-                    if self.dry_run():
-                        status = "dry_run"
-                        reason = ("cible a %.1f px ; cap voulu %.0f deg ; "
-                                  "cap courant inconnu (sonde necessaire)"
-                                  % (marker["dist"], math.degrees(wanted)))
-                    else:
-                        status = "no_position"
-                        reason = "deplacement non mesurable (cap indetermine)"
+                if self._calibrate_forward() is None:
+                    status = "no_position"
+                    reason = "etalonnage impossible (aucun deplacement observe)"
                     break
-                read = read2 or read
-                pos = (read["position"]["x"], read["position"]["y"])
-            err = _norm(wanted - self.heading)
-            if abs(err) > ALIGN_TOLERANCE:
-                # on s'aligne sans avancer
-                if not self.dry_run():
-                    before = self.heading
-                    px = self._turn(wanted, err)
-                    read2, heading = self._measure_heading(read, probe_seconds)
-                    if heading is not None:
-                        self._recalibrate(before, heading, px)
-                        self.heading = heading
                 continue
 
-            # 5. on avance
-            if not self.dry_run():
-                self.actions.hold_key(self.config.get("forwardKey", "w"), step_seconds)
-                # le cap est estime : on le met a jour par le deplacement observe
-                if moved > 0.3:
-                    self.heading = math.atan2(pos[1] - last_pos[1], pos[0] - last_pos[0])
-            else:
+            off = self._screen_offset(wanted)
+            if off is None:
+                status = "no_position"
+                reason = "correspondance ecran/monde indisponible"
                 break
+
+            # 5. on avance : AUTO-RUN (le deplacement se fait par un clic
+            #    droit au sol, seul mecanisme que ce client accepte :
+            #    mesure reelle 2026-10-21 -> le clavier de direction est
+            #    ignore (raw input) et le W n'est meme pas lie a l'avance
+            #    (bind W ACTIONBUTTON1), tandis que TOGGLEAUTORUN est lie a Z.
+            if self.dry_run():
+                status = "dry_run"
+                reason = ("cible a %.1f px ; direction monde %.0f deg ; "
+                          "clic ecran (%+.0f, %+.0f) calcule, non envoye"
+                          % (marker["dist"], math.degrees(wanted), off[0], off[1]))
+                break
+            sent = self.actions.click_screen(off[0], off[1])
+            if sent:
+                self.clicks += 1
+            self.actions.sleep(self.limit("stepSeconds", 0.6))
 
         result["status"] = status
         result["reason"] = reason
         result["seconds"] = round(time.time() - t0, 2)
         result["turns"] = self.turns
         result["recoveries"] = self.recoveries
+        result["clicks"] = self.clicks
         if self.last_read:
             result["end"] = (self.last_read["position"]["x"],
                              self.last_read["position"]["y"])

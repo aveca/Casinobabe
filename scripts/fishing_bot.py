@@ -75,6 +75,7 @@ import ctypes
 import ctypes.wintypes as wt
 import datetime
 import json
+import math
 import os
 import re
 import statistics
@@ -446,7 +447,16 @@ class _NavigationActions(object):
         vk = key_to_vk(key)
         if not vk:
             return False
-        return hold_key(hwnd, vk, seconds)
+        # BAIL DE FOCUS OBLIGATOIRE pour le DEPLACEMENT : mesure reelle du
+        # 2026-10-21, le jeu ne traite les touches de direction (W/A/S/D)
+        # que si sa fenetre est au premier plan -> maintenue en arriere-plan,
+        # la touche est bien recue mais le personnage ne bouge pas
+        # (deplacement observe : 0,00 px sur 2 s de maintien de W).
+        # Le bail rend la main a l'utilisateur apres l'envoi.
+        with _lease(hwnd) as got:
+            if not got:
+                return False
+            return hold_key(hwnd, vk, seconds)
 
     def move_mouse(self, dx, dy):
         if focus_broker_is_user_active():
@@ -454,6 +464,9 @@ class _NavigationActions(object):
         try:
             import win32api
         except ImportError:
+            return False
+        hwnd, _t, _r = find_wow_window()
+        if not hwnd:
             return False
         try:
             cx, cy = win32api.GetCursorPos()
@@ -465,10 +478,15 @@ class _NavigationActions(object):
             if div > self.bot.config["cursorDivergePx"]:
                 return False        # l'humain a repris la souris : on ne bouge pas
         nx, ny = int(cx + dx), int(cy + dy)
-        try:
-            win32api.SetCursorPos((nx, ny))
-        except Exception:
-            return False
+        # La camera ne suit la souris que fenetre focussee -> on passe par le
+        # bail, comme pour les touches.
+        with _lease(hwnd) as got:
+            if not got:
+                return False
+            try:
+                win32api.SetCursorPos((nx, ny))
+            except Exception:
+                return False
         self.bot._cursor_set = (nx, ny)
         return True
 
@@ -477,6 +495,154 @@ class _NavigationActions(object):
 
     def emergency_stop(self):
         return emergency_stop_pressed()
+
+    # --- deplacement : AUTO-RUN (Z) + clic droit sur le sol ---------------
+    # Mesures reelles du 2026-10-21 (client _anniversary_) :
+    #  * le clavier de direction est IGNORE par le client (raw input) :
+    #    SendInput comme WM_KEYDOWN ne deplacent rien (0,00 px mesure) ;
+    #  * dans le cache de raccourcis du client : `bind W ACTIONBUTTON1`,
+    #    `bind UP NONE` -> W n'est meme pas la touche d'avance ;
+    #  * `bind Z TOGGLEAUTORUN` : c'est le mecanique de deplacement du jeu ;
+    #  * un clic droit sur le sol declenche l'auto-run (mesure : le
+    #    personnage avance, deplacement observe 0,31 px).
+    # => Le deplacement passe donc par un CLIC, seul peripherique que le bot
+    #    pilote deja de facon fiable.
+
+    def click_screen(self, dx, dy):
+        """Clic droit au sol, dans la direction (dx, dy) depuis le centre.
+
+        On ne peut pas cliquer n'importe ou : un clic dans l'eau LANCE UNE
+        PECHE et un clic sur un panneau l'ouvre. On cherche donc le point
+        PRATICABLE (herbe, terre, roche) le plus aligne avec la direction
+        demandee, en excluant l'interface.
+
+        Renvoie l'angle ecran REELLEMENT clique (radians, 0 = droite, pi/2 =
+        bas) ou None si aucun point praticable n'a ete trouve.
+        """
+        hwnd, _t, rect = find_wow_window()
+        if not hwnd:
+            return None
+        if focus_broker_is_user_active():
+            return None
+        try:
+            import win32api
+        except ImportError:
+            return None
+        img, _err = capture_window(hwnd)
+        if isinstance(img, tuple):
+            img = img[0]
+        if img is None:
+            return None
+        try:
+            import cv2
+            import numpy as np
+            bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        except Exception:
+            return None
+        h, w = bgr.shape[:2]
+        norm = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / norm, dy / norm
+        cx0, cy0 = w // 2, int(h * 0.62)
+
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        sat = hsv[:, :, 1].astype(np.int16)
+        val = hsv[:, :, 2].astype(np.int16)
+        hue = hsv[:, :, 0].astype(np.int16)
+        # eau de l'oasis : teinte teal (bleu-vert), valeur elevee
+        water = (hue >= 55) & (hue <= 105) & (val > 90) & (sat > 45)
+        walkable = (~water) & (val > 40) & (val < 235)
+        # on ecarte l'interface : barres, minicarte, panneaux
+        walkable[:int(h * 0.10), :] = False
+        walkable[int(h * 0.88):, :] = False
+        walkable[:, int(w * 0.86):] = False
+        walkable[:, :int(w * 0.13)] = False
+        if not walkable.any():
+            return None
+
+        best = None
+        best_score = None
+        step = 12
+        ys, xs = np.nonzero(walkable[::step, ::step])
+        for yy, xx in zip(ys, xs):
+            px = int(xx) * step
+            py = int(yy) * step
+            vx = px - cx0
+            vy = py - cy0
+            d = math.hypot(vx, vy)
+            if d < 60:
+                continue                      # trop pres : le run serait nul
+            align = (vx * ux + vy * uy) / d   # -1..1
+            if align < 0.15:
+                continue                      # pas dans la direction voulue
+            score = align - 0.00025 * d
+            if best_score is None or score > best_score:
+                best_score = score
+                best = (px, py)
+        if best is None:
+            return None
+        px, py = best
+        sx, sy = rect[0] + px, rect[1] + py
+        try:
+            win32api.SetCursorPos((sx, sy))
+        except Exception:
+            return None
+        self.bot._cursor_set = (sx, sy)
+        send_mouse_click_wm(hwnd, sx, sy, "right")
+        return math.atan2(py - cy0, px - cx0)
+
+    def _point_walkable(self, cx, cy):
+        """Le point vise est-il du SOL (et non de l'eau ou de l'UI) ?
+
+        L'eau est teal/verte saturée ; le sol (herbe, terre, roche) est
+        nettement plus sombre et moins saturé. On reutilise le calcul d'eau
+        deja présent dans le bot (scripts/fishing_bot.py::_water_ratio).
+        """
+        hwnd, _t, rect = find_wow_window()
+        if not hwnd:
+            return False
+        img, _err = capture_window(hwnd)
+        if isinstance(img, tuple):
+            img = img[0]
+        if img is None:
+            return False
+        try:
+            import cv2
+            import numpy as np
+            bgr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        except Exception:
+            return False
+        h, w = bgr.shape[:2]
+        if not (0 <= cx < w and 0 <= cy < h):
+            return False
+        patch = bgr[max(0, cy - 6):cy + 6, max(0, cx - 6):cx + 6]
+        if patch.size == 0:
+            return False
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        sat = float(hsv[:, :, 1].mean())
+        val = float(hsv[:, :, 2].mean())
+        hue = float(hsv[:, :, 0].mean())
+        # l'eau de l'oasis : teinte teal/vert-bleu, valeur elevee, saturation
+        # moyenne ; le sol : valeur nettement plus basse.
+        if val > 110 and 40 <= hue <= 110 and sat > 60:
+            return False
+        return True
+
+    def sleep(self, seconds):
+        time.sleep(max(0.0, float(seconds)))
+
+    def toggle_autorun(self):
+        """Bascule l'auto-run du client (TOGGLEAUTORUN est lie a Z).
+
+        Le client ne deplace le personnage que par auto-run ; cette action
+        est donc necessaire. Elle est envoyee par WM_KEYDOWN, comme la
+        touche de lancer (meme mecanisme, deja valide en jeu).
+        """
+        hwnd, _t, _r = find_wow_window()
+        if not hwnd:
+            return False
+        if focus_broker_is_user_active():
+            return False
+        return _key_down_up_wm(hwnd, 0x5A)     # VK_Z
 
 
 def send_escape():
@@ -1438,16 +1604,11 @@ class FishingBot:
                     # porte elargie, il aurait pu cliquer le TAPIS ROUGE.
                     if not self._scene_has_water(hwnd):
                         continue
-                    # NAVIGATION V2 (optionnelle, OFF par defaut) : si le banc
-                    # courant ne donne plus rien, on peut changer de banc.
-                    # Le deplacement se fait AVANT le lancer : la boucle de
-                    # peche (lancer -> morsure -> clic) n'est jamais modifiee.
-                    if self._nav_enabled():
-                        nav_cfg = self.config.get("navigationV2", {})
-                        trigger = nav_cfg.get("trigger", "idle")
-                        idle_needed = int(nav_cfg.get("idleCyclesBeforeMove", 3))
-                        if trigger == "always" or self._nav_idle_cycles >= idle_needed:
-                            self._maybe_navigate(hwnd)
+                    # NAVIGATION V2 (optionnelle, OFF par defaut) : le
+                    # deplacement se fait AVANT un lancer, jamais pendant un
+                    # cycle de peche (lancer -> morsure -> clic).
+                    if self._nav_gate():
+                        self._maybe_navigate(hwnd)
                     self._cast(vk)
                     continue
                 if self.state == CASTING:
@@ -1462,14 +1623,21 @@ class FishingBot:
                 if self.state == WAITING:
                     self._wait_bite(hwnd, rect)
                     # Compteur de cycles sans prise (declencheur du changement
-                    # de banc pour la navigation V2).
+                    # de banc pour la navigation V2) + memorisation du banc.
                     if self.state == CATCH:
                         self._nav_idle_cycles = 0
+                        self._record_fishing_spot("catch")
                     else:
                         self._nav_idle_cycles += 1
+                        self._record_fishing_spot("empty")
                     continue
                 if self.state == CATCH:
                     time.sleep(1.6)          # loot window / récupération
+                    # NAVIGATION V2 : meme point d'appel qu'avant un lancer
+                    # depuis READY (le bot relance directement depuis CATCH,
+                    # donc READY n'est pas toujours traverse).
+                    if self._nav_gate():
+                        self._maybe_navigate(hwnd)
                     self._cast(vk)
                     continue
                 if self.state == ERROR:
@@ -1739,6 +1907,33 @@ class FishingBot:
     def _nav_enabled(self):
         return bool(self.config.get("navigationV2", {}).get("enabled"))
 
+    def _nav_gate(self):
+        """Faut-il tenter une navigation maintenant ?
+
+        La navigation est declenchee :
+        - en mode « always » (validation) a chaque occasion ;
+        - sinon (« idle ») quand le banc courant ne donne plus rien
+          (cycles consecutifs sans prise confirmée).
+        Le temps minimum entre deux tentatives est toujours respecte.
+        """
+        if not self._nav_enabled():
+            return False
+        cfg = self.config.get("navigationV2", {})
+        trigger = cfg.get("trigger", "idle")
+        idle_needed = int(cfg.get("idleCyclesBeforeMove", 3))
+        if trigger != "always" and self._nav_idle_cycles < idle_needed:
+            self.log("NAV_GATE_WAIT", trigger=trigger,
+                     idleCycles=self._nav_idle_cycles, needed=idle_needed,
+                     note="banc courant encore productif")
+            return False
+        interval = float(cfg.get("minIntervalSec", 60.0))
+        since = time.time() - self._nav_last_move_at
+        if since < interval:
+            self.log("NAV_GATE_WAIT", trigger=trigger, sinceLastSec=round(since, 1),
+                     intervalSec=interval, note="intervalle minimum non ecoule")
+            return False
+        return True
+
     def _maybe_navigate(self, hwnd):
         """Déplace le personnage vers un banc (navigation V2).
 
@@ -1767,9 +1962,12 @@ class FishingBot:
         interval = float(cfg.get("minIntervalSec", 60.0))
         if (time.time() - self._nav_last_move_at) < interval:
             return None
+        # Pendant le trajet, le curseur appartient au controleur de navigation.
+        self._nav_active = True
         res = self._nav.navigate_to()
         self._nav_last_move_at = time.time()
         dry = bool(cfg.get("dryRun", True))
+        self._nav_active = False
         self.log("NAV_RESULT",
                  status=res.get("status"), reason=res.get("reason"),
                  dryRun=dry, travelled=res.get("travelled"),
@@ -1822,6 +2020,50 @@ class FishingBot:
                 fspots.save(db, path)
                 self.log("NAV_SPOT_RECORDED", spot=spot["id"], status=status,
                          position=[round(float(end[0]), 2), round(float(end[1]), 2)])
+        except Exception as exc:           # pragma: no cover
+            self.log("NAV_SPOT_ERROR", error=repr(exc))
+
+    def _record_fishing_spot(self, result):
+        """Memorise le banc ou la position de peche dans la carte V2.
+
+        A chaque cycle, la position MESUREE du personnage (odometre de la
+        minicarte) est enregistree comme un point de peche, avec le resultat
+        reel (prise / rate). C'est ce qui remplit la carte des bancs, sur
+        laquelle le planificateur et la navigation travaillent ensuite.
+        """
+        if not self._nav_enabled():
+            return
+        if self._nav_reader is None:
+            try:
+                from fishing_minimap import MinimapReader
+                self._nav_reader = MinimapReader()
+            except Exception:
+                return
+        try:
+            import fishing_spots as fspots
+        except Exception:
+            return
+        path = os.path.join(ROOT, "state", "fishing-spots.json")
+        try:
+            db = fspots.load(path)
+            pos = (self._nav_reader.odometer.x, self._nav_reader.odometer.y)
+            spot, status = fspots.observe_spot(
+                db, "Lushwater Oasis", coords=pos, score=0.75,
+                kind="cible", reference="minimap",
+                reasons=["peche observee au banc"],
+                detector_version="nav-v2")
+            if spot is None:
+                return
+            fspots.record_result(db, spot["id"], result)
+            # ecriture espacee (le fichier est petit, mais on ne le
+            # réécrit pas a chaque cycle)
+            now = time.time()
+            if (now - getattr(self, "_map_last_save", 0.0)) > 20.0:
+                fspots.save(db, path)
+                self._map_last_save = now
+                self.log("NAV_SPOT_RECORDED", spot=spot["id"], status=status,
+                         result=result,
+                         position=[round(pos[0], 2), round(pos[1], 2)])
         except Exception as exc:           # pragma: no cover
             self.log("NAV_SPOT_ERROR", error=repr(exc))
 
@@ -2242,6 +2484,12 @@ class FishingBot:
         hwnd, _t, rect = find_wow_window()
         if not hwnd:
             return False
+        # Pendant une navigation, le CURSEUR appartient au controleur (il
+        # tourne la camera). Le suivi du flotteur remettrait le curseur sur
+        # le flotteur et annulerait la rotation : les deux se disputeraient
+        # la souris.
+        if getattr(self, "_nav_active", False):
+            return True
         sx, sy = rect[0] + bx, rect[1] + by
         try:
             cx, cy = win32api.GetCursorPos()

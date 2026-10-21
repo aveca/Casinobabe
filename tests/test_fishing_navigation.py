@@ -146,6 +146,17 @@ class FakeActions(object):
         self.moves.append((dx, dy))
         return True
 
+    def click_screen(self, dx, dy):
+        self.moves.append((round(dx, 1), round(dy, 1)))
+        return True
+
+    def toggle_autorun(self):
+        self.keys.append(("autorun", 0))
+        return True
+
+    def sleep(self, seconds):
+        pass
+
     def user_active(self):
         return self.user
 
