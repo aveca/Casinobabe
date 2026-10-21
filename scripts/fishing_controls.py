@@ -306,13 +306,21 @@ class Controls(object):
         configured = (configured or "").upper() or None
         diag = {"activeAccount": account, "detectedForActive": detected,
                 "configured": configured}
-        if configured and detected and configured != detected:
-            diag["reason"] = ("la touche configuree %s n'est pas liee a l'action "
-                              "de peche sur le compte joue (%s) : la touche "
-                              "%s est utilisee" % (configured, account, detected))
-            return detected, diag
+        # 2026-10-21 (P0.35) : la touche CONFIGUREE est prioritaire.
+        # L'auto-detection matche des ACTIONBUTTON (le cache du compte
+        # porte 'bind X ACTIONBUTTON10') : c'est un faux positif qui
+        # remplacait la vraie touche et empechait toute peche
+        # (CAST_UNCONFIRMED en boucle).  Le cache du PERSONNAGE ne
+        # contient aucun bind de peche (la peche passe par une macro) :
+        # seule la touche configuree par le joueur est donc fiable.
         if configured:
-            diag["reason"] = "touche configuree utilisee"
+            if detected and configured != detected:
+                diag["reason"] = ("touche configuree %s conservee (la touche "
+                                  "auto-detectee %s vient d'un ACTIONBUTTON : "
+                                  "faux positif de detection)"
+                                  % (configured, detected))
+            else:
+                diag["reason"] = "touche configuree utilisee"
             return configured, diag
         diag["reason"] = "aucune touche de lancer resolue"
         return detected, diag

@@ -191,6 +191,8 @@ class RecoverySession(object):
         self.bearing_offset = 0.0   # correction laterale apres un echec
         self.map_open_tries = 0
         self._geo = None
+        #: callback de trace (rejeu instrumente) : self.trace(event, **kw)
+        self.trace = None
 
     # ------------------------------------------------------------------
     # utilitaires
@@ -212,6 +214,18 @@ class RecoverySession(object):
                        "reason": reason, "state": self.state}
         self._set(ABORTED, reason, **evidence)
         return self.result
+
+    def _trace(self, event, **kw):
+        """Journalise un evenement d'action (et le transmet au rejeu)."""
+        rec = {"event": event}
+        rec.update(kw)
+        self.log("RECOVERY_TRACE", **rec)
+        if self.trace is not None:
+            try:
+                self.trace("TRACE", **rec)
+            except Exception:                             # pragma: no cover
+                pass
+        return rec
 
     def _capture(self):
         return self.ex.screen.grab(force=True)
@@ -296,6 +310,8 @@ class RecoverySession(object):
         bref : il faut maintenir le bouton (mesure du 21/10).
         """
         sx, sy = self._to_screen(x, y)
+        self._trace("held_click", capture=[int(x), int(y)],
+                    screen=[int(sx), int(sy)], hold=hold, button=button)
         u = ctypes.windll.user32
         down, up = (0x0002, 0x0004) if button == "left" else (0x0008, 0x0010)
         try:
@@ -347,10 +363,14 @@ class RecoverySession(object):
         for _ in range(4):
             img = self._capture()
             if img is None:
+                self._trace("world_capture_none")
                 return False
-            if (not map_is_open(_bgr(img))) and self._world_visible(img):
+            opened = map_is_open(_bgr(img))
+            if (not opened) and self._world_visible(img):
                 self.map_open = False
+                self._trace("world_ready", mapOpen=opened, confirmed=True)
                 return True
+            self._trace("world_closing", mapOpen=opened)
             self.ex.actions.key("M")
             time.sleep(float(self.cfg.get("mapOpenSeconds", 2.4)))
         img = self._capture()
@@ -386,6 +406,8 @@ class RecoverySession(object):
                 u.SendMessageW(hwnd, 0x0101, vk,
                                0x00000001 | (vk << 16) | (1 << 31))
 
+        self._trace("fly_start", seconds=seconds, keys=list(keys))
+        t0 = time.time()
         try:
             if focus_lease is not None:
                 with focus_lease(hwnd, respect_user=False,
@@ -395,12 +417,14 @@ class RecoverySession(object):
                 _do()
         except Exception as exc:                        # pragma: no cover
             self.log("RECOVERY_FLY_ERROR", error=repr(exc))
+            self._trace("fly_error", error=repr(exc))
         finally:
             # aucune touche ne doit rester bloquee, meme en cas d'erreur
             try:
                 _release()
             except Exception:                             # pragma: no cover
                 pass
+            self._trace("fly_end", seconds=round(time.time() - t0, 2))
         time.sleep(0.3)
         return True
 
@@ -764,6 +788,12 @@ class RecoverySession(object):
                      target=round(target, 1),
                      head=None if head2 is None else round(head2, 1),
                      evidence=path)
+        # une capture PAR PAS (des qu'elle est produite) : la preuve
+        # d'observation reelle est conservee, meme en cas de succes
+        self._evidence("step-%03d" % self.attempts, after)
+        self._trace("navigate", target=round(target, 1),
+                    err=None if err is None else round(err, 1),
+                    px=None if px is None else round(px, 2))
         self._last = {"px": px, "angle": None, "theta": self.theta,
                       "target": target, "headBefore": self.heading,
                       "headAfter": head2, "click": [tx, ty]}

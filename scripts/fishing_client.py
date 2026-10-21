@@ -118,6 +118,14 @@ class WowActions(object):
         return focus_lease(h, respect_user=self.respect_user,
                            log=lambda *a, **k: None)
 
+    @staticmethod
+    def _neutralize():
+        try:
+            from focus_broker import neutralize_own_input
+            neutralize_own_input()
+        except Exception:
+            pass
+
     def _send(self, fn):
         """Envoie une entree sous bail de focus, avec reverification."""
         h = self._win()
@@ -172,6 +180,7 @@ class WowActions(object):
 
         def _do():
             flags = 0x00000001 | (vk << 16) | (1 << 30)
+            self._neutralize()
             u.SendMessageW(h, WM_KEYDOWN, vk, flags)
             time.sleep(0.05)
             u.SendMessageW(h, WM_KEYUP, vk, flags | (1 << 31))

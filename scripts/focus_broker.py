@@ -207,3 +207,23 @@ def focus_lease(hwnd, timeout_ms=DEFAULT_TIMEOUT_MS,
     finally:
         last_dwell_ms["value"] = int((time.time() - t0) * 1000)
         _release_mutex(handle)
+
+def neutralize_own_input(back_seconds=30.0):
+    """Signale que la DERNIERE entree clavier/souris vient de NOUS.
+
+    SendInput/mouse_event/keybd_event mettent a jour LASTINPUTINFO : le
+    bot se detecte alors lui-meme comme « utilisateur actif » et differe
+    ses propres clics (log 21/10 : CLICK_DEFERRED 'utilisateur actif').
+    On restitue donc une horodatage ancienne pour que seule l'activite
+    REELLE du joueur compte.
+    """
+    try:
+        info = LASTINPUTINFO()
+        info.cbSize = ctypes.sizeof(info)
+        if not user32.GetLastInputInfo(ctypes.byref(info)):
+            return False
+        now = kernel32.GetTickCount()
+        info.dwTime = max(0, int(now - back_seconds * 1000))
+        return bool(user32.SetLastInputInfo(ctypes.byref(info)))
+    except Exception:
+        return False

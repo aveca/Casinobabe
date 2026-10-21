@@ -78,6 +78,9 @@ def build_session(journal, evidence_dir, config=None):
     sess = FR.RecoverySession(ex, state_reader=st_reader, safety=safety,
                               memory=incidents, log=journal, config=cfg,
                               evidence_dir=evidence_dir)
+    # le rejeu RECOIT les evenements d'action du moteur (clics, vols,
+    # corrections de cap, decisions) : le journal est alors complet.
+    sess.trace = journal
     return sess, ex
 
 
@@ -187,10 +190,33 @@ def main():
             outcome=res.get("outcome"), reason=res.get("reason"),
             state=sess.state, attempts=sess.attempts,
             distance=sess.last_distance, best=sess.best_distance)
+    # RAPPORT : ce qui est REELLEMENT observe (captures du client) et ce
+    # qui ne l'est pas.  Aucune donnee synthetique n'est produite ici :
+    # le rejeu ne manipule que des captures du client.
+    captures = sorted(os.listdir(evid)) if os.path.isdir(evid) else []
+    rapport = {
+        "source": "captures REELLES du client (scripts/fishing_recovery_replay.py)",
+        "donnees_synthetiques": "AUCUNE dans ce rejeu",
+        "journal": jpath,
+        "evidence_dir": evid,
+        "captures": len(captures),
+        "resultat": res,
+        "statut": "CYCLE REEL OBSERVE" if res.get("ok") else "ECHEC",
+    }
+    rpath = os.path.join(os.path.dirname(jpath),
+                          "fishing-recovery-replay-%s-report.json" % stamp)
+    try:
+        with open(rpath, "w", encoding="utf-8") as f:
+            json.dump(rapport, f, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        rpath = None
+    journal("REPLAY_REPORT", **{k: v for k, v in rapport.items()
+                                if k != "resultat"})
     print("\n  resultat : %s" % json.dumps(res, ensure_ascii=False,
                                             default=str))
     print("  journal   : %s" % jpath)
-    print("  captures  : %s" % evid)
+    print("  rapport   : %s" % rpath)
+    print("  captures  : %s (%d fichiers, conservees)" % (evid, len(captures)))
     return 0 if res.get("ok") else 1
 
 
