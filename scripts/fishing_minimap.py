@@ -329,6 +329,98 @@ class MinimapReader(object):
         return out
 
 
+class WorldOdometer(object):
+    """Odometre du PERSONNAGE base sur la VUE 3D (et non sur la minicarte).
+
+    POURQUOI : la minicarte n'est pas un odometre fiable. Mesure du
+    2026-10-21, personnage IMMOBILE : derive de 7,05 px en 10 s (l'eau
+    animee biaise la correlation de phase), alors que la vue 3D ne defile
+    pas (0,00 px/s). La vue 3D est donc la mesure de reference.
+
+    REPERE : le deplacement est mesure dans le repere ECRAN (la vue 3D). Ce
+    repere est fixe tant que la CAMERA ne tourne pas. Or le bot ne deplace
+    plus le curseur (la camera ne bouge donc plus de la valeur du tout) : le
+    repere ecran est donc un repere STABLE, et les positions accumulees
+    (bancs memorises) restent comparables entre elles.
+
+    C'est cette stabilite qui permet de naviguer de banc a banc sans connaitre
+    l'orientation absolue de la camera.
+    """
+
+    def __init__(self, min_shift=0.05):
+        self.x = 0.0
+        self.y = 0.0
+        self.last_gray = None
+        self.samples = 0
+        self.min_shift = min_shift
+        self.confidence = 0.0
+        self.drift = 0.0          # derive mesuree quand le personnage est immobile
+        self.moved = False
+
+    def reset(self):
+        self.x = 0.0
+        self.y = 0.0
+        self.last_gray = None
+        self.samples = 0
+        self.drift = 0.0
+        self.moved = False
+
+    def update(self, bgr, region=(0.12, 0.72, 0.05, 0.62)):
+        """Met a jour la position a partir d'une nouvelle capture."""
+        out = {"ok": False, "x": self.x, "y": self.y, "dx": 0.0, "dy": 0.0,
+               "confidence": 0.0, "moved": False}
+        if bgr is None or cv2 is None:
+            return out
+        h, w = bgr.shape[:2]
+        y0, y1, x0, x1 = region
+        zone = bgr[int(h * y0):int(h * y1), int(w * x0):int(w * x1)]
+        if zone.size == 0:
+            return out
+        gray = cv2.cvtColor(zone, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        if self.last_gray is None or self.last_gray.shape != gray.shape:
+            self.last_gray = gray
+            out["ok"] = True
+            return out
+        win = cv2.createHanningWindow((gray.shape[1], gray.shape[0]), cv2.CV_32F)
+        try:
+            (sx, sy), resp = cv2.phaseCorrelate(self.last_gray, gray, win)
+        except cv2.error:
+            return out
+        self.last_gray = gray
+        self.samples += 1
+        dx = -float(sx)
+        dy = -float(sy)
+        self.confidence = float(resp)
+        if abs(dx) >= self.min_shift or abs(dy) >= self.min_shift:
+            self.x += dx
+            self.y += dy
+            self.moved = True
+        out.update({"ok": True, "x": self.x, "y": self.y, "dx": dx, "dy": dy,
+                    "confidence": self.confidence, "moved": self.moved})
+        return out
+
+    def measure_drift(self, bgr_prev, bgr_now):
+        """Derive de l'odometre entre deux captures (personnage immobile)."""
+        if bgr_prev is None or bgr_now is None:
+            return None
+        h, w = bgr_prev.shape[:2]
+        if (h, w) != bgr_now.shape[:2]:
+            return None
+        y0, y1, x0, x1 = (0.12, 0.72, 0.05, 0.62)
+        a = cv2.cvtColor(bgr_prev[int(h * y0):int(h * y1),
+                               int(w * x0):int(w * x1)], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        b = cv2.cvtColor(bgr_now[int(h * y0):int(h * y1),
+                               int(w * x0):int(w * x1)], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        if a.size == 0 or a.shape != b.shape:
+            return None
+        win = cv2.createHanningWindow((a.shape[1], a.shape[0]), cv2.CV_32F)
+        try:
+            (sx, sy), _r = cv2.phaseCorrelate(a, b, win)
+        except cv2.error:
+            return None
+        return math.hypot(float(sx), float(sy))
+
+
 def world_displacement(frame_a, frame_b, region=(0.12, 0.72, 0.05, 0.62)):
     """Deplacement de la VUE 3D entre deux captures (pixels ecran).
 

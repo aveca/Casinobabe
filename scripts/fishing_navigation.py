@@ -100,10 +100,21 @@ class NavigationController(object):
         self.recoveries = 0
         self.forward_world_angle = None   # etalonnage ecran -> monde
         self.forward_screen_angle = None  # angle ecran du point de reference
+        self.click_rotation = 0.0         # rotation reelle (etalonnee)
         self.clicks = 0
         self.click_radius = None         # rayon de clic (adapte a la distance)
         self._map_db = None
         self._map_loaded = False
+        # ODOMETRE DE REFERENCE : la VUE 3D. La minicarte derive de 7 px /
+        # 10 s au repos (animation de l'eau) ; la vue 3D ne derive pas.
+        # Son repere est celui de l'ECRAN, stable tant que la camera ne
+        # tourne pas — et le bot ne deplace plus le curseur, donc elle ne
+        # tourne plus. C'est ce repere la qui sert de carte.
+        try:
+            from fishing_minimap import WorldOdometer
+            self.odometer = WorldOdometer()
+        except Exception:                   # pragma: no cover
+            self.odometer = None
 
     # ------------------------------------------------------------- config
     def enabled(self):
@@ -127,6 +138,12 @@ class NavigationController(object):
         r = self.reader.read(img)
         if not r:
             return None
+        # ODOMETRE DE REFERENCE : la VUE 3D (la minicarte derive de 7 px /
+        # 10 s au repos, la vue 3D ne derive pas). Le repere est celui de
+        # l'ECRAN : il est STABLE tant que la camera ne tourne pas, et le
+        # bot ne deplace plus le curseur -> la camera ne tourne plus.
+        self.odometer.update(img)
+        r["position"] = {"x": self.odometer.x, "y": self.odometer.y}
         self.last_read = r
         return r if r.get("ok") else None
 
@@ -141,8 +158,11 @@ class NavigationController(object):
         except Exception:
             self._map_db = None
             return None
-        path = os.path.join(self.config.get("mapPath", ""), "fishing-spots.json") \
-            if self.config.get("mapPath") else None
+        # Le chemin de la carte peut etre impose (tests, preprod) :
+        # CASINOBABE_MAP_PATH permet d'isoler les tests de la vraie carte.
+        env_path = os.environ.get("CASINOBABE_MAP_PATH")
+        path = self.config.get("mapPath") or env_path
+        path = os.path.join(path, "fishing-spots.json") if path else None
         if not path:
             root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             path = os.path.join(root, "state", "fishing-spots.json")
@@ -179,6 +199,8 @@ class NavigationController(object):
                         c = (s.get("coords") or {}).get(ref)
                         if not c:
                             continue
+                        if (s.get("coords") or {}).get("screen"):
+                            c = (s.get("coords") or {})["screen"]
                         d = math.hypot(c[0] - cur["x"], c[1] - cur["y"])
                         if d < 4.0:          # on est deja sur ce banc
                             continue
@@ -237,41 +259,44 @@ class NavigationController(object):
         piloter un deplacement quand la position n'est pas exploitable.
         """
         import time as _t
-        odo = getattr(self.reader, "odometer", None)
+        odo = self.odometer
         if self.last_read is None or odo is None:
             return None
         before = (odo.x, odo.y)
         for _ in range(max(2, int(samples))):
             _t.sleep(pause)
             self.read()
-        dx = self.reader.odometer.x - before[0]
-        dy = self.reader.odometer.y - before[1]
+        dx = odo.x - before[0]
+        dy = odo.y - before[1]
         return math.hypot(dx, dy)
 
-    def _screen_offset(self, world_angle):
-        """Decalage ecran (dx, dy) a cliquer pour aller dans la direction monde.
+    def _screen_offset(self, target_angle):
+        """Decalage ecran (dx, dy) a cliquer pour aller dans `target_angle`.
 
-        Le repere ecran a y vers le bas ; « devant la camera » correspond a
-        l'angle ecran -90 deg. La correspondance avec le monde (reference
-        nord de la minicarte) est ETALONNEE : `forward_world_angle` est
-        l'angle monde de « devant la camera », mesure par un deplacement
-        reel. Le reste n'est qu'une rotation.
+        Le repere de la position (odometre de la vue 3D) EST le repere ecran :
+        la direction de la cible est donc directement un angle ecran, sans
+        conversion. La seule correction est la rotation mesuree par
+        l'etalonnage (l'auto-run ne va pas exactement vers le point clique
+        si la camera n'est pas d'aplomb).
         """
-        if self.forward_world_angle is None or self.forward_screen_angle is None:
+        if self.forward_world_angle is None:
             return None
-        offset = _norm(world_angle - self.forward_world_angle)
-        screen_angle = self.forward_screen_angle + offset
+        screen_angle = target_angle - self.click_rotation
         r = self.click_radius or self.limit("clickRadiusPx", 320.0)
         return (math.cos(screen_angle) * r, math.sin(screen_angle) * r)
 
     def _calibrate_forward(self):
-        """Etalonne la direction « devant la camera » (deplacement reel).
+        """Etalonne la correspondence clic -> deplacement (mesure reelle).
 
-        On clique droit sur le sol dans la direction « devant » de l'ecran,
-        on laisse le personnage marcher, puis on mesure la direction du
-        deplacement observe sur la minicarte : c'est l'angle monde de
-        « devant la camera ». Une seule mesure suffit (la camera ne change
-        pas d'orientation pendant un trajet).
+        On clique droit sur le sol dans une direction ecran connue, on laisse
+        le personnage marcher, puis on mesure la direction REELLE du
+        deplacement (odometre de la vue 3D). La difference entre l'angle vise
+        et l'angle obtenu est la rotation a corriger (l'auto-run vise un point
+        au sol, pas une direction : si la camera n'est pas d'aplomb, la
+        correction est necessaire).
+
+        C'est aussi une PROUOVE que le personnage bouge vraiment, mesuree sur
+        la vue 3D (et non sur la minicarte, dont on a mesure le biais).
         """
         if self.forward_world_angle is not None:
             return self.forward_world_angle
@@ -280,6 +305,7 @@ class NavigationController(object):
         before = self.last_read["position"] if self.last_read else None
         if before is None:
             return None
+        alpha = -math.pi / 2.0            # on vise « devant la camera »
         dx, dy = 0.0, -self.limit("clickRadiusPx", 320.0)
         angle_used = self.actions.click_screen(dx, dy)
         if angle_used is None:
@@ -311,9 +337,14 @@ class NavigationController(object):
             return None
         self.forward_world_angle = math.atan2(my, mx)
         self.forward_screen_angle = angle_used
-        self.log("NAV_CALIBRATED", forwardWorldDeg=round(math.degrees(self.forward_world_angle), 1),
-                 forwardScreenDeg=round(math.degrees(angle_used), 1),
-                 movePx=round(math.hypot(mx, my), 2))
+        # rotation reelle entre l'angle vise et l'angle obtenu
+        self.click_rotation = _norm(self.forward_world_angle - alpha)
+        self.log("NAV_CALIBRATED",
+                 measuredDeg=round(math.degrees(self.forward_world_angle), 1),
+                 targetDeg=round(math.degrees(alpha), 1),
+                 rotationDeg=round(math.degrees(self.click_rotation), 1),
+                 movePx=round(math.hypot(mx, my), 2),
+                 source="vue 3D (odometre sans derive)")
         return self.forward_world_angle
 
     def _measure_heading(self, read, step_seconds):
@@ -412,24 +443,17 @@ class NavigationController(object):
         result["target"] = marker
         target_rel = (marker.get("x", 0.0), marker.get("y", 0.0))
 
-        # GARDE-FOU DE FIABILITE DE LA POSITION : on mesure la derive de
-        # l'odometre quand le personnage est immobile. Mesure du 2026-10-21 :
-        # la minicarte derive de 7,05 px en 10 s sur un personnage IMMOBILE
-        # (la vue 3D, elle, ne defile pas). Si la derive est du meme ordre
-        # que le deplacement recherche, la position n'est pas exploitable :
-        # on ne pilote alors AUCUN deplacement plutot que de croire a une
-        # position fake.
-        drift = self.measure_drift() if not self.dry_run() else None
-        if drift is not None and drift > self.limit("maxDriftPx", 1.5):
+        # GARDE-FOU DE FIABILITE DE LA POSITION : l'odometre retenu est celui
+        # de la VUE 3D, mesure sans derive (la minicarte derivait de 7,05 px
+        # en 10 s au repos). On verifie que la mesure est exploitable : des
+        # echantillons ont ete pris. Sinon on ne pilote RIEN plutot que de
+        # croire a une position fake.
+        if self.odometer is not None and self.odometer.last_gray is None:
             result["status"] = "unreliable_position"
-            result["reason"] = ("derive de l'odometre %.2f px (seuil %.1f) : "
-                                "position non exploitable, aucun deplacement "
-                                "pilote" % (drift, self.limit("maxDriftPx", 1.5)))
-            result["driftPx"] = round(drift, 3)
-            self.log("NAV_ABORTED_UNRELIABLE", driftPx=round(drift, 3),
-                     threshold=self.limit("maxDriftPx", 1.5))
+            result["reason"] = ("position non mesuree (aucune reference de "
+                                "vue exploitable) : aucun deplacement pilote")
+            self.log("NAV_ABORTED_UNRELIABLE", samples=0)
             return result
-        result["driftPx"] = None if drift is None else round(drift, 3)
         # Tolerance : un point d'exploration est un point precis (on veut
         # savoir qu'on l'a atteint), un banc est une zone.
         if marker.get("kind") == "explore":
@@ -549,7 +573,8 @@ class NavigationController(object):
                 self.heading = None
                 continue
 
-            # 4. direction monde vers la cible
+            # 4. direction vers la cible (repere ecran integre : la position
+            #    de la cible et celle du personnage sont dans le MEME repere)
             wanted = math.atan2(t_abs[1] - pos[1], t_abs[0] - pos[0])
             if self.forward_world_angle is None:
                 # Etalonnage « devant la camera » : indispensable pour

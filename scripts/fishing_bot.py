@@ -2113,10 +2113,16 @@ class FishingBot:
         path = os.path.join(ROOT, "state", "fishing-spots.json")
         try:
             db = fspots.load(path)
-            pos = (self._nav_reader.odometer.x, self._nav_reader.odometer.y)
+            # MEME REPERE que la navigation : l'odometre de la VUE 3D (le
+            # repere ecran, stable). La minicarte derive de 7 px / 10 s au
+            # repos : on ne peut pas l'utiliser pour une carte.
+            odo = getattr(self._nav, "odometer", None)
+            if odo is None:
+                return
+            pos = (odo.x, odo.y)
             spot, status = fspots.observe_spot(
                 db, "Lushwater Oasis", coords=pos, score=0.75,
-                kind="cible", reference="minimap",
+                kind="cible", reference="screen",
                 reasons=["peche observee au banc"],
                 detector_version="nav-v2")
             if spot is None:

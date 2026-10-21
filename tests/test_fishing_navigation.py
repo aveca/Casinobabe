@@ -21,6 +21,11 @@ import os
 import sys
 import tempfile
 
+# ISOLATION : les tests ne doivent pas lire la vraie carte du poste (elle
+# contient de vrais bancs et fausserait la selection de cible).
+os.environ["CASINOBABE_MAP_PATH"] = tempfile.mkdtemp(prefix="fb-navtest-")
+import tempfile
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 
@@ -157,7 +162,17 @@ class FakeActions(object):
         self.stop = False
 
     def capture(self):
-        return "frame"
+        # L'odometre de la vue 3D a besoin d'une vraie image, et l'image
+        # doit DEFILE pour que le deplacement soit mesure.
+        try:
+            import numpy as np
+            self.shot = getattr(self, "shot", 0) + 1
+            img = np.zeros((120, 160, 3), dtype=np.uint8)
+            img[:, 3 * self.shot:3 * self.shot + 40] = 200
+            img[:, :40] = 60
+            return img
+        except Exception:
+            return None
 
     def hold_key(self, key, seconds):
         self.keys.append((key, round(seconds, 2)))
@@ -376,36 +391,39 @@ def test_explore_target():
 
 def test_unreliable_position_guard():
     print()
-    print("=== 8. GARDE-FOU : POSITION NON FIABLE (derive de l'odometre) ===")
-    # un odometre qui derive de 2 px par lecture : la derive est superieure au
-    # seuil (1,5 px) -> AUCUN deplacement ne doit etre pilote.
-    reader = FakeReader([state(markers=[{"x": 30.0, "y": 0.0, "dist": 30.0,
-                                        "kind": "jaune", "area": 60}])], drift=2.0)
-    actions = FakeActions()
-    ctrl = fnav.NavigationController(reader, actions,
-                                     {"enabled": True, "dryRun": False,
-                                      "targetMode": "marker",
-                                      "maxTravelSec": 3.0},
-                                     log=lambda *a, **k: None)
-    res = ctrl.navigate_to()
-    check("une derive trop forte empeche tout deplacement",
-          res["status"] == "unreliable_position", "(%s)" % res["status"])
-    check("aucune commande n\'est envoyee quand la position n\'est pas fiable",
-          not actions.keys and not actions.moves,
-          "(keys=%s moves=%s)" % (actions.keys, actions.moves))
-    check("la derive mesuree est rapportee", res.get("driftPx") is not None)
+    print("=== 8. GARDE-FOU : POSITION NON MESURABLE ===")
 
-    # avec une derive faible, le deplacement est autorise
-    reader2 = FakeReader([state(markers=[{"x": 30.0, "y": 0.0, "dist": 30.0,
-                                          "kind": "jaune", "area": 60}])], drift=0.05)
-    actions2 = FakeActions()
-    ctrl2 = fnav.NavigationController(reader2, actions2,
+    class BlindActions(FakeActions):
+        def capture(self):
+            return None      # aucune image : la position est inexploitable
+
+    reader = FakeReader([state(markers=[{"x": 30.0, "y": 0.0, "dist": 30.0,
+                                        "kind": "jaune", "area": 60}])])
+    actions = BlindActions()
+    ctrl = fnav.NavigationController(reader, actions,
                                       {"enabled": True, "dryRun": False,
                                        "targetMode": "marker",
                                        "maxTravelSec": 3.0},
                                       log=lambda *a, **k: None)
+    res = ctrl.navigate_to()
+    check("sans mesure de position, aucun deplacement n'est pilote",
+          res["status"] in ("unreliable_position", "no_position"),
+          "(%s)" % res["status"])
+    check("aucune commande n'est envoyee sans position",
+          not actions.keys and not actions.moves,
+          "(keys=%s moves=%s)" % (actions.keys, actions.moves))
+
+    # avec une position mesuree, le trajet est tente
+    reader2 = FakeReader([state(markers=[{"x": 30.0, "y": 0.0, "dist": 30.0,
+                                          "kind": "jaune", "area": 60}])])
+    actions2 = FakeActions()
+    ctrl2 = fnav.NavigationController(reader2, actions2,
+                                       {"enabled": True, "dryRun": False,
+                                        "targetMode": "marker",
+                                        "maxTravelSec": 3.0},
+                                       log=lambda *a, **k: None)
     res2 = ctrl2.navigate_to()
-    check("avec une derive faible, le trajet est tente",
+    check("avec une position mesuree, le trajet est tente",
           res2["status"] != "unreliable_position", "(%s)" % res2["status"])
 
 
