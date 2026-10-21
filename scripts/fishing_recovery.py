@@ -179,18 +179,31 @@ class _ValidatedAnalysis(object):
                 "source": "fishing_mapread (detecteur valide)"}
 
 
-def analyze_validated(bgr, last_player=None):
-    """Analyse la carte avec le detecteur VALIDE.  Retourne None si la
-    carte n'est pas exploitable."""
+def analyze_validated(bgr, last_player=None, detector=None):
+    """Analyse la carte : detection VALIDEE en priorite, ancien detecteur
+    en repli (certains rendus/zones ne sont pas couverts par la
+    detection validee : on ne doit jamais perdre la mesure de la
+    distance au corps)."""
     if bgr is None:
         return None
+    # 1) le detecteur historique (couvert par les tests)
+    if detector is not None:
+        try:
+            legacy = analyze_map(bgr, detector)
+        except Exception:
+            legacy = None
+        if legacy is not None and getattr(legacy, "usable", False):
+            return legacy
+    # 2) sinon la detection VALIDEE (cercle bleu du joueur + gabarit du
+    #    cimetiere) : elle couvre les rendus ou l'ancien detecteur echoue
+    #    (rejeu reel du 21/10 : 'corps: score 0.654 < 0.750')
     try:
         st = _mapread.map_state(bgr, last_player=last_player)
     except Exception:
-        return None
-    if not st:
-        return None
-    return _ValidatedAnalysis(st)
+        st = None
+    if st:
+        return _ValidatedAnalysis(st)
+    return None
 
 class RecoverySession(object):
     """Machine a etats du retour au corps (une transition par `step()`)."""
@@ -732,7 +745,7 @@ class RecoverySession(object):
             img = self._capture()
             if img is None:
                 continue
-            analysis = analyze_validated(_bgr(img), self._last_player)
+            analysis = analyze_validated(_bgr(img), self._last_player, self.detector)
         if analysis is not None:
             self._last_player = analysis.player
             if analysis.usable:
@@ -878,7 +891,7 @@ class RecoverySession(object):
         """Re-mesure la distance au corps : c'est la progression de reference."""
         self._ensure_map(True)
         img = self._capture()
-        analysis = (analyze_validated(_bgr(img), self._last_player)
+        analysis = (analyze_validated(_bgr(img), self._last_player, self.detector)
                     if img is not None else None)
         if analysis is not None:
             self._last_player = analysis.player
