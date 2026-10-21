@@ -217,14 +217,21 @@ class RecoverySession(object):
         return self.ex.screen.grab(force=True)
 
     def _world_view(self):
-        """Capture de la VUE 3D (la carte est fermee si besoin).
+        """Capture de la VUE 3D, carte du monde FERMEE et CONFIRMEE.
 
         Indispensable : la carte contient des elements DORES qui seraient
-        confondus avec l'invite "Resurrect".
+        confondus avec l'invite "Resurrect", et - surtout - elle capte le
+        focus clavier : un clic d'interaction pose sur elle ferait un
+        « Right Click On Map To Zoom Out » au lieu d'ouvrir le dialogue.
+
+        Mesure du 21/10 : la carte peut etre ouverte SANS couvrir la zone
+        echantillonnee (mapOpen=True et monde visible), donc le seul
+        controle fiable est l'ETAT DE LA CARTE, confirme par une nouvelle
+        capture.
         """
         img = self._capture()
         if img is not None and map_is_open(_bgr(img)):
-            self._ensure_map(False)
+            self._ensure_world()
             img = self._capture()
         self.map_open = False
         return img

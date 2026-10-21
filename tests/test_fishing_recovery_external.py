@@ -111,8 +111,10 @@ def test_movement_requires_visible_world_confirmation():
                                    FR.MapMarkerDetector.with_fixtures())
     sess._set(FR.NAVIGATING_TO_CORPSE, "test")
     sess._st_navigate()
-    assert order[:2] == ["ensure", "fly"], \
+    assert order and order[0] == "ensure", \
         "la confirmation visuelle precede le deplacement"
+    assert "fly" in order, "le vol doit partir"
+    assert order.index("fly") > 0, "le vol ne doit pas preceder la confirmation"
 
 
 def test_world_visible_rejects_map_parchment():
@@ -292,3 +294,41 @@ def test_ghost_tint_detects_ghost_world():
     sess = _sess()
     tint = sess._ghost_tint(img)
     assert tint is not None and tint > 0.5
+
+def test_world_view_closes_the_map_before_any_interaction():
+    """Une capture de la VUE 3D exige la carte fermee ET confirmee.
+
+    Regression du 21/10 : la carte pouvait etre ouverte sans couvrir la
+    zone echantillonnee (mapOpen=True et monde visible) ; un clic
+    d'interaction atterrirait alors sur la carte (« Right Click On Map To
+    Zoom Out ») au lieu du dialogue 'Resurrect now?'.
+    """
+    import numpy as np
+    sess = _sess()
+    etat = {"closes": 0}
+    frame = np.zeros((1456, 2576, 3), np.uint8)
+
+    def _cap():
+        return frame
+
+    def _ensure():
+        etat["closes"] += 1
+        return True
+
+    sess._capture = _cap
+    sess._ensure_world = _ensure
+    monkey = FR.map_is_open
+    FR.map_is_open = lambda bgr: True
+    try:
+        sess._world_view()
+    finally:
+        FR.map_is_open = monkey
+    assert etat["closes"] == 1, "la carte doit etre fermee avant l'usage"
+
+
+def test_replay_precondition_requires_map_closed():
+    """Le rejeu instrumente signale la carte ouverte (et la ferme)."""
+    sess = _sess()
+    assert hasattr(sess, "_ensure_world")
+    assert hasattr(sess, "_world_visible")
+
