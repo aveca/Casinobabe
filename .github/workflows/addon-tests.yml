@@ -123,4 +123,5 @@ jobs:
 
       - name: Explain why the contract test is skipped on Linux
         if: runner.os != 'Windows'
-        run: echo "tests/test_fishing_bot_contract.py : ignore hors Windows (depend de pywin32)"
+        run: |
+          echo "tests/test_fishing_bot_contract.py : ignore hors Windows (depend de pywin32)"
