@@ -439,7 +439,7 @@ def player_facing(crop, radius=16):
     le bas a l'ecran => on inverse le signe vertical).
     """
     if crop is None:
-        crop = self.last_crop
+        return None
     if crop is None or cv2 is None:
         return None
     h, w = crop.shape[:2]
