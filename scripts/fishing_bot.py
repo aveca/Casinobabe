@@ -1077,6 +1077,9 @@ class FishingBot:
                 rec["phase"] = "GHOST"
                 self.log("CORPSE_PHASE", phase="GHOST",
                          note="fantome confirme desature - navigation possible")
+                if self._recover_sm is not None:
+                    self._recover_sm.feed(rsm.Event(rsm.EVENT_GHOST_CONFIRMED,
+                                                    {"evidence": ev}))
             return
 
         if rec["phase"] in ("RELEASE", "ARRIVED"):
