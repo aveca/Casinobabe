@@ -1730,8 +1730,10 @@ class FishingBot:
                             sess = RecoverySession(
                                 ex, state_reader=st_reader, safety=safety,
                                 memory=incidents, log=self.log,
-                                config={"maxAttempts": 60, "maxMapAttempts": 3,
-                                        "stepPx": 900, "relocalizeEvery": 6})
+                                config={'maxAttempts': 60, 'maxMapAttempts': 3,
+                                        'stepPx': 900, 'relocalizeEvery': 6,
+                                        'clickPx': 900, 'flySeconds': 3.0,
+                                        'aimTolDeg': 14.0})
                             res = sess.run(max_transitions=25)
                             self.log("RECOVERY_RUN", state=sess.state,
                                      ok=bool(res.get("ok")),
