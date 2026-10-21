@@ -214,6 +214,13 @@ DEFAULT_CONFIG = {
     "baitKey": "S",            # touche de l'appât (clic droit sur l'objet dans l'inventaire)
     "rodKey": "3",             # touche de la canne à pêche (clic sur la canne équipée)
     "baitRefreshSec": 600,     # ré-appliquer l'appât toutes les 10 minutes (600 s)
+    # FIX 2026-10-21 : la camera suit le curseur. Deplacer le curseur pendant
+    # la peche = faire pivoter la camera = « le bot regarde ailleurs » et
+    # perd sa cible. Le clic etant envoye en SendMessage aux coordonnees du
+    # flotteur, le curseur n'est pas necessaire : les deux comportements sont
+    # donc DESACTIVES par defaut (ils restent activables pour un diagnostic).
+    "trackCursor": False,      # suivi du curseur sur le flotteur (pivot camera)
+    "clickViaCursor": False,   # clic via SetCursorPos + mouse_event (pivot camera)
     # --- Navigation V2 (FONCTION SEPAREE, desactivee par defaut) ----------
     # La navigation V2 est une brique OPTIONNELLE : desactivee, le bot se
     # comporte exactement comme la branche de stabilisation (peche au meme
@@ -1952,17 +1959,31 @@ class FishingBot:
         trigger = cfg.get("trigger", "idle")
         idle_needed = int(cfg.get("idleCyclesBeforeMove", 3))
         if trigger != "always" and self._nav_idle_cycles < idle_needed:
-            self.log("NAV_GATE_WAIT", trigger=trigger,
-                     idleCycles=self._nav_idle_cycles, needed=idle_needed,
-                     note="banc courant encore productif")
+            self._nav_gate_log("idle", trigger=trigger,
+                               idleCycles=self._nav_idle_cycles, needed=idle_needed,
+                               note="banc courant encore productif")
             return False
         interval = float(cfg.get("minIntervalSec", 60.0))
         since = time.time() - self._nav_last_move_at
         if since < interval:
-            self.log("NAV_GATE_WAIT", trigger=trigger, sinceLastSec=round(since, 1),
-                     intervalSec=interval, note="intervalle minimum non ecoule")
+            self._nav_gate_log("interval", trigger=trigger,
+                               sinceLastSec=round(since, 1), intervalSec=interval,
+                               note="intervalle minimum non ecoule")
             return False
         return True
+
+    def _nav_gate_log(self, kind, **kw):
+        """Journalise le motif d'attente, au plus une fois par minute.
+
+        Sans cette limite, la porte de navigation écrivait plusieurs
+        dizaines de lignes par minute (bruit inutile dans le journal).
+        """
+        now = time.time()
+        last = getattr(self, "_nav_gate_log_at", 0.0)
+        if now - last < 60.0:
+            return
+        self._nav_gate_log_at = now
+        self.log("NAV_GATE_WAIT", kind=kind, **kw)
 
     def _maybe_navigate(self, hwnd):
         """Déplace le personnage vers un banc (navigation V2).
@@ -1993,9 +2014,25 @@ class FishingBot:
         if (time.time() - self._nav_last_move_at) < interval:
             return None
         # Pendant le trajet, le curseur appartient au controleur de navigation.
+        # On memorize sa position pour la RESTAURER ensuite : la camera suit
+        # le curseur, donc le remettre a sa place rend l'orientation de la
+        # vue (et la continuitye de la scene).
         self._nav_active = True
+        cursor_before = None
+        try:
+            import win32api
+            cursor_before = win32api.GetCursorPos()
+        except Exception:
+            cursor_before = None
         res = self._nav.navigate_to()
         self._nav_last_move_at = time.time()
+        if cursor_before is not None:
+            try:
+                import win32api
+                win32api.SetCursorPos(cursor_before)
+                self._cursor_set = cursor_before
+            except Exception:
+                pass
         dry = bool(cfg.get("dryRun", True))
         self._nav_active = False
         self.log("NAV_RESULT",
@@ -2520,6 +2557,14 @@ class FishingBot:
         # la souris.
         if getattr(self, "_nav_active", False):
             return True
+        # FIX 2026-10-21 (retour utilisateur) : le suivi du curseur fait
+        # PIVOTER la camera (le jeu suit la souris). Le bot « regardait
+        # ailleurs », la vue balayait le decor et le flotteur sortait du
+        # champ. Or le clic part en SendMessage AUX COORDONNEES du flotteur :
+        # le curseur physique n'est pas necessaire. Le suivi est donc
+        # DESACTIVE par defaut (config trackCursor) et reserve au diagnostic.
+        if not self.config.get("trackCursor", False):
+            return True
         sx, sy = rect[0] + bx, rect[1] + by
         try:
             cx, cy = win32api.GetCursorPos()
@@ -2670,7 +2715,18 @@ class FishingBot:
         import win32con
         sx, sy = rect[0] + x, rect[1] + y
 
-        if focus_lease is not None:
+        # FIX 2026-10-21 (retour utilisateur) : le bot « regardait ailleurs »,
+        # « changeait la camera » et « se perdait ».
+        # Cause reelle : le chemin « WoW au premier plan » faisait un
+        # SetCursorPos sur le flotteur, et le pre-positionnement (_track_cursor)
+        # deplace le curseur a chaque frame de la morsure. Or la CAMERA suit
+        # le curseur : chaque deplacement de curseur = un pivot de camera, donc
+        # une vue qui balaye le decor et un flotteur qui sort du champ.
+        # Le clic est de toute facon envoye par SendMessage AUX COORDONNEES du
+        # flotteur : le curseur physique n'est donc pas necessaire.
+        # -> on n'utilise PLUS JAMAIS le chemin qui bouge le curseur, sauf
+        #    option explicite (clickViaCursor) pour un diagnostic.
+        if focus_lease is not None or not self.config.get("clickViaCursor", False):
             # Arrière-plan : clic via SendMessage vers la fenêtre WoW, sans
             # déplacer le curseur physique ni cliquer sur l'écran de l'user.
             if not send_mouse_click_wm(hwnd, sx, sy):
