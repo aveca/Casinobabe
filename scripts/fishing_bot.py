@@ -615,6 +615,7 @@ class FishingBot:
         self.counters = {"casts": 0, "bites": 0, "clicks": 0, "errors": 0, "unreliable": 0}
         self.calib = load_json(CALIB_FILE, {})
         self._bind_checked = None
+        self._recover_sm = None  # machine à états de récupération (lazye)
 
     # --- journalisation ---------------------------------------------------
     def log(self, event, **kw):
@@ -913,6 +914,10 @@ class FishingBot:
         self._dead_since = time.time()
         self._dead_streak = 0
         self._recover_start()
+        # Fait remonter la mort à la machine à états de récupération, si active.
+        if self._recover_sm is not None:
+            self._recover_sm.feed(rsm.Event(rsm.EVENT_DEATH_DETECTED,
+                                            {"certain": certain, "evidence": ev}))
         self._mem_end_cycle("unknown", {"note": "mort personnage - cycle suspendu"})
         self._mem(memory.observe, "error", zone="The Barrens", source="bot",
                   confidence="forte (dialogue)" if certain else "moyenne (monde desature)",
