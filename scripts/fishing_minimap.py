@@ -274,6 +274,7 @@ class MinimapReader(object):
         crop = self.geometry.crop(bgr)
         if crop is None:
             return res
+        self.last_crop = crop
         if detect_markers:
             res["markers"] = self.find_markers(crop)
         res["ok"] = True
@@ -419,6 +420,61 @@ class WorldOdometer(object):
         except cv2.error:
             return None
         return math.hypot(float(sx), float(sy))
+
+
+# ---------------------------------------------------------------------------
+def player_facing(crop, radius=16):
+    """Orientation REELLE du personnage, en radians, repere NORD.
+
+    La minicarte est verrouillee au nord : la fleche du joueur, posee au
+    centre du disque, pointe dans la direction du personnage. C'est la
+    SEULE source directe du cap dont on dispose (la camera et le
+    personnage se confondent quand on avance, et le deplacement ne se
+    mesure qu'apres coup).
+
+    Retourne None si la fleche n'est pas identifiable (contraste
+    insuffisant, icone au centre, zone masquee).
+
+    Convention : 0 = est, +90 deg = sud (repere de la minicarte, y vers
+    le bas a l'ecran => on inverse le signe vertical).
+    """
+    if crop is None:
+        crop = self.last_crop
+    if crop is None or cv2 is None:
+        return None
+    h, w = crop.shape[:2]
+    cx = cy = w // 2
+    r = int(radius)
+    y0, y1 = max(0, cy - r), min(h, cy + r)
+    x0, x1 = max(0, cx - r), min(w, cx + r)
+    patch = crop[y0:y1, x0:x1]
+    if patch.size == 0:
+        return None
+    gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+    # La fleche est CLAIRE sur un fond sombre (nuit comprise).
+    thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    ys, xs = np.nonzero(thr)
+    if len(xs) < 5:
+        return None
+    mx, my = float(xs.mean()), float(ys.mean())
+    dx = xs - mx
+    dy = ys - my
+    cov = np.array([[(dx * dx).mean(), (dx * dy).mean()],
+                    [(dx * dy).mean(), (dy * dy).mean()]])
+    try:
+        vals, vecs = np.linalg.eigh(cov)
+    except np.linalg.LinAlgError:
+        return None
+    axis = vecs[:, int(np.argmax(vals))]
+    proj = dx * axis[0] + dy * axis[1]
+    tip = int(np.argmax(proj))
+    # une fleche est allongee : si la forme est isotrope, ce n'est pas
+    # la fleche (une icone ronde par exemple).
+    extent = float(np.max(proj) - np.min(proj))
+    if extent < 3.0:
+        return None
+    # repere ecran (y vers le bas) -> repere nord (y vers le haut)
+    return math.atan2(-(ys[tip] - my), xs[tip] - mx)
 
 
 def world_displacement(frame_a, frame_b, region=(0.12, 0.72, 0.05, 0.62)):

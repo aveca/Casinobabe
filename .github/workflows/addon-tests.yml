@@ -98,7 +98,8 @@ jobs:
                    tests/test_fishing_controls.py \
                    tests/test_fishing_skills.py \
                    tests/test_fishing_metrics.py \\
-                   tests/test_fishing_actions.py; do
+                   tests/test_fishing_actions.py \\
+                   tests/test_desktop_package.py; do
             if [ -f "$t" ]; then
               echo "::group::$t"
               python "$t"
