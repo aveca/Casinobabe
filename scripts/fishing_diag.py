@@ -16,6 +16,7 @@ Ce module sait lire les trois, ce qui rend le diagnostic utilisable meme
 si un seul canal est disponible.
 """
 
+import math
 import os
 import re
 import time
@@ -33,8 +34,70 @@ CHAT_PREFIX = "[DiagCorps]"
 #: Marqueur de synchronisation de la bande de pixels (violet)
 SYNC_RGB = (160, 0, 200)
 
-#: Champs attendus dans le payload
+#: Champs attendus dans le payload (format long, publie une fois)
 EXPECTED = ("mapID=", "corpseMap=", "playerMap=", "worldPos=")
+
+#: Champs attendus dans le payload COMPACT (canal vivant, bande de pixels)
+EXPECTED_COMPACT = ("g=", "m=", "p=", "c=")
+
+
+def parse_compact(text):
+    """Decode le format compact 'g=1 m=1413 p=.. c=.. b=.. d=..'.
+
+    Retourne un dict, ou None si le texte n'est pas au format attendu.
+    """
+    if not text:
+        return None
+    flat = str(text)
+    # le message d'erreur (ce=) est en DERNIER et peut contenir des
+    # espaces : on le sort avant de decouper sur les separateurs
+    err = ""
+    for sep in (";ce=", " ce="):
+        if sep in flat:
+            flat, _, err = flat.partition(sep)
+            break
+    out = {}
+    for tok in flat.replace(";", " ").split(" "):
+        if "=" not in tok:
+            continue
+        k, _, v = tok.partition("=")
+        out[k] = v
+    if err:
+        out["ce"] = err.strip()
+    # les cles attendues sont SANS le '=' (c'est le prefixe du token)
+    if not all(k in out for k in ("g", "m", "p", "c")):
+        return None
+    res = {"ghost": out.get("g") == "1",
+           "mapID": out.get("m"),
+           "corpseApi": out.get("cd") == "1",
+           "retrieveCorpseExists": out.get("rc") == "1",
+           "retrieveSpellKnown": out.get("sp") == "1",
+           "castErr": out.get("ce") or None}
+    try:
+        px, py = out["p"].split(",")
+        cx, cy = out["c"].split(",")
+        res["playerMap"] = (float(px), float(py))
+        res["corpseMap"] = (float(cx), float(cy))
+        dx = res["corpseMap"][0] - res["playerMap"][0]
+        dy = res["corpseMap"][1] - res["playerMap"][1]
+        res["delta"] = (dx, dy)
+        res["distance"] = math.hypot(dx, dy)
+        # cap vers le corps, repere NORD (0 = est, +90 = nord) ; y carte
+        # croissant = vers le SUD.
+        res["bearingDeg"] = math.degrees(math.atan2(-dy, dx))
+    except (ValueError, KeyError):
+        return None
+    if "b" in out:
+        try:
+            res["bearingDeg"] = float(out["b"])
+        except ValueError:
+            pass
+    if "d" in out:
+        try:
+            res["distance"] = float(out["d"])
+        except ValueError:
+            pass
+    return res
 
 
 def _bgr(img):
@@ -222,15 +285,19 @@ def _read_grid(bgr, x0, y0, sq, max_rows=8, largeur=60):
         if not line:
             break
         out.append("".join(line))
-    return " ".join(out)
+    # les lignes sont concatenees SANS separateur : le payload peut
+    # contenir des espaces (message d'erreur), on ne doit donc PAS
+    # resintroduire d'espace entre deux lignes.
+    return "".join(out)
 
 
-def read_strip_payload(img):
+def read_strip_payload(img, compact=False):
     """Decode la bande de pixels. Retourne (texte|None, echelle|None).
 
     La convention exacte peut varier (nombre de caracteres par ligne) :
     on essaie les variantes plausibles et on ne retient que celle dont le
-    texte contient TOUTES les cles attendues.
+    texte contient TOUTES les cles attendues.  `compact` attend le format
+    court (canal vivant publie par le ticker de l'addon).
     """
     bgr = _bgr(img)
     if bgr is None:
@@ -241,15 +308,16 @@ def read_strip_payload(img):
     x0, y0, x1, y1 = sync
     sq = _square_size(bgr, x0, y0, x1, y1)
     echelles = ([sq] if sq else []) + [12, 14, 16, 18, 20, 22, 24, 26, 10, 8]
+    attendu = EXPECTED_COMPACT if compact else EXPECTED
     for s in echelles:
         if not s:
             continue
-        for largeur in (60, 59, 58, 61, 62):
+        for largeur in (60, 59, 58, 61, 62, 64, 66):
             text = _read_grid(bgr, x0, y0, s, largeur=largeur)
             if not text:
                 continue
             flat = text.replace(" ", "")
-            if all(k.replace(" ", "") in flat for k in EXPECTED):
+            if all(k.replace(" ", "") in flat for k in attendu):
                 return text, s
     return None, None
 
