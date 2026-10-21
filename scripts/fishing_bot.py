@@ -574,7 +574,13 @@ class _NavigationActions(object):
             align = (vx * ux + vy * uy) / d   # -1..1
             if align < 0.15:
                 continue                      # pas dans la direction voulue
-            score = align - 0.00025 * d
+            # Priorite : l'ALIGNEMENT d'abord, puis la DISTANCE (un point
+            # lointain donne un auto-run plus long, donc un deplacement plus
+            # grand ; le curseur du bot revient ensuite a sa position).
+            if align >= 0.75:
+                score = 1000.0 + d
+            else:
+                score = align - 0.00025 * d
             if best_score is None or score > best_score:
                 best_score = score
                 best = (px, py)
@@ -1519,9 +1525,33 @@ class FishingBot:
                 self._fail("Écran WoW non vérifié après 6 tentatives (capture invalide ou pas le jeu).", err)
                 return
 
+            # RESOLUTION DE LA TOUCHE DE LANCER (2026-10-21).
+            # La touche configuree peut ne pas etre liee a l'action de peche
+            # sur le compte REELLEMENT joue : sur la machine de developpement,
+            # la config porte castKey="2" (liee a ACTIONBUTTON7) alors que le
+            # compte joue lie "X" a ACTIONBUTTON10 (la peche). Resultat
+            # mesure : 0 capture, le bot pressait la mauvaise touche.
+            # On resout donc depuis les raccourcis REELS (lecture seule) et on
+            # journalise la decision. Le bot ne modifie JAMAIS les binds.
+            self._cast_key_source = "config"
+            try:
+                import fishing_controls as fctl
+                ctl = fctl.load_controls()
+                key, diag = ctl.resolve_cast_key(self.config.get("castKey"))
+                if key and key != (self.config.get("castKey") or "").upper():
+                    self.config["castKey"] = key
+                    self._cast_key_source = "bindings"
+                    self.log("CAST_KEY_RESOLVED", castKey=key,
+                             reason=diag.get("reason"),
+                             activeAccount=diag.get("activeAccount"),
+                             configured=diag.get("configured"))
+            except Exception as exc:
+                self.log("CAST_KEY_RESOLVE_FAILED", error=repr(exc))
+
             ok, msg = check_fishing_keybinding(self.config)
             self._bind_checked = msg
-            self.log("KEYBINDING_CHECK", ok=ok, detail=msg)
+            self.log("KEYBINDING_CHECK", ok=ok, detail=msg,
+                     castKeySource=self._cast_key_source)
             if not ok:
                 self._fail(msg)
                 return

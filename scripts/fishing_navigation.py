@@ -157,11 +157,14 @@ class NavigationController(object):
 
         1. la CARTE V2 : un banc memorise (position absolue dans le repere
            integre) — c'est la cible du produit (« aller pêcher ailleurs ») ;
-        2. sinon, en repli, un MARQUEUR de cible suivi observe sur la
-           minicarte (position relative au joueur).
-
-        Les marqueurs sont des unites SUIVIES : ils bougent. Ils servent donc
-        de repli, pas de destination de ronde.
+        2. sinon, l'EXPLORATION : un point tire dans le repere integre a une
+           distance donnee. C'est ce qui permet d'amorcer la carte : sans
+           deplacement, la carte ne contient que la position courante, et
+           aucun banc ne peut etre atteint ;
+        3. en dernier recours, un MARQUEUR de cible suivi observe sur la
+           minicarte (position relative au joueur). Les marqueurs sont des
+           unites SUIVIES : ils bougent, ils servent donc de repli, pas de
+           destination de ronde.
         """
         want = (self.config.get("targetMode", "map") or "map").lower()
         if want in ("map", "auto"):
@@ -190,6 +193,17 @@ class NavigationController(object):
                                 "reliability": round(fspots.reliability(s), 3)}
                 except Exception:
                     pass
+        # AMORCAGE : exploration vers un point du repere integre. L'arrivee
+        # sera prouvee par l'ODOMETRE (position mesuree), donc independante
+        # de la commande de deplacement.
+        if want in ("map", "auto", "explore"):
+            dist = self.limit("exploreDistancePx", 15.0)
+            angle = self._explore_angle()
+            cur = read["position"]
+            pos = (cur["x"] + math.cos(angle) * dist,
+                   cur["y"] + math.sin(angle) * dist)
+            return {"kind": "explore", "id": None, "pos": pos,
+                    "dist": dist, "angle": round(math.degrees(angle), 1)}
         markers = read.get("markers") or []
         if not markers:
             return None
@@ -200,7 +214,40 @@ class NavigationController(object):
         pool = far or markers
         return pool[0]
 
+    def _explore_angle(self):
+        """Direction d'exploration : differente a chaque tentative, mais
+        REPRODUCTIBLE pour une meme graine (le 'seed' est fourni par le
+        contexte, sinon on utilise l'angle memorise)."""
+        seed = self.config.get("exploreSeed")
+        if seed is None:
+            seed = getattr(self, "_explore_seed", 0)
+            self._explore_seed = seed + 1
+        # angle pseudo-aleatoire mais deterministe : 137 deg est un nombre
+        # premier, la suite des angles est donc bien repartie.
+        return math.radians((seed * 137) % 360)
+
     # ------------------------------------------------------ deplacement
+    def measure_drift(self, samples=6, pause=0.3):
+        """Derive de l'odometre quand le personnage est immobile.
+
+        La minicarte n'est PAS un odometre fiable : l'eau animee fait
+        deriver la correlation de phase de facon systematique (derive
+        mesuree de 7,05 px en 10 s sur un personnage immobile, le 2026-10-21 ;
+        la vue 3D, elle, ne defile pas). Cette mesure permet de REFUSER de
+        piloter un deplacement quand la position n'est pas exploitable.
+        """
+        import time as _t
+        odo = getattr(self.reader, "odometer", None)
+        if self.last_read is None or odo is None:
+            return None
+        before = (odo.x, odo.y)
+        for _ in range(max(2, int(samples))):
+            _t.sleep(pause)
+            self.read()
+        dx = self.reader.odometer.x - before[0]
+        dy = self.reader.odometer.y - before[1]
+        return math.hypot(dx, dy)
+
     def _screen_offset(self, world_angle):
         """Decalage ecran (dx, dy) a cliquer pour aller dans la direction monde.
 
@@ -335,7 +382,6 @@ class NavigationController(object):
         max_distance = max_distance if max_distance is not None else self.limit("maxDistancePx", 400.0)
         step_seconds = self.limit("stepSeconds", 0.35)
         probe_seconds = self.limit("probeSeconds", 0.25)
-        tol = self.limit("arriveTolerancePx", DEFAULT_ARRIVE_PX)
 
         result = {"status": "no_position", "reason": "", "travelled": 0.0,
                   "seconds": 0.0, "turns": 0, "recoveries": 0, "start": None,
@@ -364,13 +410,38 @@ class NavigationController(object):
             result["reason"] = "aucune cible observee (ni banc memorise, ni marqueur)"
             return result
         result["target"] = marker
+        target_rel = (marker.get("x", 0.0), marker.get("y", 0.0))
+
+        # GARDE-FOU DE FIABILITE DE LA POSITION : on mesure la derive de
+        # l'odometre quand le personnage est immobile. Mesure du 2026-10-21 :
+        # la minicarte derive de 7,05 px en 10 s sur un personnage IMMOBILE
+        # (la vue 3D, elle, ne defile pas). Si la derive est du meme ordre
+        # que le deplacement recherche, la position n'est pas exploitable :
+        # on ne pilote alors AUCUN deplacement plutot que de croire a une
+        # position fake.
+        drift = self.measure_drift() if not self.dry_run() else None
+        if drift is not None and drift > self.limit("maxDriftPx", 1.5):
+            result["status"] = "unreliable_position"
+            result["reason"] = ("derive de l'odometre %.2f px (seuil %.1f) : "
+                                "position non exploitable, aucun deplacement "
+                                "pilote" % (drift, self.limit("maxDriftPx", 1.5)))
+            result["driftPx"] = round(drift, 3)
+            self.log("NAV_ABORTED_UNRELIABLE", driftPx=round(drift, 3),
+                     threshold=self.limit("maxDriftPx", 1.5))
+            return result
+        result["driftPx"] = None if drift is None else round(drift, 3)
+        # Tolerance : un point d'exploration est un point precis (on veut
+        # savoir qu'on l'a atteint), un banc est une zone.
+        if marker.get("kind") == "explore":
+            tol = self.limit("exploreTolerancePx", 4.0)
+        else:
+            tol = self.limit("arriveTolerancePx", DEFAULT_ARRIVE_PX)
 
         # Position ABSOLUE de la cible dans le repere integre :
         #  - un banc memorise a deja sa position absolue ;
         #  - un marqueur de minicarte est RELATIF au joueur : on le reconvertit
         #    a chaque boucle (le joueur, lui, bouge).
-        is_bank = marker.get("kind") == "bank"
-        target_rel = (marker.get("x", 0.0), marker.get("y", 0.0))
+        is_bank = marker.get("kind") in ("bank", "explore")
 
         def target_abs_now(position):
             if is_bank:

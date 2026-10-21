@@ -19,6 +19,7 @@ import json
 import math
 import os
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
@@ -114,16 +115,36 @@ def test_minimap_corpus():
 class FakeReader(object):
     """Lecteur simule : renvoie une suite d'etats de minicarte."""
 
-    def __init__(self, states):
+    def __init__(self, states, drift=0.0):
         self.states = list(states)
         self.calls = 0
+        self.odometer = _FakeOdometer(drift)
 
     def read(self, img):
         if not self.states:
             return None
         state = self.states[min(self.calls, len(self.states) - 1)]
         self.calls += 1
+        # l'odometre simule evolves comme le vrai (derive eventuelle)
+        self.odometer.read()
         return state
+
+
+class _FakeOdometer(object):
+    """Odometre simule : derive configurable (pour tester le garde-fou)."""
+
+    def __init__(self, drift=0.0):
+        self.x = 0.0
+        self.y = 0.0
+        self.drift = drift
+        self.reads = 0
+
+    def read(self):
+        self.reads += 1
+        self.x += self.drift
+        self.y += self.drift
+        return {"ok": True, "x": self.x, "y": self.y, "dx": self.drift,
+                "dy": self.drift, "confidence": 1.0, "moved": bool(self.drift)}
 
 
 class FakeActions(object):
@@ -177,7 +198,7 @@ def test_navigation_dry_run():
                                           "kind": "jaune", "area": 60}])])
     actions = FakeActions()
     ctrl = fnav.NavigationController(reader, actions,
-                                      {"enabled": True, "dryRun": True},
+                                      {"enabled": True, "dryRun": True, "targetMode": "marker"},
                                       log=lambda *a, **k: None)
     res = ctrl.navigate_to()
     check("le dry-run se termine en 'dry_run'", res["status"] == "dry_run",
@@ -196,7 +217,7 @@ def test_navigation_arrival_requires_observation():
                                           "kind": "jaune", "area": 60}])])
     actions = FakeActions()
     ctrl = fnav.NavigationController(reader, actions,
-                                      {"enabled": True, "dryRun": False,
+                                      {"enabled": True, "dryRun": False, "targetMode": "marker",
                                        "maxTravelSec": 1.0},
                                       log=lambda *a, **k: None)
     res = ctrl.navigate_to()
@@ -210,7 +231,7 @@ def test_navigation_arrival_requires_observation():
     ])
     actions2 = FakeActions()
     ctrl2 = fnav.NavigationController(reader2, actions2,
-                                       {"enabled": True, "dryRun": False,
+                                       {"enabled": True, "dryRun": False, "targetMode": "marker",
                                         "maxTravelSec": 5.0},
                                        log=lambda *a, **k: None)
     res2 = ctrl2.navigate_to()
@@ -229,7 +250,7 @@ def test_navigation_guards():
     reader = FakeReader([state(markers=[{"x": 40.0, "y": 0.0, "dist": 40.0,
                                           "kind": "jaune", "area": 60}])])
     ctrl = fnav.NavigationController(reader, actions,
-                                      {"enabled": True, "dryRun": False},
+                                      {"enabled": True, "dryRun": False, "targetMode": "marker"},
                                       log=lambda *a, **k: None)
     res = ctrl.navigate_to()
     check("l'arret d'urgence interrompt le trajet", res["status"] == "aborted",
@@ -243,7 +264,7 @@ def test_navigation_guards():
     reader2 = FakeReader([state(markers=[{"x": 40.0, "y": 0.0, "dist": 40.0,
                                            "kind": "jaune", "area": 60}])])
     ctrl2 = fnav.NavigationController(reader2, actions2,
-                                       {"enabled": True, "dryRun": False},
+                                       {"enabled": True, "dryRun": False, "targetMode": "marker"},
                                        log=lambda *a, **k: None)
     res2 = ctrl2.navigate_to()
     check("l'activite humaine suspend le trajet", res2["status"] == "aborted",
@@ -252,7 +273,7 @@ def test_navigation_guards():
     # aucune cible
     reader3 = FakeReader([state(markers=[])])
     ctrl3 = fnav.NavigationController(reader3, FakeActions(),
-                                       {"enabled": True, "dryRun": False},
+                                       {"enabled": True, "dryRun": False, "targetMode": "marker"},
                                        log=lambda *a, **k: None)
     res3 = ctrl3.navigate_to()
     check("sans cible observee, le controleur s'arrete proprement",
@@ -261,7 +282,7 @@ def test_navigation_guards():
     # position illisible
     reader4 = FakeReader([None])
     ctrl4 = fnav.NavigationController(reader4, FakeActions(),
-                                       {"enabled": True, "dryRun": False},
+                                       {"enabled": True, "dryRun": False, "targetMode": "marker"},
                                        log=lambda *a, **k: None)
     res4 = ctrl4.navigate_to()
     check("sans minicarte lisible, le controleur s'arrete proprement",
@@ -293,7 +314,7 @@ def test_navigation_limits_config():
                                       log=lambda *a, **k: None)
     check("la navigation peut etre desactivee", ctrl.enabled() is False)
     ctrl2 = fnav.NavigationController(FakeReader([state()]), actions,
-                                       {"enabled": True, "dryRun": True},
+                                       {"enabled": True, "dryRun": True, "targetMode": "marker"},
                                        log=lambda *a, **k: None)
     check("le mode sec est disponible", ctrl2.dry_run() is True)
     ctrl3 = fnav.NavigationController(FakeReader([state()]), actions,
@@ -306,6 +327,88 @@ def test_navigation_limits_config():
                                      log=lambda *a, **k: None).dry_run() is True)
 
 
+def isolated(cfg):
+    """Configuration de test ISOLEE de la vraie carte du poste.
+
+    Sans cela, le fichier state/fishing-spots.json du developpement
+    (qui contient de vrais bancs) s'impose aux tests : ils ne testeraient
+    plus ce qu'ils pretendent tester.
+    """
+    out = dict(cfg)
+    out["mapPath"] = tempfile.mkdtemp(prefix="fb-navtest-")
+    return out
+
+
+def test_explore_target():
+    print()
+    print("=== 7. AMORCAGE : EXPLORATION VERS UN POINT (arrivee prouvee par l'odometre) ===")
+    read = state(markers=[{"x": 30.0, "y": 0.0, "dist": 30.0, "kind": "jaune", "area": 60}])
+    ctrl = fnav.NavigationController(FakeReader([read]), FakeActions(),
+                                     isolated({"enabled": True, "dryRun": True,
+                                               "targetMode": "map",
+                                               "exploreDistancePx": 12.0}),
+                                     log=lambda *a, **k: None)
+    target = ctrl.select_target(read)
+    check("sans banc accessible, la cible est un point d'exploration",
+          target is not None and target.get("kind") == "explore",
+          "(%s)" % (target and target.get("kind")))
+    if target and target.get("pos"):
+        d = math.hypot(target["pos"][0] - read["position"]["x"],
+                       target["pos"][1] - read["position"]["y"])
+        check("le point d'exploration est a la distance demandee",
+              abs(d - 12.0) < 0.01, "(%.2f)" % d)
+    # l'exploration est DETERMINISTE a graine fixee
+    ctrl2 = fnav.NavigationController(FakeReader([read]), FakeActions(),
+                                      {"enabled": True, "dryRun": True,
+                                       "targetMode": "map",
+                                       "exploreSeed": 3},
+                                      log=lambda *a, **k: None)
+    t1 = ctrl2.select_target(read)
+    ctrl3 = fnav.NavigationController(FakeReader([read]), FakeActions(),
+                                      {"enabled": True, "dryRun": True,
+                                       "targetMode": "map",
+                                       "exploreSeed": 3},
+                                      log=lambda *a, **k: None)
+    t2 = ctrl3.select_target(read)
+    check("l'exploration est reproductible a graine fixee",
+          t1 and t2 and t1["pos"] == t2["pos"])
+
+
+def test_unreliable_position_guard():
+    print()
+    print("=== 8. GARDE-FOU : POSITION NON FIABLE (derive de l'odometre) ===")
+    # un odometre qui derive de 2 px par lecture : la derive est superieure au
+    # seuil (1,5 px) -> AUCUN deplacement ne doit etre pilote.
+    reader = FakeReader([state(markers=[{"x": 30.0, "y": 0.0, "dist": 30.0,
+                                        "kind": "jaune", "area": 60}])], drift=2.0)
+    actions = FakeActions()
+    ctrl = fnav.NavigationController(reader, actions,
+                                     {"enabled": True, "dryRun": False,
+                                      "targetMode": "marker",
+                                      "maxTravelSec": 3.0},
+                                     log=lambda *a, **k: None)
+    res = ctrl.navigate_to()
+    check("une derive trop forte empeche tout deplacement",
+          res["status"] == "unreliable_position", "(%s)" % res["status"])
+    check("aucune commande n\'est envoyee quand la position n\'est pas fiable",
+          not actions.keys and not actions.moves,
+          "(keys=%s moves=%s)" % (actions.keys, actions.moves))
+    check("la derive mesuree est rapportee", res.get("driftPx") is not None)
+
+    # avec une derive faible, le deplacement est autorise
+    reader2 = FakeReader([state(markers=[{"x": 30.0, "y": 0.0, "dist": 30.0,
+                                          "kind": "jaune", "area": 60}])], drift=0.05)
+    actions2 = FakeActions()
+    ctrl2 = fnav.NavigationController(reader2, actions2,
+                                      {"enabled": True, "dryRun": False,
+                                       "targetMode": "marker",
+                                       "maxTravelSec": 3.0},
+                                      log=lambda *a, **k: None)
+    res2 = ctrl2.navigate_to()
+    check("avec une derive faible, le trajet est tente",
+          res2["status"] != "unreliable_position", "(%s)" % res2["status"])
+
+
 def main():
     print("=== TESTS MINICARTE + NAVIGATION V2 ===")
     test_minimap_corpus()
@@ -313,6 +416,8 @@ def main():
     test_navigation_arrival_requires_observation()
     test_navigation_guards()
     test_navigation_limits_config()
+    test_explore_target()
+    test_unreliable_position_guard()
     print()
     print("%d ok / %d echec(s)" % (PASSED, len(FAILED)))
     for f in FAILED:
