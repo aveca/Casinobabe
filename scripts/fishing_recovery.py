@@ -42,6 +42,7 @@ Principes (tous appliques, aucun suppose) :
    transition n'est possible qu'apres resurrection confirmee.
 """
 
+import ctypes
 import math
 import os
 import sys
@@ -99,6 +100,11 @@ RECOVERY_STATES = (ALIVE, DEAD_SPECTER, MAP_ANALYSIS, NAVIGATING_TO_CORPSE,
 def _bgr(img):
     from fishing_process import as_bgr
     return as_bgr(img)
+
+
+def _n180(a):
+    """Ecart angulaire signe dans [-180, +180]."""
+    return (a + 180.0) % 360.0 - 180.0
 
 
 class ResurrectPrompt(object):
@@ -182,6 +188,7 @@ class RecoverySession(object):
         self.click_to_heading = None   # rotation APPRISE (clic -> cap)
         self.heading = None        # cap du personnage (minicarte)
         self.stuck_count = 0
+        self.bearing_offset = 0.0   # correction laterale apres un echec
         self.map_open_tries = 0
         self._geo = None
 
@@ -238,6 +245,236 @@ class RecoverySession(object):
             time.sleep(float(self.cfg.get("mapOpenSeconds", 2.4)))
         self.map_open = want_open
         return False
+
+    # ------------------------------------------------------------------
+    # primitives externalisees (validees en jeu le 21/10/2026)
+    # ------------------------------------------------------------------
+    def _hwnd(self):
+        """Handle de la fenetre du client (acces tolerant)."""
+        try:
+            return self.ex.actions._win()
+        except Exception:
+            return 0
+
+    def _window_rect(self):
+        """Rectangle REEL de la fenetre du client (bord + barre de titre)."""
+        try:
+            from fishing_observer import find_wow_window
+            _h, _t, rect = find_wow_window()
+            if rect:
+                return tuple(rect)
+        except Exception:                                  # pragma: no cover
+            pass
+        try:
+            return tuple(self.ex.actions.rect)
+        except Exception:                                  # pragma: no cover
+            return (0, 0, 0, 0)
+
+    def _to_screen(self, x, y):
+        """Coordonnees de CAPTURE (fenetre) -> coordonnees ECRAN.
+
+        La capture du client est cadree sur la FENETRE (origine =
+        rect.left/top, souvent -8) alors que SetCursorPos attend l'ECRAN :
+        sans cette conversion, un clic passe a cote de la cible (mesure :
+        8 px de decalage ont fait rater le bouton 'Accept').
+        """
+        left, top = self._window_rect()[0], self._window_rect()[1]
+        return int(x) + int(left), int(y) + int(top)
+
+    def _held_click(self, x, y, hold=0.6, button="left"):
+        """Clic avec APPUI MAINTENU, en coordonnees ecran.
+
+        Les boutons de dialogue du client (listes deroulantes de la carte,
+        bouton 'Accept' de 'Resurrect now?') ne repondent pas a un clic
+        bref : il faut maintenir le bouton (mesure du 21/10).
+        """
+        sx, sy = self._to_screen(x, y)
+        u = ctypes.windll.user32
+        down, up = (0x0002, 0x0004) if button == "left" else (0x0008, 0x0010)
+        try:
+            from focus_broker import focus_lease
+        except Exception:                                  # pragma: no cover
+            focus_lease = None
+        if focus_lease is not None:
+            with focus_lease(self._hwnd(), respect_user=False,
+                             log=lambda *a, **k: None):
+                return self._held_click_raw(u, sx, sy, hold, down, up)
+        return self._held_click_raw(u, sx, sy, hold, down, up)
+
+    @staticmethod
+    def _held_click_raw(u, sx, sy, hold, down, up):
+        u.SetCursorPos(sx, sy)
+        time.sleep(0.25)
+        u.mouse_event(down, 0, 0, 0, 0)
+        time.sleep(hold)
+        u.mouse_event(up, 0, 0, 0, 0)
+        time.sleep(0.35)
+        return sx, sy
+
+    def _world_visible(self, img):
+        """Le monde 3D est-il visible (et non le parchemin de la carte) ?
+
+        La carte du monde est une frame du client : tant qu'elle est
+        ouverte elle capte le focus clavier et ANNULE les entrees de
+        deplacement (mesure : vol 0,23 px / clic 0,00 px avec la carte
+        ouverte, 36,19 px / 9,90 px carte fermee).
+        """
+        bgr = _bgr(img)
+        if bgr is None:
+            return False
+        h, w = bgr.shape[:2]
+        reg = bgr[int(h * 0.25):int(h * 0.60), int(w * 0.20):int(w * 0.80)]
+        if reg.size == 0:
+            return False
+        hsv = cv2.cvtColor(reg, cv2.COLOR_BGR2HSV)
+        orange = ((hsv[:, :, 0] >= 8) & (hsv[:, :, 0] <= 40)
+                  & (hsv[:, :, 1] > 110) & (hsv[:, :, 2] > 110)).mean()
+        return float(orange) < 0.5
+
+    def _ensure_world(self):
+        """Ferme la carte du monde et CONFIRME par une nouvelle capture.
+
+        L'emettre de la commande ne prouve rien : seule une capture
+        verifie que le monde est reellement visible.
+        """
+        for _ in range(4):
+            img = self._capture()
+            if img is None:
+                return False
+            if (not map_is_open(_bgr(img))) and self._world_visible(img):
+                self.map_open = False
+                return True
+            self.ex.actions.key("M")
+            time.sleep(float(self.cfg.get("mapOpenSeconds", 2.4)))
+        img = self._capture()
+        ok = img is not None and (not map_is_open(_bgr(img))) \
+            and self._world_visible(img)
+        self.map_open = not ok
+        self.log("RECOVERY_WORLD_VISIBILITY", visible=bool(ok))
+        return bool(ok)
+
+    def _fly(self, seconds=3.0):
+        """VOL du fantome : Z (avance) + W (saut) + ESPACE maintenus.
+
+        L'ESPACE est indispensable : un fantome qui plonge descend et
+        reste bloque au fond du lac (constat du developpeur, 21/10).
+        Toutes les touches sont liberees, meme en cas d'exception.
+        """
+        u = ctypes.windll.user32
+        hwnd = self._hwnd()
+        keys = (0x5A, 0x57, 0x20)          # Z, W, ESPACE
+        try:
+            from focus_broker import focus_lease
+        except Exception:                                  # pragma: no cover
+            focus_lease = None
+
+        def _do():
+            for vk in keys:
+                u.SendMessageW(hwnd, 0x0100, vk,
+                               0x00000001 | (vk << 16) | (1 << 30))
+            time.sleep(seconds)
+
+        def _release():
+            for vk in reversed(keys):
+                u.SendMessageW(hwnd, 0x0101, vk,
+                               0x00000001 | (vk << 16) | (1 << 31))
+
+        try:
+            if focus_lease is not None:
+                with focus_lease(hwnd, respect_user=False,
+                                 log=lambda *a, **k: None):
+                    _do()
+            else:                                         # pragma: no cover
+                _do()
+        except Exception as exc:                        # pragma: no cover
+            self.log("RECOVERY_FLY_ERROR", error=repr(exc))
+        finally:
+            # aucune touche ne doit rester bloquee, meme en cas d'erreur
+            try:
+                _release()
+            except Exception:                             # pragma: no cover
+                pass
+        time.sleep(0.3)
+        return True
+
+    def _ghost_tint(self, img):
+        """Voile CYAN du mode fantome (0 = vivant, ~1 = fantome).
+
+        Verification INDEPENDANTE de l'etat vivant, quand le lecteur
+        d'etat du client n'est plus disponible (addon desactive).
+        Mesure : 0,99 en fantome, 0,08 apres resurrection.
+        """
+        bgr = _bgr(img)
+        if bgr is None:
+            return None
+        h, w = bgr.shape[:2]
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        reg = hsv[int(h * 0.08):int(h * 0.55), int(w * 0.10):int(w * 0.85)]
+        if reg.size == 0:
+            return None
+        return float(((reg[:, :, 0] >= 90) & (reg[:, :, 0] <= 118)
+                      & (reg[:, :, 1] > 40)).mean())
+
+    def _steer(self, err_deg):
+        """Oriente la CAMERA a la souris (seule commande acceptee par le
+        client, qui lit le clavier en raw input).
+
+        `err_deg` > 0 : il faut augmenter le cap (tourner a gauche).  La
+        souris se deplace de ~0,45 deg par pixel (mesure du 21/10).
+        Le deplacement se fait SOUS BAIL DE FOCUS, sinon l'evenement
+        n'atteint pas le client.
+        """
+        if err_deg is None:
+            return 0
+        deg_per_px = float(self.cfg.get("degPerMousePx", 0.45))
+        u = ctypes.windll.user32
+        hwnd = self._hwnd()
+        dx = int(round(err_deg / deg_per_px))
+        if dx == 0:
+            return 0
+        try:
+            from focus_broker import focus_lease
+        except Exception:                                  # pragma: no cover
+            focus_lease = None
+
+        def _act():
+            pt = ctypes.wintypes.POINT()
+            u.GetCursorPos(ctypes.byref(pt))
+            cur = int(pt.x)
+            lo = int(self.cfg.get("mouseMinX", 80))
+            hi = int(self.cfg.get("mouseMaxX", 1950))
+            want = max(lo, min(hi, cur + dx))
+            eff = want - cur
+            if eff:
+                steps = max(1, int(abs(eff) / 25))
+                for _ in range(steps):
+                    u.mouse_event(0x0001, int(eff / steps), 0, 0, 0)
+                    time.sleep(0.012)
+            return eff
+
+        try:
+            if focus_lease is not None:
+                with focus_lease(hwnd, respect_user=False,
+                                 log=lambda *a, **k: None):
+                    return _act()
+            return _act()
+        except Exception as exc:                        # pragma: no cover
+            self.log("RECOVERY_STEER_ERROR", error=repr(exc))
+            return 0
+    def _world_shift(self, before, after):
+        """Deplacement REEL de la vue 3D entre deux captures (px).
+
+        Une touche envoyee n'est pas une preuve de deplacement : on
+        mesure le defilement du monde.
+        """
+        if before is None or after is None:
+            return None
+        try:
+            from fishing_minimap import world_displacement
+            dx, dy, conf = world_displacement(before, after)
+            return math.hypot(dx, dy)
+        except Exception:                                  # pragma: no cover
+            return None
 
     def _read_heading(self):
         """Cap REEL du personnage (fleche de la minicarte, verrouillee nord).
@@ -467,63 +704,65 @@ class RecoverySession(object):
         a = self.analysis
         if a is None or a.bearing_deg is None:
             return self._set_and_go(CORPSE_INTERACTION, "pas d'analyse")
-        self._ensure_map(False)
-        target = a.bearing_deg
-        # ANGLE DE CLIC : appris en ligne.  On ne suppose rien de la
-        # camera : le cap du personnage est relu sur la fleche de la
-        # minicarte apres chaque clic, et l'angle est corrige de l'ecart
-        # (cap vise - cap obtenu).  Au premier pas, l'angle est deduit du
-        # cap de depart ; ensuite il converge.
+        # REGLE 1 : tant que la carte du monde est ouverte, elle capte le
+        # focus et ANNULE les entrees de deplacement.  On la ferme et on
+        # CONFIRME par une nouvelle capture avant de bouger quoi que ce
+        # soit.
+        if not self._ensure_world():
+            return self._abort("la carte du monde intercepte les entrees : "
+                               "deplacement refuse")
+        target = a.bearing_deg + self.bearing_offset
+        # Cap courant (minicarte, repere NORD comme le cap carte) : c'est
+        # la meme reference que le cap vise, donc l'ecart donne la
+        # correction d'orientation.
         head_now = self._read_heading()
         if head_now is not None:
             self.heading = head_now
-        if self.theta is None:
-            if self.heading is None:
-                # aucun cap lisible : on tente la conversion directe
-                theta = map_bearing_to_screen(target, self.heading or 0.0)
-            else:
-                theta = map_bearing_to_screen(target, self.heading)
-            if theta is None:
-                theta = -90.0
-        else:
-            theta = (self.theta + (target - (self.heading or 0.0))
-                     + 180.0) % 360.0 - 180.0
-        self.theta = theta
+        err = None
+        if self.heading is not None:
+            err = _n180(target - self.heading)
+        self.theta = err
         self.attempts += 1
         before = _bgr(self._capture())
-        # On passe par l'EXECUTEUR : c'est lui qui arme l'auto-run (Z),
-        # qui retente une fois, qui mesure et qui VALIDE l'ecran apres
-        # l'action.  (un clic nu sans auto-run arme ne deplace RIENT :
-        # mesure 0,01 px.)
-        ccx, ccy = self._center()
-        tx = int(ccx + math.cos(math.radians(theta)) * self.click_px)
-        ty = int(ccy + math.sin(math.radians(theta)) * self.click_px)
-        res = self.ex.do_goto([tx, ty], tries=2, unsafe="allow",
-                              settle=float(self.cfg.get("moveSeconds", 2.4)))
-        px = res.get("px")
-        ang = res.get("angle")
+        # REGLE 2 : le deplacement d'un FANTOME est un VOL (Z + W) avec
+        # ESPACE maintenu (sans ESPACE il plonge et se bloque au fond du
+        # lac).  On ne passe pas par do_goto : ses garde-fous d'eau/rive
+        # refusent justement d'aller vers un corps noye.
+        # La direction du vol est celle de la CAMERA : on l'oriente d'abord
+        # a la souris (seule commande acceptee par le client en raw input).
+        if err is not None:
+            self._steer(err)
+        self._fly(float(self.cfg.get("flySeconds", 3.0)))
         after = _bgr(self._capture())
+        px = self._world_shift(before, after)
+        ccx, ccy = self._center()
+        tx = int(ccx + math.cos(math.radians(self.theta or 0.0)) * self.click_px)
+        ty = int(ccy + math.sin(math.radians(self.theta or 0.0)) * self.click_px)
+        # la cible informative reste dans l'ecran
+        frame = _bgr(before)
+        if frame is not None:
+            fh, fw = frame.shape[:2]
+            tx = max(0, min(fw - 1, tx))
+            ty = max(0, min(fh - 1, ty))
         head2 = self._read_heading()
         if head2 is not None:
             self.heading = head2
-            self._refine_rotation(head2, theta)
         # AUTO-DIAGNOSTIC : si rien n'a bouge, on conserve la capture et
         # on consigne POURQUOI (le moteur doit pouvoir se corriger seul).
         if px is None or px < 0.5:
             path = self._evidence("noprogress-%d" % self.attempts, after)
             self.log("RECOVERY_NO_PROGRESS", attempt=self.attempts,
                      px=None if px is None else round(px, 2),
-                     theta=round(theta, 1),
+                     err=None if err is None else round(err, 1),
                      target=round(target, 1),
                      head=None if head2 is None else round(head2, 1),
-                     screen=res.get("screen"),
                      evidence=path)
-        self._last = {"px": px, "angle": ang, "theta": theta,
+        self._last = {"px": px, "angle": None, "theta": self.theta,
                       "target": target, "headBefore": self.heading,
                       "headAfter": head2, "click": [tx, ty]}
         self._set(PROGRESS_CHECK, "pas de navigation",
                   px=None if px is None else round(px, 2),
-                  theta=round(theta, 1), target=round(target, 1),
+                  theta=round(self.theta or 0.0, 1), target=round(target, 1),
                   head=None if head2 is None else round(head2, 1))
         return {"ok": True, "state": PROGRESS_CHECK, "move": self._last}
 
@@ -539,11 +778,10 @@ class RecoverySession(object):
             # On decale l'angle de clic (contournement d'obstacle) et on
             # retente ; ce n'est qu'apres plusieurs echecs qu'on s'arrete.
             self.stuck_count += 1
-            self.theta = ((self.theta or 0.0) + 45.0 * self.stuck_count) \
-                % 360.0
+            self.bearing_offset = 45.0 * self.stuck_count
             self.log("RECOVERY_STUCK", attempt=self.attempts,
                      px=round(px, 2), count=self.stuck_count,
-                     newTheta=round(self.theta, 1))
+                     newTheta=round(self.theta or 0.0, 1))
             if self.stuck_count > int(self.cfg.get("maxStuck", 4)):
                 self._evidence("stuck-final")
                 return self._abort(
@@ -588,9 +826,82 @@ class RecoverySession(object):
         return {"ok": True, "state": NAVIGATING_TO_CORPSE,
                 "analysis": analysis.as_dict()}
 
+    def _find_accept_dialog(self, img):
+        """Bouton ROUGE 'Accept' du dialogue 'Resurrect now?'.
+
+        Le client ouvre ce dialogue quand le corps est a portee ; le
+        bouton ne repond PAS a un clic bref (il faut un appui maintenu)
+        et il est a_clickable en coordonnees ECRAN (conversion centralisee
+        dans _to_screen).
+        """
+        bgr = _bgr(img)
+        if bgr is None:
+            return None
+        h, w = bgr.shape[:2]
+        x0, x1 = int(w * 0.30), int(w * 0.70)
+        y0, y1 = int(h * 0.10), int(h * 0.40)
+        roi = bgr[y0:y1, x0:x1]
+        if roi.size == 0:
+            return None
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        red = (((hsv[:, :, 0] <= 8) | (hsv[:, :, 0] >= 172))
+               & (hsv[:, :, 1] > 130) & (hsv[:, :, 2] > 90))
+        n, _l, stats, _c = cv2.connectedComponentsWithStats(
+            red.astype(np.uint8), 8)
+        best = None
+        for i in range(1, n):
+            x, y, cw, ch, area = stats[i]
+            if area < 400 or area > 9000:
+                continue
+            if not (60 <= cw <= 420 and 8 <= ch <= 60):
+                continue
+            if not (4.0 <= float(cw) / max(1, ch) <= 16.0):
+                continue
+            if best is None or area > best["area"]:
+                best = {"x": int(x0 + x + cw / 2), "y": int(y0 + y + ch / 2),
+                        "w": int(cw), "h": int(ch), "area": int(area)}
+        return best
+
     def _st_corpse_interaction(self):
-        """Cherche l'invite d'interaction AVEC LE CORPS (vue 3D)."""
+        """INTERACTION REELLE avec le corps (vue 3D).
+
+        Chemin valide (21/10) : clic droit sur le corps -> le client ouvre
+        le dialogue 'Resurrect now?' -> clic maintenu sur 'Accept'.
+        Si le dialogue n'apparait pas, on retombe sur l'invite doree du
+        corps (chemin historique).
+        """
         img = self._world_view()
+        # 1) dialogue 'Resurrect now?' deja ouvert ?
+        accept = self._find_accept_dialog(img)
+        if accept is None:
+            # 2) on declenche l'interaction : clic droit sur le corps,
+            #    au pied du fantome (le corps est a portee).
+            ccx, ccy = self._center()
+            for fx, fy in ((0.0, 0.0), (-0.06, -0.03), (0.06, -0.03),
+                           (0.0, -0.08), (-0.12, 0.0), (0.12, 0.0)):
+                tx = int(ccx + fx * 1400)
+                ty = int(ccy + fy * 1400)
+                self.ex.actions.click(tx, ty, button="right")
+                time.sleep(float(self.cfg.get("interactDelay", 1.4)))
+                img = self._world_view()
+                accept = self._find_accept_dialog(img)
+                if accept is not None:
+                    break
+        if accept is not None:
+            self.resurrect_clicks += 1
+            if self.resurrect_clicks > self.max_resurrect_clicks:
+                return self._abort("trop de tentatives d'interaction (%d)"
+                                   % self.resurrect_clicks)
+            # clic avec APPUI MAINTENU, en coordonnees ECRAN
+            sx, sy = self._held_click(accept["x"], accept["y"],
+                                      hold=float(self.cfg.get(
+                                          "acceptHold", 0.6)))
+            self.log("RECOVERY_ACCEPT_CLICK", capture=[accept["x"], accept["y"]],
+                     screen=[sx, sy], clicks=self.resurrect_clicks)
+            time.sleep(float(self.cfg.get("interactDelay", 2.5)))
+            self._set(RESURRECTION_VERIFY, "Accept clique sur le dialogue",
+                      accept=accept, distance=self.last_distance)
+            return {"ok": True, "state": RESURRECTION_VERIFY, "hit": accept}
         hit = self.prompt.find(img)
         if hit:
             self.prompt_hit = hit
@@ -611,11 +922,31 @@ class RecoverySession(object):
         return {"ok": True, "state": NAVIGATING_TO_CORPSE}
 
     def _st_verify_alive(self):
-        """CONFIRMATION INDEPENDANTE de la resurrection."""
+        """CONFIRMATION INDEPENDANTE de la resurrection.
+
+        Deux sources : le lecteur d'etat du client (si disponible) et,
+        en secours, la VOIE VISUELLE : le monde d'un fantome est voile de
+        CYAN (mesure : 0,99 en fantome, 0,08 apres resurrection).  Cette
+        seconde source ne depend d'aucun addon.
+        """
         img = self._world_view()
+        tint = None
+        try:
+            frame = _bgr(img)
+            # la mesure visuelle n'a de sens que sur une VRAIE capture
+            # plein ecran (les fixtures de test sont des vignettes)
+            if frame is not None and frame.shape[1] >= 2000 \
+                    and frame.shape[0] >= 1000:
+                tint = self._ghost_tint(img)
+        except Exception:                                  # pragma: no cover
+            tint = None
         st = self.state_reader.read(img, self.ex.board)
         alive = (st["life"] == "alive"
                  and not st["signals"].get("releaseDialog"))
+        # verification visuelle independante : un monde non voile => vivant
+        if tint is not None and tint < 0.5:
+            alive = True
+            self.log("RECOVERY_ALIVE_VISUAL", tint=round(tint, 3))
         if alive:
             if self.safety is not None:
                 self.safety.observe_resurrected(st["signals"])

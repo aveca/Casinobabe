@@ -252,6 +252,8 @@ def test_navigation_uses_feedback_loop_on_heading():
                                     FM.MapMarkerDetector.with_fixtures())
     sess.heading = 0.0
     sess.theta = 0.0
+    sess._ensure_world = lambda: True
+    sess._fly = lambda *a, **k: None
     sess._set(FR.NAVIGATING_TO_CORPSE, "test")
     sess._st_navigate()
     assert sess.state == FR.PROGRESS_CHECK
@@ -294,12 +296,14 @@ def test_no_progress_triggers_controlled_correction_then_abort():
                                     FM.MapMarkerDetector.with_fixtures())
     sess.heading = 0.0
     sess.theta = 0.0
+    sess._ensure_world = lambda: True
+    sess._fly = lambda *a, **k: None
     sess._set(FR.NAVIGATING_TO_CORPSE, "test")
     sess._st_navigate()
     res = sess._st_progress_check()
     assert res["state"] == FR.NAVIGATING_TO_CORPSE, "il doit reessayer"
     assert sess.stuck_count == 1
-    assert sess.theta != 0.0, "l'angle doit etre decale"
+    assert sess.bearing_offset != 0.0, "le cap vise doit etre decale"
     # apres plusieurs echecs : arret controle avec preuve
     sess._st_navigate()
     sess._st_progress_check()
