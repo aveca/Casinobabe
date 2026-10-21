@@ -61,6 +61,12 @@ if _HERE not in sys.path:
 
 from fishing_map import (CORPS, JOUEUR, MapMarkerDetector,  # noqa: E402
                          analyze_map, map_is_open, map_bearing_to_screen)
+# 2026-10-21 (P0.35) : detection VALIDEE du cote client (cercle
+# bleu du joueur + gabarit du cimetiere).  L'ancien detecteur de
+# la carte ne trouvait ni le corps ni le joueur sur le rendu
+# courant (score 0.654 < 0.750) : la recuperation echouait
+# en MAP_ANALYSIS.
+import fishing_mapread as _mapread  # noqa: E402
 from fishing_safety import (DEAD, GHOST, CORPSE_RECOVERY, RESURRECTION,  # noqa: E402
                             SAFE_REPOSITION, RESUME_OR_STOP,
                             OUTCOME_OK, OUTCOME_BLOCKED, OUTCOME_RECOVERED)
@@ -152,6 +158,39 @@ class ResurrectPrompt(object):
                         "w": int(cw), "h": int(ch)}
         return best
 
+
+
+class _ValidatedAnalysis(object):
+    """Adaptateur : expose la detection VALIDEE (fishing_mapread) dans
+    l'interface utilisee par les etats de la machine (bearing_deg,
+    distance_px, usable, as_dict)."""
+
+    def __init__(self, state):
+        self._s = state or {}
+        self.bearing_deg = self._s.get("bearingDeg")
+        self.distance_px = self._s.get("distancePx")
+        self.usable = self.bearing_deg is not None and self.distance_px is not None
+        self.corpse = self._s.get("corpse")
+        self.player = self._s.get("player")
+
+    def as_dict(self):
+        return {"bearing_deg": self.bearing_deg,
+                "distance_px": self.distance_px,
+                "source": "fishing_mapread (detecteur valide)"}
+
+
+def analyze_validated(bgr, last_player=None):
+    """Analyse la carte avec le detecteur VALIDE.  Retourne None si la
+    carte n'est pas exploitable."""
+    if bgr is None:
+        return None
+    try:
+        st = _mapread.map_state(bgr, last_player=last_player)
+    except Exception:
+        return None
+    if not st:
+        return None
+    return _ValidatedAnalysis(st)
 
 class RecoverySession(object):
     """Machine a etats du retour au corps (une transition par `step()`)."""
@@ -693,7 +732,9 @@ class RecoverySession(object):
             img = self._capture()
             if img is None:
                 continue
-            analysis = analyze_map(_bgr(img), self.detector)
+            analysis = analyze_validated(_bgr(img), self._last_player)
+        if analysis is not None:
+            self._last_player = analysis.player
             if analysis.usable:
                 self.analysis = analysis
                 self.last_distance = analysis.distance_px
@@ -837,8 +878,10 @@ class RecoverySession(object):
         """Re-mesure la distance au corps : c'est la progression de reference."""
         self._ensure_map(True)
         img = self._capture()
-        analysis = (analyze_map(_bgr(img), self.detector)
+        analysis = (analyze_validated(_bgr(img), self._last_player)
                     if img is not None else None)
+        if analysis is not None:
+            self._last_player = analysis.player
         self._ensure_map(False)
         if analysis is None or not analysis.usable:
             return self._set_and_go(CORPSE_INTERACTION,

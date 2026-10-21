@@ -1725,8 +1725,15 @@ class FishingBot:
                                           memory=ProcedureMemory(None),
                                           board=board)
                             safety = RecoveryStateMachine(log=self.log)
+                            # 2026-10-21 (P0.35) : self.state_dir n'existe
+                            # pas -> la recuperation demarrait jamais
+                            # (RECOVERY_ERROR en boucle) et le personnage
+                            # mort restait fantome.  Chemin d'etat robuste.
+                            _state_dir = (getattr(self, "state_dir", None)
+                                          or getattr(self, "state", None)
+                                          or os.path.join(ROOT, "state"))
                             incidents = IncidentMemory(
-                                os.path.join(self.state_dir, "incidents.json"))
+                                os.path.join(_state_dir, "incidents.json"))
                             sess = RecoverySession(
                                 ex, state_reader=st_reader, safety=safety,
                                 memory=incidents, log=self.log,
