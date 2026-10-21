@@ -81,3 +81,36 @@ pour rater un bouton de 20 px de haut (« Accept » de « Resurrect now? »).
   mesurée avant/après ;
 * ne pas laisser la carte ouverte entre deux actions ;
 * ne pas clicking sans convertir en coordonnées écran.
+
+## 6. Ce qui reste a enregistrer lors de la prochaine occasion reelle
+
+Le client n'expose ni le corps ni le dialogue sur les captures d'ecran
+que le bot possessede aujourd'hui. Pour cloturer le statut **C (cycle reel
+observe)**, il faut enregistrer, lors d'une prochaine mort naturelle :
+
+| element | comment l'obtenir | a quoi il sert |
+|---|---|---|
+| capture PLEIN ECRAN du **fantome** (voile cyan, monde monochrome) | `scripts/fishing_recovery_replay.py` (journal + `reports/recovery-evidence/<date>/`) | calibrer le seuil du voile cyan (aujourd'hui : 0,99 fantome / 0,08 vivant) sur une image reelle, et non synthetique |
+| capture PLEIN ECRAN du dialogue **"Resurrect now?"** avec le bouton rouge | idem (la capture d'evidence est prise juste apres l'interaction) | valider `_find_accept_dialog()` sur une image reelle (aujourd'hui valide sur une image synthetique) |
+| capture PLEIN ECRAN de la **carte du monde ouverte** | `M` pendant que le fantome tourne | valider `map_is_open` + `_world_visible` sur une image reelle (aujourd'hui : mock) |
+| capture PLEIN ECRAN du **corps visible au sol** a portee | idem | calibrer la detection visuelle du corps si un jour on veut s'en passer |
+
+Ces quatre captures sont **produites automatiquement** par le rejeu
+instrumente (le `evidence_dir` est configure dans
+`scripts/fishing_recovery_replay.py`) : il suffira de relancer le rejeu
+pendant une mort naturelle et d'archiver le dossier produit.
+
+## 7. Statuts (a ne pas confondre)
+
+* **A. Logique testee hors ligne** : `tests/test_fishing_recovery.py`,
+  `tests/test_fishing_recovery_external.py`,
+  `tests/test_fishing_recovery_transitions.py` (45 tests) - images
+  synthetiques ou captures reelles du client pour la detection d'etat.
+* **B. Integration au pilote verifiee** : `fishing_bot.py` instancie
+  `RecoverySession` (le moteur teste EST celui de la production) ; le
+  rejeu instrumente utilise la meme chaine
+  (WowActions -> Screen -> Executor -> RecoverySession).
+* **C. Cycle reel fantome -> corps -> resurrection observe** : **reste a
+  valider** - la resurrection a ete observee une fois (21/10, 12h47) avec
+  le pilote experimental, mais pas encore avec le moteur integre ni lors
+  d'un rejeu instrumente.
