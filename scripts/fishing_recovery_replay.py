@@ -97,6 +97,17 @@ def preconditions(sess, journal):
     except Exception as exc:
         hwnd, rect = None, None
         journal("PRECOND_CLIENT", error=repr(exc))
+    # fenetre REDUITE : le client ne rend rien (capture impossible) et
+    # le rejeu ne peut rien observer -> on la restaure.
+    if hwnd:
+        import ctypes as _ct
+        _u = _ct.windll.user32
+        if _u.IsIconic(hwnd):
+            _u.ShowWindow(hwnd, 9)
+            time.sleep(2.0)
+            hwnd, _t, rect = find_wow_window()
+            journal("PRECOND_WINDOW_RESTORED",
+                    rect=list(rect) if rect else None)
     out["client"] = bool(hwnd)
     journal("PRECOND_CLIENT", present=bool(hwnd), rect=list(rect) if rect else None)
     if not hwnd:

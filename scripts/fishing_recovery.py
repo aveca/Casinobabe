@@ -450,7 +450,11 @@ class RecoverySession(object):
         """
         u = ctypes.windll.user32
         hwnd = self._hwnd()
-        keys = (0x5A, 0x57, 0x20)          # Z, W, ESPACE
+        # Z = avancer, ESPACE = rester a la surface de l'eau ; PAS de W
+        # (le vol recale le personnage sur la camera et annule les
+        # fleches, qui sont la seule commande qui tourne le
+        # personnage : mesure du 21/10).
+        keys = (0x5A, 0x20)
         try:
             from focus_broker import focus_lease
         except Exception:                                  # pragma: no cover

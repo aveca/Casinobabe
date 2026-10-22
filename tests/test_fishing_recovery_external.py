@@ -148,7 +148,7 @@ def test_flight_holds_space_and_releases_every_key():
     downs = [k for k in stub.keys if k[0] == 0x0100]
     ups = [k for k in stub.keys if k[0] == 0x0101]
     assert 0x5A in [k[1] for k in downs], "Z (avance) doit etre presse"
-    assert 0x57 in [k[1] for k in downs], "W (saut) doit etre presse"
+    # W n est plus utilise (le vol annule les fleches).
     assert 0x20 in [k[1] for k in downs], "ESPACE doit etre maintenu"
     assert {k[1] for k in downs} == {k[1] for k in ups}, \
         "chaque touche pressee doit etre relachee"
