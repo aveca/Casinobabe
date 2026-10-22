@@ -273,10 +273,17 @@ class RecoverySession(object):
         """Journalise un evenement d'action (et le transmet au rejeu)."""
         rec = {"event": event}
         rec.update(kw)
-        self.log("RECOVERY_TRACE", **rec)
+        # Le callback de journal a un parametre POSITIONNEL 'event' :
+        # on lui passe le nom de l'evenement en positionnel et AUCUNE
+        # cle 'event' dans les arguments (crash observe le 21/10 :
+        # "got multiple values for argument 'event'").
+        try:
+            self.log("RECOVERY_TRACE", **kw)
+        except Exception:                                 # pragma: no cover
+            pass
         if self.trace is not None:
             try:
-                self.trace("TRACE", **rec)
+                self.trace("RECOVERY_TRACE", **kw)
             except Exception:                             # pragma: no cover
                 pass
         return rec
@@ -460,6 +467,13 @@ class RecoverySession(object):
                 u.SendMessageW(hwnd, 0x0101, vk,
                                0x00000001 | (vk << 16) | (1 << 31))
 
+        # Un personnage AFK ignore les touches : on le reveille d'abord
+        # par un vrai clic (sinon le vol ne deplace RIEN : px=0.04).
+        try:
+            self.ex.actions.wake_up()
+            time.sleep(0.4)
+        except Exception:                                  # pragma: no cover
+            pass
         self._trace("fly_start", seconds=seconds, keys=list(keys))
         t0 = time.time()
         try:
@@ -501,19 +515,47 @@ class RecoverySession(object):
                       & (reg[:, :, 1] > 40)).mean())
 
     def _steer(self, err_deg):
-        """Oriente la CAMERA a la souris (seule commande acceptee par le
-        client, qui lit le clavier en raw input).
+        """Tourne le PERSONNAGE avec les touches FLECHES.
 
-        `err_deg` > 0 : il faut augmenter le cap (tourner a gauche).  La
-        souris se deplace de ~0,45 deg par pixel (mesure du 21/10).
-        Le deplacement se fait SOUS BAIL DE FOCUS, sinon l'evenement
-        n'atteint pas le client.
+        Mesure reelle du client (21/10, fantome) :
+            fleche GAUCHE -> cap -94,7 deg en 2,5 s  (~38 deg/s)
+            fleche DROITE -> cap +94,7 deg en 2,5 s
+            fleche HAUT   -> ne fait RIEN
+        La souris, elle, ne tourne que la CAMERA (le personnage ne suit
+        qu'en bougeant) : c'etait la cause des pilotages rate.
+        Convention : err_deg > 0 -> il faut AUGMENTER le cap -> fleche
+        DROITE.
         """
         if err_deg is None:
             return 0
-        deg_per_px = float(self.cfg.get("degPerMousePx", 0.45))
         u = ctypes.windll.user32
         hwnd = self._hwnd()
+        # fleches : ~38 deg/s mesure
+        deg_per_sec = float(self.cfg.get("degPerArrowSec", 38.0))
+        vk = 0x27 if err_deg > 0 else 0x25        # DROITE / GAUCHE
+        seconds = min(2.5, max(0.25, abs(err_deg) / deg_per_sec))
+        self._trace("steer", errDeg=round(err_deg, 1), key=hex(vk),
+                    seconds=round(seconds, 2))
+        try:
+            from focus_broker import focus_lease
+        except Exception:                                  # pragma: no cover
+            focus_lease = None
+
+        def _act():
+            u.SendMessageW(hwnd, 0x0100, vk,
+                           0x00000001 | (vk << 16) | (1 << 30))
+            time.sleep(seconds)
+            u.SendMessageW(hwnd, 0x0101, vk,
+                           0x00000001 | (vk << 16) | (1 << 31))
+
+        if focus_lease is not None:
+            with focus_lease(hwnd, respect_user=False,
+                             log=lambda *a, **k: None):
+                _act()
+        else:                                             # pragma: no cover
+            _act()
+        time.sleep(0.2)
+        return seconds
         dx = int(round(err_deg / deg_per_px))
         if dx == 0:
             return 0
@@ -546,6 +588,41 @@ class RecoverySession(object):
         except Exception as exc:                        # pragma: no cover
             self.log("RECOVERY_STEER_ERROR", error=repr(exc))
             return 0
+    def _wake(self):
+        """Reveille un personnage AFK (un vrai clic souris : les touches
+        synthetiques ne remettent pas son timer a zero)."""
+        try:
+            self.ex.actions.wake_up()
+            time.sleep(0.4)
+            return True
+        except Exception:                                  # pragma: no cover
+            return False
+
+    def _click_to_move(self, tx, ty):
+        """Clic droit au sol : le client calcule et suit un chemin (il
+        contourne les obstacles).  C'est la seule maniere de ne pas
+        emboutir une montagne."""
+        try:
+            from focus_broker import focus_lease
+        except Exception:                                  # pragma: no cover
+            focus_lease = None
+        self._wake()
+        def _act():
+            self.ex.actions.click(int(tx), int(ty), button="right")
+        try:
+            if focus_lease is not None:
+                with focus_lease(self._hwnd(), respect_user=False,
+                                 log=lambda *a, **k: None):
+                    _act()
+            else:                                         # pragma: no cover
+                _act()
+        except Exception as exc:                        # pragma: no cover
+            self._trace("click_to_move_error", error=repr(exc))
+            return False
+        self._trace("click_to_move", at=[int(tx), int(ty)])
+        time.sleep(float(self.cfg.get("moveSeconds", 3.0)))
+        return True
+
     def _world_shift(self, before, after):
         """Deplacement REEL de la vue 3D entre deux captures (px).
 
@@ -695,15 +772,25 @@ class RecoverySession(object):
             return self._abort("personnage vivant : rien a recuperer",
                                life=life)
         if st["signals"].get("releaseDialog"):
-            # le corps n'est pas encore libere : on libere d'abord
-            btn = self._red_block(img)
-            if btn:
-                self.ex.do_click([btn["x"], btn["y"]], button="left")
-                time.sleep(2.0)
+            # Le corps n'est pas encore libere : on libere d'abord
+            # (clic droit 'Release Spirit').  Ce client n'accepte le
+            # bouton qu'avec APPUI MAINTENU (mesure du 21/10 : un clic
+            # simple ne declenche rien) et en COORDONNEES ECRAN.
+            for attempt in range(3):
+                img = self._capture()
+                btn = self._red_block(img) if img is not None else None
+                if not btn:
+                    break
+                self._held_click(btn["x"], btn["y"],
+                                 hold=float(self.cfg.get("releaseHold", 0.6)))
+                time.sleep(1.5)
                 st2 = self.state_reader.read(self._capture(), self.ex.board)
-                if st2["signals"].get("releaseDialog"):
-                    return self._abort("impossible de liberer le corps",
-                                       life=life)
+                self._trace("release_click", attempt=attempt, btn=btn,
+                            stillDialog=bool(st2["signals"].get("releaseDialog")))
+                if not st2["signals"].get("releaseDialog"):
+                    break
+            else:
+                return self._abort("impossible de liberer le corps", life=life)
         self._set(MAP_ANALYSIS, "etat initial lu", life=life)
         return {"ok": True, "state": MAP_ANALYSIS}
 
@@ -812,12 +899,33 @@ class RecoverySession(object):
         self.theta = err
         self.attempts += 1
         before = _bgr(self._capture())
-        # REGLE 2 : le deplacement d'un FANTOME est un VOL (Z + W) avec
-        # ESPACE maintenu (sans ESPACE il plonge et se bloque au fond du
-        # lac).  On ne passe pas par do_goto : ses garde-fous d'eau/rive
-        # refusent justement d'aller vers un corps noye.
-        # La direction du vol est celle de la CAMERA : on l'oriente d'abord
-        # a la souris (seule commande acceptee par le client en raw input).
+        # REGLE 2 (revue le 21/10 apres la noyade) : on NE VOL PAS en
+        # ligne droite - le fantome essayait de traverser la montagne.
+        # On fait CLICK-TO-MOVE : le client trace lui-meme un chemin
+        # autour des obstacles (le clic droit au sol a ete mesure : il
+        # deplace reellement le personnage).
+        #
+        # Visée : le bearing du corps (carte, repere NORD) et le cap du
+        # personnage (minicarte, repere NORD) sont dans le MEME repere ->
+        # l'ecart donne l'angle ecran du clic.  On vise legerement plus
+        # loin que la direction exacte pour laisser le pathfinding
+        # contourner.
+        if err is not None:
+            # Orienter la CAMERA vers la cible (plusieurs balayages si
+            # l'ecart est grand : la zone utile du curseur est bornee).
+            per_px = float(self.cfg.get("degPerMousePx", 0.45))
+            zone = int(self.cfg.get("mouseSweepPx", 300))
+            left = abs(err)
+            while left > 1.0:
+                step = min(zone, left)
+                self._steer(math.copysign(step, err))
+                left -= step
+        # Deplacement du FANTOME : VOL (Z + W + ESPACE).  Mesure du
+        # 21/10 : le clic droit NE deplace PAS un fantome (px=0,01), le
+        # vol deplace 70 a 156 px.  Le contournement de la montagne est
+        # obtenu par l'ALGORITHME DE CONTOURNEMENT : a chaque blocage,
+        # le cap VISE est decale de 45 degres (bearing_offset) - on longe
+        # ainsi l'obstacle au lieu de traverser.
         if err is not None:
             self._steer(err)
         self._fly(float(self.cfg.get("flySeconds", 3.0)))
@@ -853,7 +961,10 @@ class RecoverySession(object):
                     px=None if px is None else round(px, 2))
         self._last = {"px": px, "angle": None, "theta": self.theta,
                       "target": target, "headBefore": self.heading,
-                      "headAfter": head2, "click": [tx, ty]}
+                      "headAfter": head2, "click": [tx, ty],
+                      "errBefore": err,
+                      "errAfter": (None if head2 is None
+                                   else _n180(target - head2))}
         self._set(PROGRESS_CHECK, "pas de navigation",
                   px=None if px is None else round(px, 2),
                   theta=round(self.theta or 0.0, 1), target=round(target, 1),
@@ -867,6 +978,25 @@ class RecoverySession(object):
         if px is None:
             return self._abort("deplacement non mesure : observation "
                                "insuffisante")
+        # PROGRESSION : l'ecart au cap du corps (repere nord commun avec
+        # la minicarte).  La distance carte ne sert a rien ici : le
+        # marqueur du joueur n'est pas detectable pour un fantome, la
+        # distance reste constante et ferait conclure a tort a un
+        # blocage (21/10 : 101,8 px pendant tout le cycle).
+        err_now = last.get("errAfter")
+        err_before = last.get("errBefore")
+        aligned = (err_now is not None and err_before is not None
+                   and abs(err_now) < abs(err_before) - 2.0)
+        if err_now is not None:
+            self._last["aligned"] = bool(aligned)
+        if err_now is not None and err_before is not None:
+            # progression = l'alignement s'ameliore
+            if aligned:
+                self.stuck_count = 0
+                self._set(RELOCALIZATION, "alignement %.0f -> %.0f deg"
+                           % (abs(err_before), abs(err_now)),
+                           err=round(err_now, 1))
+                return {"ok": True, "state": RELOCALIZATION}
         if px < self.min_px:
             # AUCUNE PROGRESSION : correction CONTROLEE avant d'abandonner.
             # On decale l'angle de clic (contournement d'obstacle) et on

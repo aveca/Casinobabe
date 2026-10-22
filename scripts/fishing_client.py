@@ -169,6 +169,31 @@ class WowActions(object):
             self.clicks.append((button, int(x), int(y)))
         return ok
 
+    def wake_up(self, hold=0.05):
+        """Reveille un personnage AFK par un VRAI clic (souris physique).
+
+        Un personnage AFK ignore les touches SYNTHETIQUES : son timer
+        n'est remis a zero que par une entree reelle (constat du 21/10 :
+        le fantome restait AFK, les touches partaient (Z+W+ESPACE
+        journalisees) mais px=0.04 - il ne bougeait pas).  Un clic
+        physique sur le personnage suffit a le reveiller.
+        """
+        h = self._win()
+        _h, _t, rect = find_wow_window()
+        self.rect = rect
+        # MOUVEMENT REEL de la souris (le timer AFK repart au moindre
+        # mouvement) - AUCUN clic : un clic gauche au centre de l'ecran
+        # selectionne la cible, fait tourner la camera et n'est pas un
+        # 'clic to move'.
+        x = int((rect[0] + rect[2]) / 2)
+        y = int(rect[1] + (rect[3] - rect[1]) * 0.62)
+        u.SetCursorPos(x, y)
+        time.sleep(0.05)
+        for dx in (12, -12, 8, -8):
+            u.mouse_event(0x0001, dx, 0, 0, 0)   # MOUSEEVENTF_MOVE
+            time.sleep(0.02)
+        return True
+
     def key(self, k):
         h = self._win()
         vk = VK.get(k.upper() if isinstance(k, str) else k)
