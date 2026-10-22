@@ -450,11 +450,7 @@ class RecoverySession(object):
         """
         u = ctypes.windll.user32
         hwnd = self._hwnd()
-        # Z = avancer, ESPACE = rester a la surface de l'eau ; PAS de W
-        # (le vol recale le personnage sur la camera et annule les
-        # fleches, qui sont la seule commande qui tourne le
-        # personnage : mesure du 21/10).
-        keys = (0x5A, 0x20)
+        keys = (0x5A, 0x57, 0x20)          # Z, W, ESPACE
         try:
             from focus_broker import focus_lease
         except Exception:                                  # pragma: no cover
@@ -1006,6 +1002,8 @@ class RecoverySession(object):
             # On decale l'angle de clic (contournement d'obstacle) et on
             # retente ; ce n'est qu'apres plusieurs echecs qu'on s'arrete.
             self.stuck_count += 1
+            # decalage MONOTONE : on contourne toujours du meme cote
+            # (sinon le fantome oscille devant l'obstacle)
             self.bearing_offset = 45.0 * self.stuck_count
             self.log("RECOVERY_STUCK", attempt=self.attempts,
                      px=round(px, 2), count=self.stuck_count,
@@ -1021,6 +1019,7 @@ class RecoverySession(object):
                       % (45 * self.stuck_count), px=px)
             return {"ok": True, "state": NAVIGATING_TO_CORPSE}
         self.stuck_count = 0
+        self.bearing_offset = 0.0      # progression reelle : cap vise nominal
         self._set(RELOCALIZATION, "progression %.1f px" % px, px=px)
         return {"ok": True, "state": RELOCALIZATION}
 
