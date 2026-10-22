@@ -41,7 +41,7 @@ end
 local function LiveErrorBusAppend(message, stack)
   CasinobabeDB = CasinobabeDB or {}
   CasinobabeDB.liveErrorBusVersion = 1
-  local timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  local timestamp = date("!%Y-%m-%dT%H:%M:%SZ")
   local file = tostring(message or ""):match("([%w_]+%.lua)")
   local line = tonumber(tostring(message or ""):match("%.lua:(%d+)")) or 0
   local phase = "WOW_ERROR"
@@ -2246,6 +2246,9 @@ local function InitDB()
   CasinobabeDB.dealer.log = CasinobabeDB.dealer.log or {}
   CasinobabeDB.dealer.sessions = CasinobabeDB.dealer.sessions or {}
   
+  -- Desktop command channel (desktop writes CasinobabeDB.casinoCommand, addon reads & executes)
+  CasinobabeDB.casinoCommand = CasinobabeDB.casinoCommand or { processed = true }
+  
   -- Restore dealer log
   dealerLog = CasinobabeDB.dealer.log
   dealerEnabled = CasinobabeDB.dealer.enabled
@@ -2758,6 +2761,9 @@ end
 
 -- Dealer Slash Command Handlers
 function DealerToggle(onOff)
+  -- Ensure DB is initialized (slash commands can run before panel/PLAYER_LOGIN)
+  if not CasinobabeDB or not CasinobabeDB.dealer then InitDB() end
+
   if onOff == "on" then
     dealerEnabled = true
     isDealerMode = true
@@ -2786,6 +2792,8 @@ function DealerToggle(onOff)
     end
     return true
   elseif onOff == "off" then
+    -- Ensure DB is initialized
+    if not CasinobabeDB or not CasinobabeDB.dealer then InitDB() end
     dealerEnabled = false
     isDealerMode = false
     CasinobabeDB.dealer.enabled = false
@@ -2901,7 +2909,12 @@ function DealerStake(playerName, amountStr)
   end
 
   -- Parse amount (e.g., "50g" or "50")
-  local amount = tonumber(amountStr:match("(%d+%.?%d*)"))
+  local amount
+  if type(amountStr) == "number" then
+    amount = amountStr
+  else
+    amount = tonumber(tostring(amountStr):match("(%d+%.?%d*)"))
+  end
   if not amount then return false, DEALER_ERRORS.ERR_BAD_STAKE end
   
   local ok, err = ValidateStake(session.game, amount)
@@ -3096,7 +3109,12 @@ function DealerPayout(playerName, amountStr)
   if session.payoutCompleted then return false, DEALER_ERRORS.ERR_DOUBLE_PAYOUT end
   
   local expectedPayout = session.payout
-  local amount = tonumber(amountStr and amountStr:match("(%d+%.?%d*)") or expectedPayout)
+  local amount
+  if type(amountStr) == "number" then
+    amount = amountStr
+  elseif type(amountStr) == "string" then
+    amount = tonumber(amountStr:match("(%d+%.?%d*)"))
+  end
   if not amount then amount = expectedPayout end
   
   if amount ~= expectedPayout then
@@ -4146,6 +4164,73 @@ function DealerCoreRequestTrade(session)
   return false, "USER_ACTION_REQUIRED"
 end
 
+-- Confirm a trade (player money / target money verified in copper)
+function DealerCoreConfirmTrade(player, player_money, target_money)
+  local s = DealerGetSession(player)
+  if not s then return false, DEALER_ERRORS.ERR_UNKNOWN_SESSION end
+  if not s.trade or not s.trade.armed then return false, "TRADE_NOT_ARMED" end
+  if s.trade.target ~= player then return false, "ERR_WRONG_TRADE_TARGET" end
+
+  local expected = s.trade.expectedAmount * 10000 -- copper
+  local verified
+  if s.trade.isPayout then
+    -- We pay: check that WE put in the right amount
+    verified = (player_money == expected)
+    s.trade.verified = verified
+    s.trade.sub = verified and "PAYOUT_VERIFIED" or "PAYOUT_MISMATCH"
+  else
+    -- Player pays stake: check that THEY put in the right amount
+    verified = (target_money == expected)
+    s.trade.verified = verified
+    s.trade.sub = verified and "STAKE_VERIFIED" or "STAKE_MISMATCH"
+  end
+
+  if verified then
+    DealerSetState(s, s.trade.isPayout and DEALER_STATES.PAID or DEALER_STATES.TRADE_VERIFIED, "Trade verified")
+    s.trade.completed = true
+    DealerAuditLog(s.sessionId, player, s.trade.isPayout and "PAYOUT_VERIFIED" or "STAKE_VERIFIED", "amount verified: " .. expected .. " copper")
+    return true, "VERIFIED"
+  else
+    DealerSetState(s, DEALER_STATES.ERROR, "Trade mismatch")
+    DealerAuditLog(s.sessionId, player, s.trade.isPayout and "PAYOUT_MISMATCH" or "STAKE_MISMATCH", "expected " .. expected .. " copper")
+    return false, "MISMATCH"
+  end
+end
+
+-- Arm payout (thin wrapper over DealerPayout logic without requiring amountStr)
+function DealerArmPayout(player)
+  local s = DealerGetSession(player)
+  if not s then return false, DEALER_ERRORS.ERR_UNKNOWN_SESSION end
+  if s.state ~= DEALER_STATES.RESOLVED then return false, DEALER_ERRORS.ERR_PAYOUT_TOO_EARLY end
+  if s.payoutCompleted then return false, DEALER_ERRORS.ERR_DOUBLE_PAYOUT end
+
+  s.trade.armed = true
+  s.trade.expectedAmount = s.payout
+  s.trade.target = player
+  s.trade.verified = false
+  s.trade.completed = false
+  s.trade.isPayout = true
+
+  DealerSetState(s, DEALER_STATES.PAYOUT_PENDING, "Payout armed: " .. s.payout .. "g")
+  DealerAuditLog(s.sessionId, player, "PAYOUT_ARMED", s.payout .. "g")
+  CasinoReactionEngine:Trigger("PAYOUT_READY", { player = player, amount = s.payout })
+  return true
+end
+
+-- Mark payout as paid (trade completed)
+function DealerMarkPaid(player)
+  local s = DealerGetSession(player)
+  if not s then return false, DEALER_ERRORS.ERR_UNKNOWN_SESSION end
+  if s.state ~= DEALER_STATES.PAYOUT_PENDING then return false, DEALER_ERRORS.ERR_PAYOUT_TOO_EARLY end
+
+  s.trade.completed = true
+  s.payoutCompleted = true
+  DealerSetState(s, DEALER_STATES.PAID, "Payout completed")
+  DealerAuditLog(s.sessionId, player, "PAID", s.payout .. "g")
+  CasinoReactionEngine:Trigger("PAYOUT_DONE", { player = player, amount = s.payout })
+  return true
+end
+
 -- Read-only trade snapshot for UI/status/watchdog.
 function DealerCoreTradeStatus(playerName)
   local s = (playerName and DealerGetSession(playerName)) or DealerCoreActiveSession()
@@ -4858,7 +4943,7 @@ local function CreatePanel()
   scrim:SetColorTexture(0.02,0.01,0.03,0.24)
 
   if f.SetBackdrop then f:SetBackdrop({edgeFile="Interface\\DialogFrame\\UI-DialogBox-Border", edgeSize=18, insets={left=4,right=4,top=4,bottom=4}}); f:SetBackdropBorderColor(1,0.95,0.8,1)
-  else MakeBorder(f,2):SetColor(uc(C.goldDk)) end
+  else local border = MakeBorder(f,2); if border then border:SetColor(uc(C.goldDk)) end end
 
   BuildFX(f)
 
@@ -5008,7 +5093,12 @@ local function CreatePanel()
   -- TEST LIVE BUTTON (Universal Live Communication Test)
   -- ============================================================================
   local function GetLiveTestContext()
-    local inInstance, instanceType = IsInInstance and IsInInstance() or false
+    local inInstance, instanceType
+    if IsInInstance then
+      inInstance, instanceType = IsInInstance()
+    else
+      inInstance, instanceType = false, "none"
+    end
     local numParty = GetNumPartyMembers and GetNumPartyMembers() or 0
     local numRaid = GetNumRaidMembers and GetNumRaidMembers() or 0
     local isInGroup = numParty > 0
@@ -5283,7 +5373,12 @@ local function CreatePanel()
   }
 
   local function GetContextLabel()
-    local inInstance, instanceType = IsInInstance and IsInInstance() or false
+    local inInstance, instanceType
+    if IsInInstance then
+      inInstance, instanceType = IsInInstance()
+    else
+      inInstance, instanceType = false, "none"
+    end
     local isInGroup = IsInGroup and IsInGroup() or false
     local isInRaid = IsInRaid and IsInRaid() or false
     
@@ -5307,7 +5402,12 @@ local function CreatePanel()
     local zone = GetRealZoneText and GetRealZoneText() or GetZoneText and GetZoneText() or "Unknown"
     local subZone = GetSubZoneText and GetSubZoneText() or ""
     local context = GetContextLabel()
-    local inInstance, instanceType = IsInInstance and IsInInstance() or false
+    local inInstance, instanceType
+    if IsInInstance then
+      inInstance, instanceType = IsInInstance()
+    else
+      inInstance, instanceType = false, "none"
+    end
     
     local prospectCount = 0
     if prospects then for _ in pairs(prospects) do prospectCount = prospectCount + 1 end end
@@ -5441,21 +5541,32 @@ local function CreatePanel()
     UpdateAutopilotButtons()
   end
 
+  -- Teinte defensive : SetBackdropColor n'existe que sur les frames avec
+  -- backdrop (BackdropTemplate). Nos boutons sont des Button nus + texture
+  -- MakeBacking, donc l'appel direct vaut nil dans le client 2.5.6 et leve
+  -- "attempt to call a nil value" dans UpdateAutopilotButtons (General.log).
+  -- Le texte ON/OFF porte deja l'etat, la teinte reste purement cosmetique.
+  local function SetBtnTint(btn, r, g, b, a)
+    if btn and btn.SetBackdropColor then
+      btn:SetBackdropColor(r, g, b, a)
+    end
+  end
+
   function UpdateAutopilotButtons()
     if not f.startCasinoBtn or not f.stopCasinoBtn then return end
     
-    if autopilotState.active then
+    if autopilotState and autopilotState.active then
       f.startCasinoBtn:SetText("|cff78EB96CASINO LIVE|r")
       f.startCasinoBtn:SetEnabled(false)
       f.stopCasinoBtn:SetEnabled(true)
       if f.autoWhisperBtn then
         f.autoWhisperBtn:SetEnabled(true)
-        if autopilotState.autoWhisper then
+        if autopilotState and autopilotState.autoWhisper then
           f.autoWhisperBtn:SetText("|cff78EB96AUTO-WHISPER: ON|r")
-          f.autoWhisperBtn:SetBackdropColor(0.1, 0.3, 0.1, 1)
+          SetBtnTint(f.autoWhisperBtn, 0.1, 0.3, 0.1, 1)
         else
           f.autoWhisperBtn:SetText("|cffEB5E4FAUTO-WHISPER: OFF|r")
-          f.autoWhisperBtn:SetBackdropColor(0.3, 0.1, 0.1, 1)
+          SetBtnTint(f.autoWhisperBtn, 0.3, 0.1, 0.1, 1)
         end
       end
       if f.announceSayBtn then f.announceSayBtn:SetEnabled(true) end
@@ -5484,8 +5595,8 @@ local function CreatePanel()
     f.startCasinoBtn:SetSize(f:GetWidth() - PAD * 2, 34)
     f.startCasinoBtn:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -432)
     MakeBacking(f.startCasinoBtn, uc(C.gold, 1))
-    MakeBorder(f.startCasinoBtn, 2):SetColor(uc(C.goldDk))
-    f.startCasinoTxt = MakeText(f.startCasinoBtn, 13, "", "CENTER")
+    local b = MakeBorder(f.startCasinoBtn, 2); if b then b:SetColor(uc(C.goldDk)) end
+    if f.startCasinoBtn then f.startCasinoTxt = MakeText(f.startCasinoBtn, 13, "", "CENTER") end
     f.startCasinoTxt:SetPoint("CENTER")
     f.startCasinoTxt:SetText("|cffFFD700🎰 START CASINO|r")
     f.startCasinoTxt:SetTextColor(0.10, 0.05, 0.02, 1)
@@ -5803,9 +5914,61 @@ local function CreatePanel()
     dp.quickAdBtn:SetScript("OnClick", function() CasinoShow:StartQuickAd() end)
     
     -- Stop Show button
-    dp.stopBtn = MakeButton(dp, 80, 22, "â–  STOP", 0.12, 0.05, 0.05, 0.92, C.red)
+    dp.stopBtn = MakeButton(dp, 80, 22, "■ STOP", 0.12, 0.05, 0.05, 0.92, C.red)
     dp.stopBtn:SetPoint("LEFT", dp.quickAdBtn, "RIGHT", 8, 0)
     dp.stopBtn:SetScript("OnClick", function() CasinoShow:StopShow() end)
+
+    -- ===== SHOW ENGINE 1-click strip (dealer) =====
+    -- Tous les shows + MEGA + LOOP + STOP sur l'interface : 1 clic = 1 action.
+    -- Meme convention que les rangees TEST/DEMO : cale a droite, frame level
+    -- releve pour rester cliquable. Gardé : message clair si le moteur n'est
+    -- pas chargé (pas d'erreur muette).
+    local function PlayShowEngine(name)
+      if not _G.ShowEngine or type(_G.ShowEngine.StartShow) ~= "function" then
+        print("|cffEB5E4FShow Engine|r not loaded - /reload puis reessaye")
+        return
+      end
+      if name == "MEGA" then _G.ShowEngine:StartMegaShow() return end
+      if name == "LOOP" then _G.ShowEngine:StartMegaLoop() return end
+      if name == "STOP" then _G.ShowEngine:StopMegaLoop() return end
+      local ok, err = _G.ShowEngine:StartShow(name)
+      if ok then
+        if dp.statusText then dp.statusText:SetText("|cffFFD700SHOW: " .. name .. "|r") end
+      else
+        print("|cffEB5E4FShow Engine|r " .. tostring(err or "blocked"))
+      end
+    end
+    local function seBtn(label, action, r, g, bl, a, txtColor)
+      local b = MakeButton(dp, 64, 18, label, r or 0.10, g or 0.08, bl or 0.04, a or 0.95, txtColor or C.gold)
+      b:SetFrameLevel((dp:GetFrameLevel() or 1) + 6)
+      b:SetScript("OnClick", function() PlayShowEngine(action) end)
+      return b
+    end
+    -- Rangee 1 : 4 shows
+    dp.seRouletteBtn = seBtn("ROULETTE", "ROULETTE")
+    dp.seRouletteBtn:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -136)
+    dp.seJackpotBtn = seBtn("JACKPOT", "JACKPOT")
+    dp.seJackpotBtn:SetPoint("RIGHT", dp.seRouletteBtn, "LEFT", -4, 0)
+    dp.seDiceBtn = seBtn("DICE", "DICE")
+    dp.seDiceBtn:SetPoint("RIGHT", dp.seJackpotBtn, "LEFT", -4, 0)
+    dp.seWelcomeBtn = seBtn("WELCOME", "WELCOME")
+    dp.seWelcomeBtn:SetPoint("RIGHT", dp.seDiceBtn, "LEFT", -4, 0)
+    -- Rangee 2 : 4 shows
+    dp.seFinaleBtn = seBtn("FINALE", "FINALE")
+    dp.seFinaleBtn:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -158)
+    dp.seShowgirlBtn = seBtn("SHOWGIRL", "SHOWGIRL")
+    dp.seShowgirlBtn:SetPoint("RIGHT", dp.seFinaleBtn, "LEFT", -4, 0)
+    dp.seFireBtn = seBtn("FIRE", "FIRE")
+    dp.seFireBtn:SetPoint("RIGHT", dp.seShowgirlBtn, "LEFT", -4, 0)
+    dp.seBlackjackBtn = seBtn("BLACKJACK", "BLACKJACK")
+    dp.seBlackjackBtn:SetPoint("RIGHT", dp.seFireBtn, "LEFT", -4, 0)
+    -- Rangee 3 : MEGA + LOOP + STOP
+    dp.seStopBtn = seBtn("STOP", "STOP", 0.12, 0.05, 0.05, 0.92, C.red)
+    dp.seStopBtn:SetPoint("TOPRIGHT", dp, "TOPRIGHT", -8, -180)
+    dp.seLoopBtn = seBtn("LOOP", "LOOP")
+    dp.seLoopBtn:SetPoint("RIGHT", dp.seStopBtn, "LEFT", -4, 0)
+    dp.seMegaBtn = seBtn("MEGA", "MEGA")
+    dp.seMegaBtn:SetPoint("RIGHT", dp.seLoopBtn, "LEFT", -4, 0)
 
     -- Attractor: ONE click = ONE real channel announcement (hardware event).
     -- Cooldowns only decide what the next click may send; nothing auto-sends.
@@ -6712,6 +6875,102 @@ pcall(function() loader:RegisterEvent("PLAYER_TARGET_CHANGED") end)
 pcall(function() loader:RegisterEvent("ZONE_CHANGED") end)
 pcall(function() loader:RegisterEvent("ZONE_CHANGED_NEW_AREA") end)
 local rosterTkn, lastCh = 0, nil
+
+-- ============================================================================
+-- DESKTOP COMMAND CHANNEL (desktop -> addon via SavedVariables)
+-- Desktop writes CasinobabeDB.casinoCommand, addon reads & executes it.
+-- This is the only cross-process channel that does not require sockets or
+-- arbitrary file access (both forbidden to WoW addons).
+-- ============================================================================
+local function ProcessDesktopCommand(cmd)
+  if not cmd or not cmd.action then return false, "no action" end
+  local action = cmd.action
+  local player = cmd.player
+  local params = cmd.params or {}
+
+  if action == "create_session" then
+    if not player then return false, "no player" end
+    local s, err = DealerCreateSession(player)
+    if not s then return false, err end
+    return true, "session created: " .. s.sessionId
+
+  elseif action == "game" then
+    if not player or not params.game then return false, "no player or game" end
+    local ok, err = DealerGame(player, params.game, params.extra)
+    if not ok then return false, err end
+    return true, "game set: " .. params.game
+
+  elseif action == "stake" then
+    if not player or not params.amount then return false, "no player or amount" end
+    local ok, err = DealerStake(player, tostring(params.amount))
+    if not ok then return false, err end
+    return true, "stake armed: " .. params.amount .. "g"
+
+  elseif action == "confirm_trade" then
+    if not player then return false, "no player" end
+    local ok, verif, msg = DealerCoreConfirmTrade(player, params.player_money or 0, params.target_money or 0)
+    if not ok then return false, msg end
+    return true, "trade verified: " .. tostring(verif)
+
+  elseif action == "roll" then
+    if not player or not params.roll then return false, "no player or roll" end
+    local ok, err = DealerRecord(player, tostring(params.roll))
+    if not ok then return false, err end
+    return true, "roll recorded: " .. params.roll
+
+  elseif action == "resolve" then
+    if not player then return false, "no player" end
+    local ok, err = DealerResolve(player)
+    if not ok then return false, err end
+    return true, "resolved: " .. tostring(session and session.result or "unknown")
+
+  elseif action == "arm_payout" then
+    if not player then return false, "no player" end
+    local ok, err = DealerArmPayout(player)
+    if not ok then return false, err end
+    return true, "payout armed"
+
+  elseif action == "mark_paid" then
+    if not player then return false, "no player" end
+    local ok, err = DealerMarkPaid(player)
+    if not ok then return false, err end
+    return true, "payout marked"
+
+  elseif action == "close" then
+    local ok, err = DealerClose(player)
+    if not ok then return false, err end
+    return true, "session closed"
+
+  elseif action == "recover" then
+    local ok, err = DealerCoreRecoverToIdle(player, "desktop command")
+    if not ok then return false, err end
+    return true, "recovered"
+
+  else
+    return false, "unknown action: " .. tostring(action)
+  end
+end
+
+local desktopCmdFrame = CreateFrame("Frame")
+desktopCmdFrame:SetScript("OnUpdate", function(self, elapsed)
+  self._t = (self._t or 0) + (elapsed or 0)
+  if self._t < 0.5 then return end
+  self._t = 0
+
+  local cmd = CasinobabeDB and CasinobabeDB.casinoCommand
+  if not cmd or cmd.processed then return end
+
+  local ok, result = ProcessDesktopCommand(cmd)
+  cmd.processed = true
+  cmd.result = { ok = ok, message = result, processedAt = date("!%Y-%m-%dT%H:%M:%SZ") }
+
+  if not ok then
+    DealerAuditLog(nil, "desktop", "CMD_ERROR", tostring(result or "unknown"))
+  else
+    DealerAuditLog(nil, "desktop", "CMD_OK", tostring(result or "ok"))
+  end
+end)
+
 loader:SetScript("OnEvent", function(self, event, ...)
   if event=="GROUP_ROSTER_UPDATE" or event=="PARTY_MEMBERS_CHANGED"
      or event=="RAID_ROSTER_UPDATE" or event=="PLAYER_ENTERING_WORLD" then
@@ -6734,13 +6993,13 @@ loader:SetScript("OnEvent", function(self, event, ...)
       -- Update dealer connection state on group changes
       local newCh = groupChannel()
       if newCh then
-        local connState = CB.state and CB.state.dealerConnState or DEALER_CONN_STATES.OFF
+        local connState = (CB and CB.state and CB.state.dealerConnState) or DEALER_CONN_STATES.OFF
         if connState == DEALER_CONN_STATES.CONNECTING or connState == DEALER_CONN_STATES.OFF then
           DealerSetConnState(DEALER_CONN_STATES.CONNECTED, "raid/group joined")
           SendControl("HELLO")
         end
       else
-        local connState = CB.state and CB.state.dealerConnState or DEALER_CONN_STATES.OFF
+        local connState = (CB and CB.state and CB.state.dealerConnState) or DEALER_CONN_STATES.OFF
         if connState == DEALER_CONN_STATES.CONNECTED or connState == DEALER_CONN_STATES.READY then
           DealerSetConnState(DEALER_CONN_STATES.CONNECTING, "no raid/group - waiting")
         end
@@ -6759,13 +7018,105 @@ loader:SetScript("OnEvent", function(self, event, ...)
     -- pa Minimap NAR samlar-addon som MinimapButtonButton gor sin insamling. Skapas
     -- knappen forst vid PLAYER_LOGIN kan samlaren hinna scanna fore oss och missa den.
     if not LibDBIcon10_Casinobabe then CreateMinimapButton() end
+
+    -- Initialize ShowEngine (registers shows, slash commands)
+    if _G.ShowEngine and _G.ShowEngine.OnLoad then
+      pcall(_G.ShowEngine.OnLoad)
+    end
   elseif event=="PLAYER_LOGIN" then
     myName=CB.shortName(UnitName("player"))
+    myRealm=GetRealmName and GetRealmName() or "Unknown"
     CasinobabeDB.casino=nil   -- rensa gammalt felaktigt sparat namn; vi visar raid-ledaren
     if not LibDBIcon10_Casinobabe then CreateMinimapButton() end   -- fallback
     RequestState()
     -- Auto-detect dealer mode for Casinobae
     AutoDetectDealerMode()
+
+    -- Colorabi Gate: explicit authorization for Colorabi dealer character
+    -- SHOW_TRIGGER_AUTH: Colorabi@Nightslayer uniquement (mécanisme show trigger)
+    -- LEGACY_SELFTEST_AUTH: mécanisme QA legacy (Infection inclus par convention)
+    -- Authorized: Colorabi on Nightslayer (account 103329567#1) — show trigger seulement
+    -- Forbidden: Infection QA character (handled by SelfTest gate on YACOV972/Thunderstrike)
+    local isColorabiShowTrigger = (myName == "Colorabi" and myRealm == "Nightslayer")
+    local isInfectionQA
+    -- Auto-detect Infection QA for legacy SelfTest (do NOT use for show trigger)
+    if myName == "Infection" and myRealm == "Thunderstrike" then
+      isInfectionQA = true
+    else
+      isInfectionQA = false
+    end
+    -- SHOW_TRIGGER_AUTH only: Colorabi on Nightslayer
+    CB.isColorabiAuthorized = isColorabiShowTrigger
+    -- LEGACY_SELFTEST_AUTH: Infection QA detection (legacy only)
+    CB.isInfectionQA = isInfectionQA
+    if isColorabiShowTrigger then
+      print("|cffFFD700Casinobabe|r Colorabi dealer authorized on " .. myRealm .. " (SHOW_TRIGGER_AUTH)")
+    elseif isInfectionQA then
+      print("|cffEB5E4FCasinobabe|r Infection QA character detected - LEGACY_SELFTEST_AUTH active")
+    end
+    -- Authorized SHOW TRIGGER: bridge can request a show start via SavedVariables
+    -- Trigger format: CasinobabeDB.showTrigger = { showName = "WELCOME", authorized = true, requestId = "...", timestamp = 0 }
+    -- The bridge writes this SV entry; the addon checks it on PLAYER_LOGIN and authorizes
+    -- only when Colorabi on Nightslayer gate is active and showName is in the allowlist.
+    -- Expiration: triggers older than 300s (5 min) are considered stale and ignored.
+    -- Double-execution guard: only start if not already showing.
+    -- Consumption logging: SENT / DENIED / CONSUMED / EXPIRED / ERROR
+    if CasinobabeDB.showTrigger then
+      local trigger = CasinobabeDB.showTrigger
+      local triggerShow = trigger.showName
+      local triggerAuthorized = trigger.authorized
+      local triggerRequestId = trigger.requestId
+      local triggerTimestamp = tonumber(trigger.timestamp) or 0
+      local triggerTtlSeconds = tonumber(trigger.ttlSeconds) or 300
+      local now = time()
+
+      -- Trigger allowlist (8 canonical shows, cf. ShowEngineBootstrap summary).
+      -- Previously referenced as an undefined global -> in-game error
+      -- "attempt to index global 'allowedShows' (a nil value)" on any
+      -- authorized trigger. Defined as chunk-local here (BUG-D fix).
+      local allowedShows = {
+        WELCOME = true, DICE = true, JACKPOT = true, ROULETTE = true,
+        BLACKJACK = true, FIRE = true, SHOWGIRL = true, FINALE = true,
+      }
+
+      -- Persist request IDs so the same bridge command cannot execute twice.
+      local processedRequestIds = CasinobabeDB.processedShowTriggerIds
+      if type(processedRequestIds) ~= "table" then
+        processedRequestIds = {}
+        CasinobabeDB.processedShowTriggerIds = processedRequestIds
+      end
+
+      if now - triggerTimestamp > triggerTtlSeconds then
+        print("|cffFFAA00Show Engine|r Trigger EXPIRED (stale, " .. tostring(now - triggerTimestamp) .. "s old, TTL=" .. tostring(triggerTtlSeconds) .. ", requestId=" .. tostring(triggerRequestId or "missing") .. ")")
+        CasinobabeDB.showTrigger = nil
+      elseif not triggerRequestId or triggerRequestId == "" then
+        print("|cffFFAA00Show Engine|r Trigger DENIED (missing requestId)")
+        CasinobabeDB.showTrigger = nil
+      elseif not (triggerAuthorized and CB.isColorabiAuthorized) then
+        -- SHOW_TRIGGER_AUTH is Colorabi@Nightslayer only. Infection QA never authorizes this path.
+        print("|cffFFAA00Show Engine|r Trigger DENIED (not authorized: triggerAuthorized=" .. tostring(triggerAuthorized) .. ", isColorabiAuthorized=" .. tostring(CB.isColorabiAuthorized) .. ")")
+        CasinobabeDB.showTrigger = nil
+      elseif not allowedShows[triggerShow] then
+        print("|cffFFAA00Show Engine|r Trigger DENIED (show '" .. tostring(triggerShow) .. "' not in allowlist)")
+        CasinobabeDB.showTrigger = nil
+      elseif processedRequestIds[triggerRequestId] then
+        print("|cffFFAA00Show Engine|r DUPLICATE REQUEST SKIPPED: " .. triggerRequestId)
+        CasinobabeDB.showTrigger = nil
+      elseif _G.ShowEngine and _G.ShowEngine.isRunning then
+        processedRequestIds[triggerRequestId] = true
+        print("|cff78EB96Show Engine|r Trigger CONSUMED (show already running, skip double-start, requestId=" .. triggerRequestId .. ")")
+        CasinobabeDB.showTrigger = nil
+      else
+        processedRequestIds[triggerRequestId] = true
+        if _G.ShowEngine and _G.ShowEngine.shows and _G.ShowEngine.shows[triggerShow] then
+          _G.ShowEngine:StartShow(triggerShow)
+          print("|cff78EB96Show Engine|r Authorized trigger started show: " .. triggerShow .. " (requestId: " .. triggerRequestId .. ")")
+        else
+          print("|cffEB5E4FShow Engine|r Triggered show definition missing: " .. tostring(triggerShow))
+        end
+        CasinobabeDB.showTrigger = nil
+      end
+    end
     -- Forsta gangen efter installation: oppna panelen automatiskt sa nya spelare
     -- hittar den direkt (slipper leta efter C:et pa minimappen). Sker bara EN gang -
     -- flaggan sparas, sen oppnas den aldrig av sig sjalv igen.
@@ -7011,7 +7362,7 @@ function HandleInboundChat(eventType, text, sender, channelType, channelName, ch
   UpdateProspect(sender, channelType or eventType, text, nil, 0)
   
   -- Debug log
-  print(string.format("|cffFFD700[CB CHAT]|r [%s] %s in %s: %s", eventType, sender, channelType or "?", text))
+  print(string.format("|cffFFD700[CB CHAT]|r [%s] %s in %s: %s", eventType, sender, channelType or "?", tostring(text)))
   
   -- Existing whisper handling for dealer flow
   if eventType == "WHISPER" and dealerEnabled then
@@ -7041,7 +7392,12 @@ end
 function UpdateZoneContext()
   local zone = GetRealZoneText and GetRealZoneText() or GetZoneText and GetZoneText() or "Unknown"
   local subZone = GetSubZoneText and GetSubZoneText() or ""
-  local inInstance, instanceType = IsInInstance and IsInInstance() or false
+  local inInstance, instanceType
+  if IsInInstance then
+    inInstance, instanceType = IsInInstance()
+  else
+    inInstance, instanceType = false, "none"
+  end
   
   if zone ~= currentZone or subZone ~= currentSubZone or instanceType ~= currentInstanceType then
     currentZone = zone
@@ -7381,6 +7737,7 @@ function DealerDemoCommand(arg)
   local function dbegin(scenario)
     dstopSeq()
     demoSession.scenario = scenario
+    demoSession.player = "TEST_PLAYER" -- virtual seat, asserted by /cb demo verify
     demoSession.step = 0
     demoSession.failed = false
     demoSession.failAt = nil
@@ -7561,6 +7918,11 @@ function DealerDemoCommand(arg)
     print("|cffFFD700Casinobabe|r Usage: /cb demo | /cb demo win | /cb demo loss | /cb demo next | /cb demo stop | /cb demo status | /cb demo verify")
   end
 end
+-- Slash binding: SANS ces globales SLASH_*, le client ne route jamais "/cb"
+-- vers le handler ci-dessous (erreur "Type '/help'" constatee en jeu le
+-- 2026-10-09 : handler SlashCmdList["CASINOBABE"] present mais injoignable).
+SLASH_CASINOBABE1 = "/cb"
+SLASH_CASINOBABE2 = "/casinobabe"
 SlashCmdList["CASINOBABE"]=function(msg)
   msg=(msg or ""):gsub("^%s+",""):gsub("%s+$","")
   local cmd,arg=msg:match("^(%S*)%s*(.-)$"); cmd=(cmd or ""):lower()
@@ -7732,3 +8094,168 @@ SlashCmdList["CASINOBABE"]=function(msg)
     print("|cffFFD700Casinobabe|r Commands: /cb dealer on|off|status|ad|attract|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote | /cb auto | /cb auto stop | /cb auto status | /cb who | /cb discord <text> | /cb fx | /cb resetstats | /cb reset | /cb intro")
   end
 end
+
+-- ============================================================================
+-- SHOW ENGINE INTEGRATION
+-- ============================================================================
+-- Load the Show Engine after the addon has initialized
+-- This runs after ADDON_LOADED in the live client
+-- Canonical show slash command: /cbs <show> (alias /cbshow).
+-- Single registration: ShowEngine.lua registers none (hash_SlashCmdList collision guard).
+-- Normalize ONCE: membership check and StartShow must use the same casing.
+--
+-- FILE-SCOPE registration is REQUIRED: WoW captures SLASH_* globals when addon
+-- files finish loading (before/during ADDON_LOADED). Registering inside the
+-- C_Timer.After(2) bootstrap below is TOO LATE: the client never learns that
+-- "/cbs" exists and the keystroke dies silently (the reported bug).
+if SlashCmdList then
+  SlashCmdList["CASINOBAE_SHOW_ENGINE"] = function(cmd)
+    -- ShowEngine.lua peut avoir echoue au chargement: degrader proprement
+    -- au lieu de lever "attempt to index global 'ShowEngine' (a nil value)".
+    if not _G.ShowEngine then
+      print("|cffEB5E4FShow Engine|r not loaded - /cbs unavailable")
+      return
+    end
+    local showName = (cmd or ""):match("^(%S+)")
+    if not showName or showName == "" then
+      ShowEngine:ShowHelp()
+      return
+    end
+
+    showName = showName:upper()
+
+    if showName == "MEGA" then
+      ShowEngine:StartMegaShow()
+      print("|cff78EB96Show Engine|r Starting MEGA playlist full-auto")
+      return
+    end
+
+    if showName == "REFRESH" then
+      ShowEngine:RefreshShows()
+      return
+    end
+
+    if showName == "LOOP" then
+      ShowEngine:StartMegaLoop()
+      return
+    end
+
+    if showName == "STOP" then
+      ShowEngine:StopMegaLoop()
+      return
+    end
+
+    if ShowEngine.shows[showName] then
+      local ok, result = ShowEngine:StartShow(showName)
+      if ok then
+        print("|cff78EB96Show Engine|r Starting show: " .. showName)
+      else
+        print("|cffEB5E4FShow Engine|r Failed to start show: " .. tostring(result))
+      end
+    else
+      print("|cffFFAA00Show Engine|r Unknown show: " .. showName)
+      print("|cff78EB96Available shows:|r")
+      for name in pairs(ShowEngine.shows) do
+        print("  - " .. name)
+      end
+    end
+  end
+  SLASH_CASINOBAE_SHOW_ENGINE1 = "/cbs"
+  SLASH_CASINOBAE_SHOW_ENGINE2 = "/cbshow"
+end
+
+function ShowEngineBootstrap()
+  -- No need for dofile; the TOC ensures it is loaded before ADDON_LOADED completes
+  if not _G.ShowEngine then
+    print("|cffFFAA00Show Engine|r ShowEngine not available yet, retrying...")
+    return false
+  end
+
+  -- Initialize the Show Engine
+  local initOk = ShowEngine:Initialize()
+  if not initOk then
+    print("|cffEB5E4FShow Engine|r Failed to initialize")
+    return false
+  end
+
+  -- Slash commands /cbs + /cbshow are registered at FILE SCOPE above.
+  -- Do NOT register them here: C_Timer.After(2) runs after WoW's slash
+  -- discovery, so a registration here would never be bound by the client.
+
+  -- Print initialization summary
+  local showCount = 0
+  for _ in pairs(ShowEngine.shows) do showCount = showCount + 1 end
+  print("|cffFFD700Casinobabe|r Show Engine loaded - " .. showCount .. " shows registered")
+  print("|cffFFD700Casinobabe|r Show commands: /cbs <show_name> | /cbshow <show_name>")
+  print("|cffFFD700Casinobabe|r Available shows: welcome, dice, jackpot, roulette, blackjack, fire, showgirl, finale")
+
+  return true
+end
+
+-- Run bootstrap after a short delay to ensure all globals are ready
+if C_Timer and C_Timer.After then
+  C_Timer.After(2, function()
+    ShowEngineBootstrap()
+  end)
+end
+
+
+-- ===== CB QA SELFTEST BEGIN =====
+-- QA gate for dedicated test character Colorabi (Nightslayer/103329567#1)
+-- and casino characters on Thunderstrike (YACOV972).
+-- Infection is explicitly excluded from QA.
+(function()
+  local QA_REALMS = {
+    ["Thunderstrike"] = true,
+    ["Nightslayer"] = true,
+  }
+  local QA_CHARS = {
+    ["Casinøbabe"] = true,
+    ["Câsínobâbe"] = true,
+    ["Colorabi"] = true,
+  }
+  local function IsQATarget()
+    if not UnitName then return false end
+    local n = UnitName("player")
+    local r = GetRealmName and GetRealmName() or ""
+    return (n ~= nil) and QA_CHARS[n] and QA_REALMS[r]
+  end
+
+  local function QADB()
+    CasinobabeDB = CasinobabeDB or {}
+    CasinobabeDB.qa = CasinobabeDB.qa or {}
+    local qa = CasinobabeDB.qa
+    if qa.armed     == nil then qa.armed = false end
+    if qa.maxCycles == nil then qa.maxCycles = 2 end
+    qa.cycle = qa.cycle or 0
+    qa.runs  = qa.runs or {}
+    return qa
+  end
+
+  local function QALog(msg)
+    print(("|cffADD8E6[CB-QA]|r %s"):format(tostring(msg)))
+  end
+
+  -- Optional slash command: /cbqa run | status | disarm
+  SLASH_CASINOBABE_QA1 = "/cbqa"
+  SlashCmdList["CASINOBABE_QA"] = function(msg)
+    if not IsQATarget() then QALog("refusé : personnage hors périmètre QA") return end
+    local qa = QADB()
+    msg = (msg or ""):match("^%s*(.-)%s*$"):lower()
+    if msg == "run" then
+      qa.armed = true; qa.cycle = 0; qa.maxCycles = 2
+      QALog("armé (2 cycles) — ReloadUI")
+      ReloadUI()
+    elseif msg == "disarm" then
+      qa.armed = false
+      QALog("désarmé")
+    elseif msg == "status" then
+      QALog(("armed=%s cycle=%d/%d boots=%d runs=%d verdict=%s")
+        :format(tostring(qa.armed), qa.cycle, qa.maxCycles,
+                qa.bootCount or 0, #qa.runs, tostring(qa.lastVerdict)))
+    else
+      QALog("usage: /cbqa run | status | disarm")
+    end
+  end
+end)()
+-- ===== CB QA SELFTEST END =====

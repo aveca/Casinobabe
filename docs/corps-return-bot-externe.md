@@ -1,0 +1,156 @@
+# Retour au corps en bot EXTERNE (sans addon) — procédure validée
+
+Résurrection **observée** le 21/10/2026 sur Colorabi (TBC Anniversary),
+programme externe uniquement (capture d'écran + entrées simulées),
+**sans addon chargé**.
+
+## 1. Les trois causes racines (mesurées, pas supposées)
+
+### 1.1 La carte du monde ouverte annule TOUTES les entrées
+La carte du monde est une *frame* du client qui prend le focus clavier.
+Tant qu'elle est ouverte : `Z+W` → **0,23 px** de défilement, clic droit →
+**0,00 px** (et le clic droit sur la carte fait « zoom out »).
+Carte fermée : `Z+W` 4 s → **36,19 px**, clic droit → **9,90 px**.
+
+> **Règle** : la carte n'est ouverte que pour MESURER, puis refermée, et
+> l'état « monde visible » est vérifié par capture avant toute action.
+
+### 1.2 Un fantôme plonge et se coince au fond du lac
+Sous l'eau, le fantôme descend et reste bloqué : ni `Z+W` ni le
+clic-to-move ne le déplacent.
+
+> **Règle** : maintenir **ESPACE** en permanence pendant le déplacement
+> (`Z` + `W` + **ESPACE**) : le fantôme remonte à la surface et marche
+> **sur** l'eau au lieu de plonger.
+
+### 1.3 Les coordonnées de clic souris sont en ÉCRAN, la capture est en FENÊTRE
+`capture_window()` renvoie l'image de la fenêtre (origine = `rect.left/top`,
+ici -8,-8) ; `SetCursorPos` attend des coordonnées **écran**.
+Un clic calculé sur les pixels de capture rate la cible de 8 px — assez
+pour rater un bouton de 20 px de haut (« Accept » de « Resurrect now? »).
+
+> **Règle** : `ecran = capture + (rect.left, rect.top)`.
+
+## 2. Faits client mesurés (session 21/10)
+
+| fait | valeur |
+|---|---|
+| raccourcis du perso **Colorabi** | `Z`=MOVEFORWARD, `Q`=TURNLEFT, `W`/`A`=NONE |
+| cache du **compte** (non prioritaire) | `Z`=TOGGLEAUTORUN, `E`=ACTIONBUTTON5 |
+| `E` | ce n'est **pas** une rotation (→ ACTIONBUTTON5) |
+| lecture clavier du client | **raw input** : seules les touches réellement liées répondent |
+| seule commande qui tourne | **la souris** (caméra), ~0,45 °/px, à déplacer **sous bail de focus** |
+| bail de focus | à **tenir pendant l'action** (hors bail : 0,00 px) |
+| listes déroulantes / boutons | répondent à un **appui maintenu** (mouse-down + ~0,6 s) |
+| repère de cap | **minicarte** (verrouillée au nord) : `MinimapGeometry` (Hough) + `player_facing` |
+| repère de position | **carte du monde** : joueur = flèche argentée + cercle bleu, cimetière = stèle violette |
+| progression | distance en **pixels de carte** joueur ↔ cimetière (décroissante) |
+| conversion | coordonnées normalisées (native, 1413) → pixels : cadre `x 350..2225`, `y 165..1440` — **validée** (le point natif tombe pile sur le cimetière) |
+| interaction | clic droit sur le corps → dialogue « Resurrect now? » → **Accept** (clic maintenu, coords écran) |
+
+## 3. Boucle de navigation (fermée, deux mesures indépendantes)
+
+1. ouvrir la carte → mesurer cimetière (gabarit) + joueur (cercle bleu)
+   → **bearing** (repère nord) et **distance** ;
+2. fermer la carte et **vérifier** que le monde est visible ;
+3. cap lu sur la **minicarte** → correction d'orientation à la **souris**
+   (`dx = erreur / 0,45° par px`, sous bail de focus) ;
+4. vol `Z` + `W` + **ESPACE** maintenus (3 s) ;
+5. re-mesurer : la distance doit **baisser** ; sinon demi-tour ;
+6. arrêt à ≤ 8 px → clic droit sur le corps → menu → Accept → vérifier
+   l'état **vivant** (disparition du voile cyan : `cyan` 0,99 → 0,08).
+
+## 4. Journal type d'une tentative
+
+```
+[1] carte fermee : True
+    etat de vie : FANTOME (cyan=0.99)
+    clic droit (1494,844) : diff locale= 37.26  -> MENU DETECTE
+[accept] clic ecran (1301,335) -> cyan=0.08  ==> VIVANT OBSERVE
+```
+
+## 5. Pièges à ne pas refaire
+
+* ne pas « calibrer » la carte : le cimetière est stable, la conversion est
+  prouvée ;
+* ne pas confondre le cimetière et le corps : le corps n'est **pas**
+  dessiné sur la carte ni sur la minicarte (balayage complet fait) — le
+  cimetière sert de **borne de progression**, la proximité se conclut par
+  l'ouverture du menu « Resurrect now? » ;
+* ne pas lancer de vol long sans direction fiable : la distance doit être
+  mesurée avant/après ;
+* ne pas laisser la carte ouverte entre deux actions ;
+* ne pas clicking sans convertir en coordonnées écran.
+
+## 6. Ce qui reste a enregistrer lors de la prochaine occasion reelle
+
+Le client n'expose ni le corps ni le dialogue sur les captures d'ecran
+que le bot possessede aujourd'hui. Pour cloturer le statut **C (cycle reel
+observe)**, il faut enregistrer, lors d'une prochaine mort naturelle :
+
+| element | comment l'obtenir | a quoi il sert |
+|---|---|---|
+| capture PLEIN ECRAN du **fantome** (voile cyan, monde monochrome) | `scripts/fishing_recovery_replay.py` (journal + `reports/recovery-evidence/<date>/`) | calibrer le seuil du voile cyan (aujourd'hui : 0,99 fantome / 0,08 vivant) sur une image reelle, et non synthetique |
+| capture PLEIN ECRAN du dialogue **"Resurrect now?"** avec le bouton rouge | idem (la capture d'evidence est prise juste apres l'interaction) | valider `_find_accept_dialog()` sur une image reelle (aujourd'hui valide sur une image synthetique) |
+| capture PLEIN ECRAN de la **carte du monde ouverte** | `M` pendant que le fantome tourne | valider `map_is_open` + `_world_visible` sur une image reelle (aujourd'hui : mock) |
+| capture PLEIN ECRAN du **corps visible au sol** a portee | idem | calibrer la detection visuelle du corps si un jour on veut s'en passer |
+
+Ces quatre captures sont **produites automatiquement** par le rejeu
+instrumente (le `evidence_dir` est configure dans
+`scripts/fishing_recovery_replay.py`) : il suffira de relancer le rejeu
+pendant une mort naturelle et d'archiver le dossier produit.
+
+## 7. Statuts (a ne pas confondre)
+
+* **A. Logique testee hors ligne** : `tests/test_fishing_recovery.py`,
+  `tests/test_fishing_recovery_external.py`,
+  `tests/test_fishing_recovery_transitions.py` (45 tests) - images
+  synthetiques ou captures reelles du client pour la detection d'etat.
+* **B. Integration au pilote verifiee** : `fishing_bot.py` instancie
+  `RecoverySession` (le moteur teste EST celui de la production) ; le
+  rejeu instrumente utilise la meme chaine
+  (WowActions -> Screen -> Executor -> RecoverySession).
+* **C. Cycle reel fantome -> corps -> resurrection observe** : **reste a
+  valider** - la resurrection a ete observee une fois (21/10, 12h47) avec
+  le pilote experimental, mais pas encore avec le moteur integre ni lors
+  d'un rejeu instrumente.
+
+## 8. Navigation externe : conversions, hypotheses et limites (P0.35)
+
+**Repere de travail** : le **pixel de la carte du monde**.  Depart (joueur)
+et but (corps) sont deux marqueurs du MEME rendu : le vecteur qui les
+relie est donc correct, que la carte soit deplacee (pan) ou non.  Aucune
+conversion vers des coordonnees normalisees n est faite : le pan de la
+carte n est pas connu, une telle conversion serait fausse.
+
+**Echelle** : 1 cellule = 16 px de carte (configurable).  La distance au
+corps est mesuree en pixels de carte (progression) et le cap en degres
+du repere NORD (minicarte + carte, meme convention : 0 = est, +90 = nord).
+
+**Classification du terrain : INCERTAINE.**  On ne suppose PAS qu une
+cellule unie = praticable ni qu une cellule texturee = obstacle (les
+cartouches de carte, les routes et les zones baties sont aussi uniformes
+ou texturees).  La grille est donc une **carte de COUT** : unie = 1,
+texturee = 8, et **RIEN n est interdit**.  L A* evite donc les zones
+texturees quand il le peut, sans jamais bloquer un itineraire.  Cette
+hypothese ne peut pas etre verifiee hors ligne (le client etait
+deconnecte) : elle devra etre calibree sur une capture reelle de la
+carte.
+
+**Refus explicites** (aucun itineraire invente) :
+  * corps ou joueur non identifies de facon fiable -> pas de chemin ;
+  * points hors de la region de la carte -> pas de chemin (le repere
+    serait inconnu) ;
+  * A* sans solution -> pas de chemin.
+
+**Memoire des chemins** (state/ghost-paths.json) : n est rejouable que
+ce qui a ete **observe** (le corps a ete atteint), jamais ce qui a
+seulement ete emis.  Ecriture atomique (fichier temporaire + rename) :
+une interruption ne peut pas corrompre le fichier.  Un itineraire
+historique est refuse si la zone, le point de reference ou la position
+du corps ne correspondent plus.
+
+**Ce que les tests prouvent et ne prouvent pas** : les tests synthetiques
+prouvent le fonctionnement de l A* (cout, contournement, refus,
+conversions, memoire) et que RecoverySession **consomme reellement** les
+waypoints.  Ils ne prouvent PAS la precision de la carte du jeu.

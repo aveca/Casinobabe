@@ -12,7 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -29,6 +28,12 @@ jobs:
 
       - name: Run runtime regression contracts
         run: node tests/regression-runtime-contract.cjs
+
+      # NOTE : les tests Python du bot de peche sont joues par le job dedie
+      # « fishing-python » (matrice ubuntu + windows, avec les dependances
+      # numpy/opencv/pywin32 installees). Ils ne sont PAS rejoues ici : ce
+      # job n'a pas les dependances Python (cv2) et n'a pas vocation a
+      # tester le bot.
 
       - name: Compile legacy addon sources
         run: |
@@ -50,3 +55,86 @@ jobs:
           path: |
             reports/
             logs/
+
+  # Tests Python du bot de peche sur les deux systemes.
+  # Le contrat du bot (tests/test_fishing_bot_contract.py) importe fishing_bot,
+  # donc pywin32 : il n'est jouable que sur Windows. Les tests portables
+  # (detecteur, popup, V2, navigation) passent sur les deux OS.
+  fishing-python:
+    name: Fishing bot python tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install python dependencies
+        shell: bash
+        run: |
+          python -m pip install --quiet --upgrade pip
+          # PIL (Pillow), mss : capture ; numpy, opencv : vision ;
+          # pywin32 : uniquement sous Windows (le bot vise Windows).
+          python -m pip install --quiet numpy opencv-python-headless pillow mss
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            python -m pip install --quiet pywin32
+          fi
+
+      - name: Run V2 and navigation tests (all OS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ces deux modules (memoire des bancs / carte, planificateur,
+          # controleur de deplacement) n'utilisent que la bibliotheque
+          # standard : ils sont donc jouables partout.
+          for t in tests/test_fishing_v2.py \
+                   tests/test_fishing_navigator.py \
+                   tests/test_fishing_navigation.py \
+                   tests/test_fishing_controls.py \
+                   tests/test_fishing_skills.py \
+                   tests/test_fishing_metrics.py \
+                   tests/test_fishing_actions.py \
+                   tests/test_desktop_package.py; do
+            if [ -f "$t" ]; then
+              echo "::group::$t"
+              python "$t"
+              echo "::endgroup::"
+            else
+              echo "absent (ignore) : $t"
+            fi
+          done
+
+      - name: Run detector and popup tests (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ces tests importent fishing_bot / fishing_observer, qui utilisent
+          # ctypes.windll et pywin32 au niveau module : ils ne tournent que
+          # sous Windows (le bot est une application Windows).
+          for t in tests/test_fishing_detector.py \
+                   tests/test_fishing_popup.py; do
+            echo "::group::$t"
+            python "$t"
+            echo "::endgroup::"
+          done
+
+      - name: Run bot contract test (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::tests/test_fishing_bot_contract.py"
+          python tests/test_fishing_bot_contract.py
+          echo "::endgroup::"
+
+      - name: Explain why the Windows-only tests are skipped on Linux
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          echo "detecteur, popup et contrat du bot : ignores hors Windows (ctypes.windll, pywin32)"
