@@ -225,6 +225,8 @@ class RecoverySession(object):
         self.history = []
         self.analysis = None
         self.last_distance = None
+        # position du joueur connue (continuite de la detection)
+        self._last_player = None
         self.best_distance = None
         self.attempts = 0
         self.max_attempts = int(self.cfg.get("maxAttempts", 40))
@@ -745,7 +747,8 @@ class RecoverySession(object):
             img = self._capture()
             if img is None:
                 continue
-            analysis = analyze_map(_bgr(img), self.detector)
+            analysis = analyze_validated(_bgr(img), self._last_player,
+                                      self.detector)
         if analysis is not None:
             self._last_player = analysis.player
             if analysis.usable:
@@ -891,7 +894,8 @@ class RecoverySession(object):
         """Re-mesure la distance au corps : c'est la progression de reference."""
         self._ensure_map(True)
         img = self._capture()
-        analysis = (analyze_map(_bgr(img), self.detector)
+        analysis = (analyze_validated(_bgr(img), self._last_player,
+                                      self.detector)
                     if img is not None else None)
         if analysis is not None:
             self._last_player = analysis.player
