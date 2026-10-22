@@ -114,3 +114,43 @@ pendant une mort naturelle et d'archiver le dossier produit.
   valider** - la resurrection a ete observee une fois (21/10, 12h47) avec
   le pilote experimental, mais pas encore avec le moteur integre ni lors
   d'un rejeu instrumente.
+
+## 8. Navigation externe : conversions, hypotheses et limites (P0.35)
+
+**Repere de travail** : le **pixel de la carte du monde**.  Depart (joueur)
+et but (corps) sont deux marqueurs du MEME rendu : le vecteur qui les
+relie est donc correct, que la carte soit deplacee (pan) ou non.  Aucune
+conversion vers des coordonnees normalisees n est faite : le pan de la
+carte n est pas connu, une telle conversion serait fausse.
+
+**Echelle** : 1 cellule = 16 px de carte (configurable).  La distance au
+corps est mesuree en pixels de carte (progression) et le cap en degres
+du repere NORD (minicarte + carte, meme convention : 0 = est, +90 = nord).
+
+**Classification du terrain : INCERTAINE.**  On ne suppose PAS qu une
+cellule unie = praticable ni qu une cellule texturee = obstacle (les
+cartouches de carte, les routes et les zones baties sont aussi uniformes
+ou texturees).  La grille est donc une **carte de COUT** : unie = 1,
+texturee = 8, et **RIEN n est interdit**.  L A* evite donc les zones
+texturees quand il le peut, sans jamais bloquer un itineraire.  Cette
+hypothese ne peut pas etre verifiee hors ligne (le client etait
+deconnecte) : elle devra etre calibree sur une capture reelle de la
+carte.
+
+**Refus explicites** (aucun itineraire invente) :
+  * corps ou joueur non identifies de facon fiable -> pas de chemin ;
+  * points hors de la region de la carte -> pas de chemin (le repere
+    serait inconnu) ;
+  * A* sans solution -> pas de chemin.
+
+**Memoire des chemins** (state/ghost-paths.json) : n est rejouable que
+ce qui a ete **observe** (le corps a ete atteint), jamais ce qui a
+seulement ete emis.  Ecriture atomique (fichier temporaire + rename) :
+une interruption ne peut pas corrompre le fichier.  Un itineraire
+historique est refuse si la zone, le point de reference ou la position
+du corps ne correspondent plus.
+
+**Ce que les tests prouvent et ne prouvent pas** : les tests synthetiques
+prouvent le fonctionnement de l A* (cout, contournement, refus,
+conversions, memoire) et que RecoverySession **consomme reellement** les
+waypoints.  Ils ne prouvent PAS la precision de la carte du jeu.

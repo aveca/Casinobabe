@@ -1,32 +1,39 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-fishing_navigation.py — navigation EXTERNE (sans addon) du bot de peche.
+fishing_navigation.py — navigation EXTERNE (sans addon) du bot WoW.
 
-Trois briques :
+CHOIX DE CONCEPTION (issus de l'audit du 21/10) :
 
-1. `NavigabilityGrid` : un modele de navigabilite extrait du RENDU DE LA
-   CARTE DU MONDE.  La carte dessine le relief : les montagnes ont un
-   relief texture (hachures) et les plaines sont lisses.  On exploite la
-   meme statistique que pour l'eau (dispersion robuste IQR de la
-   teinte) : une cellule unie = navigable, une cellule texturee =
-   obstacle.  L'eau reste navigable (le fantome marche dessus avec
-   ESPACE maintenu).
+* Tout se passe dans le **repere pixel de la carte du monde**.  La carte
+  peut etre deplacee (pan) ou zoomee : le vecteur (depart -> but) est
+  de toute facon correct dans le rendu affiche, puisque le depart
+  (joueur) et le but (corps) sont DEUX MARQUEURS DU MEME RENDU.  Aucune
+  conversion vers des coordonnees normalisees n'est donc necessaire, et
+  elle serait de surcroit fausse (le pan n'est pas connu).
 
-2. `astar()` : plus court chemin sur cette grille -> une suite de
-   waypoints.  C'est la reponse a « ne pas traverser la montagne » :
-   on ne vise plus le corps en ligne droite, on suit un chemin.
+* La classification du terrain est **INCERTAINE** : on ne peut pas
+  garantir qu'une cellule unie est praticable ni qu'une cellule
+  texturee est un obstacle (les cartouches de la carte, les routes, les
+  zones baties sont aussi uniformes ou texturees).  La grille est donc
+  une **carte de COUT** : une cellule unie coute 1, une cellule texturee
+  coute plus cher mais n'est JAMAIS interdite.  Un chemin existe donc
+  presque toujours, et l'A* evite les zones texturees quand il le peut.
 
-3. `PathMemory` : memoire persistante des itineraires (point de mort +
-   chemin valide).  Le bot n'a pas besoin de redécouvrir un chemin qu'il
-   a deja parcouru (le personnage est deja mort une premiere fois).
+* Le pilote ne doit JAMAIS inventer un itineraire : si la cible, la
+  region de la carte ou la position du joueur sont inconnus ou non
+  verifies, la planification **refuse** de produire un chemin.
 
-Tout est externe : capture d'ecran + entrees simulees.
+* `PathMemory` ne retient que des **resultats observes** : un itineraire
+  n'est rejouable que s'il a mene AU CORPS (et non seulement s'il a ete
+  emis), et seulement si la zone, le point de mort et la position du
+  corps sont compatibles.
 """
 
 import json
 import math
 import os
+import time
 
 try:
     import cv2
@@ -35,28 +42,29 @@ except ImportError:                                    # pragma: no cover
     cv2 = None
     np = None
 
-#: variance locale max d'une cellule de carte jugee lisse (navigable)
-RELIEF_VAR_MAX = 120.0
+#: cout d'une cellule unie (plaine, route, eau)
+COST_PLAIN = 1.0
+#: cout d'une cellule texturee (relief, details de carte) : INCERTAIN
+COST_RELIEF = 8.0
 #: taille d'une cellule de la grille, en pixels de carte
 DEFAULT_CELL_PX = 16
+#: tolerance (pixels) pour rejouer un itineraire historique
+DEFAULT_REPLAY_TOLERANCE_PX = 60.0
 
 
-def _iqr(values):
-    """Dispersion robuste (ecart interquartile) d'un tableau de teintes."""
-    if values is None or len(values) == 0:
-        return 255.0
-    arr = np.asarray(values, dtype=np.float32)
-    q1 = float(np.percentile(arr, 25))
-    q3 = float(np.percentile(arr, 75))
-    return q3 - q1
+def _local_variance(block):
+    """Variance locale d'un bloc (le relief est texture, la plaine unie)."""
+    if block is None or block.size == 0:
+        return 0.0
+    mean = float(block.mean())
+    return float(((block - mean) ** 2).mean())
 
 
 class NavigabilityGrid(object):
-    """Grille de navigabilite deduite du rendu de la carte du monde.
+    """Carte de cout du terrain, extraite du rendu de la carte du monde.
 
-    `cell_px` : taille d'une cellule en pixels de carte.
-    `region`  : (x0, y0, x1, y1) en pixels de capture (la zone utile
-                 de la carte).
+    `region` = (x0, y0, x1, y1) en pixels de CAPTURE (la zone de la
+    carte).  La classification est incertaine : rien n'est interdit.
     """
 
     def __init__(self, region, cell_px=DEFAULT_CELL_PX):
@@ -64,8 +72,8 @@ class NavigabilityGrid(object):
         self.cell_px = int(cell_px)
         self.cols = 0
         self.rows = 0
-        self.free = []          # lignes de booleens (True = franchissable)
-        self.relief = []         # IQR par cellule (diagnostic)
+        self.cost = []
+        self.relief = []
 
     # -- construction ------------------------------------------------------
     @classmethod
@@ -76,106 +84,95 @@ class NavigabilityGrid(object):
         x0, y0, x1, y1 = g.region
         x1 = min(x1, bgr.shape[1])
         y1 = min(y1, bgr.shape[0])
-        roi = bgr[y0:y1, x0:x1]
-        if roi.size == 0:
+        if x1 <= x0 or y1 <= y0:
             return g
+        roi = bgr[y0:y1, x0:x1]
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).astype(np.float32)
         g.cols = max(1, (x1 - x0) // g.cell_px)
         g.rows = max(1, (y1 - y0) // g.cell_px)
-        g.free = []
+        g.cost = []
         g.relief = []
         for r in range(g.rows):
-            line = []
-            line_iqr = []
+            costs = []
+            rels = []
             for c in range(g.cols):
-                cy0 = r * g.cell_px
-                cx0 = c * g.cell_px
+                cy0, cx0 = r * g.cell_px, c * g.cell_px
                 cell = gray[cy0:cy0 + g.cell_px, cx0:cx0 + g.cell_px]
                 if cell.size == 0:
-                    line.append(True)
-                    line_iqr.append(0.0)
+                    costs.append(COST_PLAIN)
+                    rels.append(0.0)
                     continue
-                # VARIANCE LOCALE : le relief (montagnes, aretes) est
-                # texture, la plaine est unie.
                 best = 0.0
-                h = cell.shape[0]
-                w = cell.shape[1]
-                hs = max(1, h // 2)
-                ws = max(1, w // 2)
+                h, w = cell.shape
+                hs, ws = max(1, h // 2), max(1, w // 2)
                 for oy in (0, hs):
                     for ox in (0, ws):
                         sub = cell[oy:oy + hs, ox:ox + ws]
                         if sub.size:
-                            mean = float(sub.mean())
-                            var = float(((sub - mean) ** 2).mean())
-                            best = max(best, var)
-                line_iqr.append(best)
-                line.append(best <= RELIEF_VAR_MAX)
-            g.free.append(line)
-            g.relief.append(line_iqr)
+                            best = max(best, _local_variance(sub))
+                rels.append(best)
+                costs.append(COST_PLAIN if best <= 120.0 else COST_RELIEF)
+            g.cost.append(costs)
+            g.relief.append(rels)
         return g
 
-    # -- requetes ---------------------------------------------------------
+    # -- conversions --------------------------------------------------------
+    def contains(self, px, py):
+        x0, y0, x1, y1 = self.region
+        return (x0 <= px < x1) and (y0 <= py < y1)
+
     def cell_of(self, px, py):
         x0, y0 = self.region[0], self.region[1]
-        c = int((px - x0) // self.cell_px)
-        r = int((py - y0) // self.cell_px)
-        return r, c
+        return int((py - y0) // self.cell_px), int((px - x0) // self.cell_px)
 
     def pixel_of(self, r, c):
         x0, y0 = self.region[0], self.region[1]
         return (x0 + c * self.cell_px + self.cell_px // 2,
                 y0 + r * self.cell_px + self.cell_px // 2)
 
-    def is_free(self, r, c):
-        if r < 0 or c < 0 or r >= self.rows or c >= self.cols:
-            return False
-        return bool(self.free[r][c])
+    def in_bounds(self, r, c):
+        return 0 <= r < self.rows and 0 <= c < self.cols
 
-    def free_ratio(self):
-        if not self.free:
-            return 1.0
-        tot = sum(len(l) for l in self.free)
-        ok = sum(1 for l in self.free for v in l if v)
-        return float(ok) / max(1, tot)
+    def cost_at(self, r, c):
+        if not self.in_bounds(r, c):
+            return None
+        return float(self.cost[r][c])
 
-    # -- A* ----------------------------------------------------------------
-    def astar(self, start_px, goal_px, allow_blocked_goal=True):
-        """Plus court chemin (liste de pixels) de start vers goal.
+    def textured_ratio(self):
+        """Part des cellules texturees (indicateur de incertitude)."""
+        if not self.cost:
+            return 0.0
+        tot = sum(len(l) for l in self.cost)
+        hi = sum(1 for l in self.cost for v in l if v > COST_PLAIN)
+        return float(hi) / max(1, tot)
 
-        Renvoie None si aucun chemin n'existe.  Le but est autorise a
-        etre dans une cellule non franchissable (le corps peut etre au
-        bord d'une falaise) ; on cherche alors la cellule libre la plus
-        proche du but.
+    # -- A* (cout, jamais d'interdiction) -----------------------------------
+    def astar(self, start_px, goal_px):
+        """Chemin le moins couteux de start vers goal (pixels de carte).
+
+        Retourne None si la geometrie est invalide (point hors carte,
+        grille vide).  Comme rien n'est interdit, un chemin existe des
+        que la grille est valide.
         """
-        if not self.free:
+        if not self.cost or not self.rows or not self.cols:
+            return None
+        if not (self.contains(*start_px) and self.contains(*goal_px)):
             return None
         sr, sc = self.cell_of(*start_px)
         gr, gc = self.cell_of(*goal_px)
-        if not self.is_free(sr, sc):
-            free = [(r, c) for r in range(self.rows) for c in range(self.cols)
-                    if self.free[r][c]]
-            if not free:
-                return None
-            sr, sc = min(free, key=lambda rc: (rc[0] - sr) ** 2 + (rc[1] - sc) ** 2)
-        goal_cell = (gr, gc)
-        if not self.is_free(gr, gc):
-            cands = [(r, c) for r in range(self.rows) for c in range(self.cols)
-                      if self.free[r][c]]
-            if not cands:
-                return None
-            goal_cell = min(cands, key=lambda rc: (rc[0] - gr) ** 2 + (rc[1] - gc) ** 2)
-        gr, gc = goal_cell
+        sr = max(0, min(self.rows - 1, sr))
+        sc = max(0, min(self.cols - 1, sc))
+        gr = max(0, min(self.rows - 1, gr))
+        gc = max(0, min(self.cols - 1, gc))
         if (sr, sc) == (gr, gc):
             return [self.pixel_of(gr, gc)]
         import heapq
-        open_heap = [(0.0, sr, sc)]
-        came = {}
-        cost = {(sr, sc): 0.0}
+        heap = [(0.0, sr, sc)]
         gscore = {(sr, sc): 0.0}
+        came = {}
         seen = set()
-        while open_heap:
-            _f, r, c = heapq.heappop(open_heap)
+        while heap:
+            _f, r, c = heapq.heappop(heap)
             if (r, c) in seen:
                 continue
             seen.add((r, c))
@@ -190,98 +187,148 @@ class NavigabilityGrid(object):
             for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1),
                            (-1, -1), (-1, 1), (1, -1), (1, 1)):
                 nr, nc = r + dr, c + dc
-                if not self.is_free(nr, nc):
+                if not self.in_bounds(nr, nc):
                     continue
                 step = 1.0 if (dr == 0 or dc == 0) else 1.414
-                ng = gscore[(r, c)] + step
-                if ng < gscore.get((nr, nc), 1e9):
+                ng = gscore[(r, c)] + step * self.cost[nr][nc]
+                if ng < gscore.get((nr, nc), 1e18):
                     gscore[(nr, nc)] = ng
                     came[(nr, nc)] = (r, c)
                     h = math.hypot(nr - gr, nc - gc)
-                    heapq.heappush(open_heap, (ng + h, nr, nc))
+                    heapq.heappush(heap, (ng + h, nr, nc))
         return None
+
+    def path_cost(self, path):
+        """Cout cumule d'un chemin (pour comparer deux itineraires)."""
+        if not path:
+            return 0.0
+        total = 0.0
+        for i in range(1, len(path)):
+            r0, c0 = self.cell_of(*path[i - 1])
+            r1, c1 = self.cell_of(*path[i])
+            step = math.hypot(r1 - r0, c1 - c0)
+            total += step * (self.cost_at(r1, c1) or COST_PLAIN)
+        return total
 
 
 class PathMemory(object):
-    """Memoire des itineraires (point de mort + chemin deja parcouru).
+    """Memoire des itineraires OBSERVES (point de mort + trajet + resultat).
 
-    Le bot n'a pas a redécouvrir un chemin deja pris : a chaque mort il
-    enregistre le point de mort et l'itinéraire suivi ; a la mort
-    suivante, dans la meme zone, il rejoue le chemin connu.
+    Regle : un itineraire n'est rejouable que s'il a mene AU CORPS
+    (`reached=True`) et que le contexte (zone, point de mort, position du
+    corps) est compatible.  Un trajet simplement emis n'est pas un
+    itineraire valide.
     """
+
+    VERSION = 1
 
     def __init__(self, path=None):
         self.path = path or os.path.join("state", "ghost-paths.json")
-        self.data = {"routes": {}}
+        self.data = {"version": self.VERSION, "routes": {}}
 
+    # -- E/S atomique -------------------------------------------------------
     def load(self):
         try:
             with open(self.path, "r", encoding="utf-8") as f:
-                self.data = json.load(f)
-            if "routes" not in self.data:
-                self.data["routes"] = {}
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("format")
+            data.setdefault("routes", {})
+            data.setdefault("version", self.VERSION)
+            self.data = data
         except Exception:
-            self.data = {"routes": {}}
+            self.data = {"version": self.VERSION, "routes": {}}
         return self.data
 
     def save(self):
+        """Ecriture ATOMIQUE (un arret brutal ne doit pas corrompre)."""
         try:
             d = os.path.dirname(self.path)
             if d and not os.path.isdir(d):
                 os.makedirs(d)
-            with open(self.path, "w", encoding="utf-8") as f:
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            if os.path.exists(self.path):
+                os.replace(self.path, tmp)
+            else:
+                os.replace(tmp, self.path)
             return True
         except Exception:
+            try:
+                if os.path.exists(self.path + ".tmp"):
+                    os.remove(self.path + ".tmp")
+            except Exception:
+                pass
             return False
 
     @staticmethod
     def _key(zone, area):
-        return "%s:%s" % (zone or "?", area or "?")
+        return "%s|%s" % (zone or "?", area or "?")
 
-    def record_death(self, zone, area, death_point, route=None):
+    # -- ecriture -----------------------------------------------------------
+    def record_attempt(self, zone, area, death_point, route=None, reached=False,
+                       corpse_point=None):
+        """Enregistre une TENTATIVE (route emise) et son resultat observe."""
         self.load()
         key = self._key(zone, area)
         entry = self.data["routes"].setdefault(key, {})
-        entry["deathPoint"] = [float(death_point[0]), float(death_point[1])]
+        if death_point is not None:
+            entry["deathPoint"] = [float(death_point[0]), float(death_point[1])]
+        if corpse_point is not None:
+            entry["corpsePoint"] = [float(corpse_point[0]), float(corpse_point[1])]
         if route:
+            entry["lastRoute"] = [[float(p[0]), float(p[1])] for p in route]
+        entry["reached"] = bool(reached)
+        entry["updatedAt"] = time.time()
+        if reached and route:
+            # un trajet qui a atteint le corps devient REJOUABLE
             entry["route"] = [[float(p[0]), float(p[1])] for p in route]
-        entry["updatedAt"] = __import__("time").time()
+            entry["validatedAt"] = time.time()
+        else:
+            # un trajet incomplet n'est PAS un itineraire valide
+            entry.pop("route", None)
         self.save()
         return entry
 
-    def record_route(self, zone, area, route):
-        self.load()
-        key = self._key(zone, area)
-        entry = self.data["routes"].setdefault(key, {})
-        entry["route"] = [[float(p[0]), float(p[1])] for p in route]
-        entry["updatedAt"] = __import__("time").time()
-        self.save()
-        return entry
+    # -- lecture / validation ------------------------------------------------
+    def known_route(self, zone, area, death_point=None, corpse_point=None,
+                    tolerance=DEFAULT_REPLAY_TOLERANCE_PX):
+        """Route REJOUABLE pour ce contexte, ou None.
 
-    def known_route(self, zone, area):
+        Refuse une route historique si la zone differe, si le point de
+        mort s'est deplace, si la position du corps a change, ou si la
+        route n'a jamais atteint le corps.
+        """
         self.load()
         entry = self.data["routes"].get(self._key(zone, area)) or {}
         route = entry.get("route")
-        if route:
-            return [(float(p[0]), float(p[1])) for p in route]
-        return None
+        if not route or not entry.get("reached"):
+            return None
+        if death_point is not None and entry.get("deathPoint") is not None:
+            d = math.hypot(float(death_point[0]) - entry["deathPoint"][0],
+                            float(death_point[1]) - entry["deathPoint"][1])
+            if d > tolerance:
+                return None
+        if corpse_point is not None and entry.get("corpsePoint") is not None:
+            d = math.hypot(float(corpse_point[0]) - entry["corpsePoint"][0],
+                            float(corpse_point[1]) - entry["corpsePoint"][1])
+            if d > tolerance:
+                return None
+        return [(float(p[0]), float(p[1])) for p in route]
 
-    def known_death(self, zone, area):
+    def entry(self, zone, area):
         self.load()
-        entry = self.data["routes"].get(self._key(zone, area)) or {}
-        return entry.get("deathPoint")
+        return self.data["routes"].get(self._key(zone, area))
 
 
-def blocked_ahead(bgr, box=(0.35, 0.60, 0.45, 0.95)):
+def blocked_ahead(bgr, box=(0.35, 0.60, 0.45, 0.95), threshold=220.0):
     """Indice d'obstacle dans la VUE 3D, devant le personnage.
 
-    `box` = (x0, x1, y0, y1) en fractions de l'image : la bande
-    juste devant du personnage.  On renvoie True si la zone est
-    texturee (vegetation : arbres, buissons) ou si elle presente un
-    front clair vertical (falaise).  Indicateur COMPLEMENTAIRE du
-    chemin calcule : il sert a decelerer ou a pivoter quand le
-    personnage est colle a un obstacle.
+    Indicateur COMPLEMENTAIRE du chemin planifie (la vegetation est
+    texturee, le sol lisse).  Renvoie None si l'image est inexploitable.
     """
     if bgr is None or cv2 is None:
         return None
@@ -291,8 +338,7 @@ def blocked_ahead(bgr, box=(0.35, 0.60, 0.45, 0.95)):
     roi = bgr[y0:y1, x0:x1]
     if roi.size == 0:
         return None
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    # variance locale : la vegetation est texturee, le sol lisse
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY).astype(np.float32)
     mean = cv2.blur(gray, (9, 9))
-    var = float((((gray.astype(np.float32) - mean.astype(np.float32)) ** 2)).mean())
-    return var > 220.0
+    var = float((((gray - mean) ** 2)).mean())
+    return var > threshold

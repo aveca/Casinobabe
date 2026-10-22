@@ -245,6 +245,10 @@ class RecoverySession(object):
         self.bearing_offset = 0.0   # correction laterale apres un echec
         self.map_open_tries = 0
         self._geo = None
+        self._path = None        # chemin A* en cours
+        self._grid = None
+        self._path_note = None
+        self._mem = None
         #: callback de trace (rejeu instrumente) : self.trace(event, **kw)
         self.trace = None
 
@@ -794,6 +798,144 @@ class RecoverySession(object):
         self._set(MAP_ANALYSIS, "etat initial lu", life=life)
         return {"ok": True, "state": MAP_ANALYSIS}
 
+    # ------------------------------------------------------------------
+    # planification (A* sur la carte de cout) et memoire de chemins
+    # ------------------------------------------------------------------
+    def _map_region_px(self, width, height):
+        """Region de la carte du monde en pixels de capture.
+
+        Source : MAP_REGION du depot (fractions de l'ecran) si elle
+        existe, sinon la region par defaut.  La region sert a verifier
+        que le repere de la carte est bien celui de la capture.
+        """
+        try:
+            from fishing_map import MAP_REGION
+            x0f, x1f, y0f, y1f = MAP_REGION
+        except Exception:
+            x0f, x1f, y0f, y1f = (0.16, 0.86, 0.07, 0.96)
+        return (int(width * x0f), int(height * y0f),
+                int(width * x1f), int(height * y1f))
+
+    def _plan_path(self, map_img, analysis):
+        """Planifie un chemin (A*) vers le corps, dans le repere PIXEL de
+        la carte du monde.
+
+        Refuse de produire un itineraire si :
+          * le corps ou le joueur ne sont pas identifies de facon fiable ;
+          * la region de la carte ne contient pas ces deux points
+            (le repere serait inconnu -> le.path serait invente) ;
+          * l'A* ne trouve aucun chemin.
+        Retourne la liste de waypoints (pixels de carte) ou None.
+        """
+        self._path = None
+        self._path_note = None
+        try:
+            from fishing_navigation import NavigabilityGrid
+        except Exception:                                  # pragma: no cover
+            self._path_note = "module de navigation indisponible"
+            return None
+        if map_img is None or analysis is None:
+            self._path_note = "pas de capture de carte"
+            return None
+        corpse = getattr(analysis, "corpse", None)
+        player = getattr(analysis, "player", None)
+        if not corpse or not player:
+            self._path_note = "corps ou joueur non identifies"
+            return None
+        corpse_pt = (corpse["cx"], corpse["cy"])
+        player_pt = (player["cx"], player["cy"])
+        h, w = map_img.shape[:2]
+        region = self._map_region_px(w, h)
+        grid = NavigabilityGrid.from_map(map_img, region)
+        if not (grid.contains(*corpse_pt) and grid.contains(*player_pt)):
+            self._path_note = "points hors de la region de la carte"
+            self._trace("path_refused", reason=self._path_note)
+            return None
+        path = grid.astar(player_pt, corpse_pt)
+        if not path or len(path) < 2:
+            self._path_note = "aucun chemin"
+            self._trace("path_refused", reason=self._path_note)
+            return None
+        self._grid = grid
+        self._path = path
+        self._trace("path_planned", waypoints=len(path),
+                    textured=round(grid.textured_ratio(), 3),
+                    cost=round(grid.path_cost(path), 1))
+        return path
+
+    def _waypoint_target(self, analysis):
+        """Waypoint suivant a viser (bearing nord) au lieu du corps.
+
+        Consomme REELLEMENT le chemin : sans chemin, on vise le corps
+        (comportement direct, mesure et simple).
+        """
+        if not self._path or analysis is None:
+            return None
+        player = getattr(analysis, "player", None)
+        if not player:
+            return None
+        px, py = player["cx"], player["cy"]
+        best = None
+        best_d = None
+        for (wx, wy) in self._path:
+            d = math.hypot(wx - px, wy - py)
+            if best_d is None or d < best_d:
+                best_d = d
+                best = (wx, wy)
+        if best is None:
+            return None
+        return math.degrees(math.atan2(-(best[1] - py), best[0] - px))
+
+    def _memory(self):
+        """Memoire des itineraires (state/ghost-paths.json)."""
+        if getattr(self, "_mem", None) is None:
+            try:
+                from fishing_navigation import PathMemory
+                path = os.path.join(os.path.dirname(os.path.dirname(
+                    os.path.abspath(__file__))), "state", "ghost-paths.json")
+                self._mem = PathMemory(path)
+            except Exception:                              # pragma: no cover
+                self._mem = False
+        return self._mem or None
+
+    def _zone_ctx(self, analysis):
+        """Contexte (zone, aire) pour la memoire des chemins."""
+        zone = area = None
+        try:
+            from fishing_map import map_zone_name
+            if analysis is not None and getattr(analysis, "corpse", None):
+                zone = map_zone_name(self._capture())
+        except Exception:
+            zone = None
+        return zone, area
+
+    def _record_attempt(self, reached):
+        """Enregistre la TENTATIVE courante dans la memoire des chemins.
+
+        N'est rejouable que si le CORPS a ete atteint (resultat observe,
+        pas seulement les touches envoyees).  Le point de reference est
+        la position du joueur au debut de la route (observable), pas une
+        position de mort inventee.
+        """
+        mem = self._memory()
+        if not mem:
+            return None
+        analysis = self.analysis
+        corpse = getattr(analysis, "corpse", None) if analysis else None
+        player = getattr(analysis, "player", None) if analysis else None
+        start = None
+        if player:
+            start = (player["cx"], player["cy"])
+        corpse_pt = (corpse["cx"], corpse["cy"]) if corpse else None
+        zone, area = self._zone_ctx(analysis)
+        route = self._path or []
+        try:
+            return mem.record_attempt(zone, area, start, route=route,
+                                      reached=bool(reached),
+                                      corpse_point=corpse_pt)
+        except Exception:                                  # pragma: no cover
+            return None
+
     def _red_block(self, img):
         """Bouton rouge du dialogue de liberation (barre desaturee)."""
         bgr = _bgr(img)
@@ -887,6 +1029,11 @@ class RecoverySession(object):
             return self._abort("la carte du monde intercepte les entrees : "
                                "deplacement refuse")
         target = a.bearing_deg + self.bearing_offset
+        # Cible = WAYPOINT du chemin A* (contourne l'obstacle) ;
+        # sans chemin planifie on vise le corps (comportement direct).
+        wp = self._waypoint_target(a)
+        if wp is not None:
+            target = wp
         # Cap courant (minicarte, repere NORD comme le cap carte) : c'est
         # la meme reference que le cap vise, donc l'ecart donne la
         # correction d'orientation.
@@ -1003,6 +1150,9 @@ class RecoverySession(object):
             # retente ; ce n'est qu'apres plusieurs echecs qu'on s'arrete.
             self.stuck_count += 1
             self.bearing_offset = 45.0 * self.stuck_count
+            # absence de progression -> RECALCUL du chemin
+            self._path = None
+            self._replan = True
             self.log("RECOVERY_STUCK", attempt=self.attempts,
                      px=round(px, 2), count=self.stuck_count,
                      newTheta=round(self.theta or 0.0, 1))
@@ -1126,6 +1276,7 @@ class RecoverySession(object):
             self.log("RECOVERY_ACCEPT_CLICK", capture=[accept["x"], accept["y"]],
                      screen=[sx, sy], clicks=self.resurrect_clicks)
             time.sleep(float(self.cfg.get("interactDelay", 2.5)))
+            self._record_attempt(reached=False)
             self._set(RESURRECTION_VERIFY, "Accept clique sur le dialogue",
                       accept=accept, distance=self.last_distance)
             return {"ok": True, "state": RESURRECTION_VERIFY, "hit": accept}
@@ -1138,6 +1289,7 @@ class RecoverySession(object):
                                    % self.resurrect_clicks)
             self.ex.do_click([hit["x"], hit["y"]], button="left")
             time.sleep(float(self.cfg.get("interactDelay", 2.5)))
+            self._record_attempt(reached=False)
             self._set(RESURRECTION_VERIFY, "interaction avec le corps",
                       hit=hit, distance=self.last_distance)
             return {"ok": True, "state": RESURRECTION_VERIFY, "hit": hit}
@@ -1175,6 +1327,7 @@ class RecoverySession(object):
             alive = True
             self.log("RECOVERY_ALIVE_VISUAL", tint=round(tint, 3))
         if alive:
+            self._record_attempt(reached=True)
             if self.safety is not None:
                 self.safety.observe_resurrected(st["signals"])
                 self.safety.observe_safe_position({"resurrected": True})

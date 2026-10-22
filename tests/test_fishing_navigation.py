@@ -17,6 +17,12 @@ import cv2                                             # noqa: E402
 import fishing_navigation as FN                         # noqa: E402
 
 
+def _plain_map(h=260, w=260, cell=16):
+    img = np.zeros((h, w, 3), np.uint8)
+    img[:, :] = (30, 160, 200)
+    return img
+
+
 def _map_with_mountain(h=260, w=260, cell=16, wall_from=6, wall_to=12):
     """Carte synthetique : plaines lisses, mur de montagne texture au
     centre, corridor libre en haut et en bas."""
@@ -33,15 +39,17 @@ def _map_with_mountain(h=260, w=260, cell=16, wall_from=6, wall_to=12):
     return img
 
 
-def test_grid_marks_the_mountain_as_blocked():
+def test_grid_marks_the_relief_as_costlier_but_not_forbidden():
     g = FN.NavigabilityGrid.from_map(_map_with_mountain(), (0, 0, 260, 260),
                                      cell_px=16)
     assert g.rows >= 16 and g.cols >= 16
-    # la cellule centrale (montagne) n'est pas franchissable
-    assert not g.is_free(9, 9)
-    # une cellule de plaine l'est
-    assert g.is_free(1, 1)
-    assert g.free_ratio() < 1.0
+    # la cellule centrale (relief) coute plus cher
+    assert g.cost_at(9, 9) > FN.COST_PLAIN
+    # une cellule de plaine coute le minimum
+    assert g.cost_at(1, 1) == FN.COST_PLAIN
+    # RIEN n'est interdit : la classification est incertaine
+    assert g.cost_at(9, 9) is not None
+    assert g.textured_ratio() > 0.0
 
 
 def test_astar_goes_around_the_mountain():
@@ -51,11 +59,13 @@ def test_astar_goes_around_the_mountain():
     goal = (240, 240)         # en bas a droite (hors de la montagne)
     path = g.astar(start, goal)
     assert path, "un chemin doit exister"
-    # le chemin ne doit traverser aucune cellule de la montagne
+    # le chemin doit EVITER la zone texturee quand c'est possible
+    crossed = 0
     for (px, py) in path:
         r, c = g.cell_of(px, py)
         if 6 <= r < 12 and 6 <= c < 12:
-            pytest.fail("le chemin traverse la montagne en %s" % ((r, c),))
+            crossed += 1
+    assert crossed == 0, "le chemin doit contourner la zone texturee"
     # il va bien de lDepart a l arrivee
     assert path[0] is not None and path[-1] is not None
     d0 = abs(path[0][0] - start[0]) + abs(path[0][1] - start[1])
@@ -66,36 +76,38 @@ def test_astar_goes_around_the_mountain():
     assert len(path) >= 6
 
 
-def test_astar_returns_none_when_sealed():
-    img = np.zeros((200, 200, 3), np.uint8)
-    img[:, :] = (30, 160, 200)
-    g = FN.NavigabilityGrid.from_map(img, (0, 0, 260, 260), cell_px=16)
-    # on entoure la destination de cellules non franchissables
-    for r in range(8, 12):
-        for c in range(8, 12):
-            g.free[r][c] = False
-    # depart et arrivee dans la meme poche -> pas de chemin
-    path = g.astar((136, 136), (136, 136))
-    assert path is None or len(path) == 1
+def test_astar_returns_none_on_invalid_geometry():
+    g = FN.NavigabilityGrid.from_map(_plain_map(), (0, 0, 200, 200),
+                                     cell_px=16)
+    # depart hors region -> refus
+    assert g.astar((-10, -10), (100, 100)) is None
+    # arrivee hors region -> refus
+    assert g.astar((16, 16), (9999, 9999)) is None
+    # grille vide -> refus
+    vide = FN.NavigabilityGrid((0, 0, 0, 0))
+    assert vide.astar((1, 1), (2, 2)) is None
+
 
 
 def test_path_memory_roundtrip(tmp_path):
     p = str(tmp_path / "ghost-paths.json")
     mem = FN.PathMemory(p)
-    mem.record_death("The Barrens", "Lushwater Oasis", (12.5, -3.25),
-                     route=[(1.0, 2.0), (3.0, 4.0)])
+    mem.record_attempt("The Barrens", "Lushwater Oasis", (12.5, -3.25),
+                       route=[(1.0, 2.0), (3.0, 4.0)], reached=True,
+                       corpse_point=(90.0, 80.0))
     mem2 = FN.PathMemory(p)
-    route = mem2.known_route("The Barrens", "Lushwater Oasis")
+    route = mem2.known_route("The Barrens", "Lushwater Oasis",
+                              death_point=(12.5, -3.25),
+                              corpse_point=(90.0, 80.0))
     assert route == [(1.0, 2.0), (3.0, 4.0)]
-    death = mem2.known_death("The Barrens", "Lushwater Oasis")
-    assert death == [12.5, -3.25]
     assert mem2.known_route("Autre", "Zone") is None
 
 
 def test_path_memory_persists_on_disk(tmp_path):
     p = str(tmp_path / "sous" / "ghost-paths.json")
     mem = FN.PathMemory(p)
-    mem.record_route("The Barrens", "Lushwater Oasis", [(5.0, 6.0)])
+    mem.record_attempt("The Barrens", "Lushwater Oasis", (0, 0),
+                       route=[(5.0, 6.0)], reached=True)
     assert os.path.exists(p)
     with open(p, "r", encoding="utf-8") as f:
         data = json.load(f)
