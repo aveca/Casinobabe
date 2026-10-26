@@ -24,6 +24,9 @@ jobs:
       - name: Run authoritative offline Lua 5.1 harness
         run: node tests/run-offline-harness.mjs
 
+      - name: Run payout contract (dealer path, all 6 games)
+        run: node tests/run-payout-contract.mjs
+
       - name: Run synthetic LIVE error pipeline
         run: node tests/live_pipeline_synthetic.cjs
 

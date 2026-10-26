@@ -1965,6 +1965,35 @@ local function ComputePayout(gameKey, stake, ...)
   return stake * (mult - 1)
 end
 
+-- Payout from an ALREADY-RESOLVED multiplier.
+--
+-- Why this exists: DealerResolve computes the multiplier with the arguments
+-- each rule actually needs (roll, color / choice + houseRolls /
+-- playerTotal + houseTotal), then called ComputePayout to turn it into money.
+-- But ComputePayout RE-RESOLVES from its own arguments, and the arguments it
+-- received were not the ones that produced the multiplier:
+--   roulette   -> color passed where the roll is expected: resolve() matches
+--                 no branch and returns 0, i.e. -stake, so a WIN was paid as a
+--                 LOSS while result said "WIN" (measured: -10 on a real 10g bet).
+--   dice       -> choice alone: houseRolls is nil -> "attempt to index a nil value".
+--   blackjack  -> a {playerTotal, houseTotal} table -> "attempt to compare number
+--                 with table".
+-- Deriving money from the multiplier keeps result and payout consistent by
+-- construction and removes the second, divergent resolution.
+local function ComputePayoutFromMultiplier(gameKey, stake, mult)
+  if mult == nil then return nil end
+  if mult == 0 then return -stake end                  -- loss
+  if gameKey == "blackjack" then
+    if mult == 1 then return stake end                 -- blackjack win = x2 (net +stake)
+    if mult == 2 then return 0 end                     -- push = stake returned (net 0)
+  end
+  if not stake then return nil end
+  return stake * (mult - 1)
+end
+-- Exposed so the payout contract is verifiable from outside the addon chunk
+-- (the Dealer* functions stay chunk-local by design).
+Casinobabe.ComputePayoutFromMultiplier = ComputePayoutFromMultiplier
+
 -- Helper: Validate stake amount
 -- NOTE: gameKey may be nil when the stake is armed before any game is
 -- selected (documented INVITED -> TRADE_PENDING flow). In that case validate
@@ -3065,13 +3094,12 @@ function DealerResolve(playerName)
   session.multiplier = mult
   session.result = (mult and mult > 0) and "WIN" or "LOSS"
   if mult == 2 and session.game == "blackjack" then session.result = "PUSH" end
-  
-  local payout = ComputePayout(session.game, session.stake, 
-    session.game == "roulette" and session.gameData.color or 
-    session.game == "dice" and session.gameData.choice or 
-    session.game == "blackjack" and {session.roll, session.gameData.houseTotal} or
-    session.roll)
-  
+
+  -- Money comes from the multiplier that was JUST resolved above, not from a
+  -- second resolution with different arguments (see ComputePayoutFromMultiplier:
+  -- that second call paid roulette wins as losses and crashed dice/blackjack).
+  local payout = ComputePayoutFromMultiplier(session.game, session.stake, mult)
+
   session.payout = payout or 0
   
   DealerSetState(session, DEALER_STATES.RESOLVED, "Result: " .. session.result .. " (x" .. (mult or 0) .. ")")
