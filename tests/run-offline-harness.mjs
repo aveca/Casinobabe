@@ -96,6 +96,21 @@ async function main() {
       ["dealer_on_smoke", "SlashCmdList.CASINOBABE('dealer on')"],
       ["dealer_off_smoke", "SlashCmdList.CASINOBABE('dealer off')"],
       ["connecting_without_group", "WoWMock.config.groupMembers=0; SlashCmdList.CASINOBABE('dealer on'); SlashCmdList.CASINOBABE('dealer off')"],
+      // Command surface: help, unknown commands and argument handling must
+      // never raise and must never be silent no-ops.
+      ["cmd_help", "SlashCmdList.CASINOBABE('help')"],
+      ["cmd_help_alias", "SlashCmdList.CASINOBABE('?')"],
+      ["cmd_unknown", "SlashCmdList.CASINOBABE('bogus')"],
+      ["cmd_unknown_with_arg", "SlashCmdList.CASINOBABE('bogus some arg')"],
+      ["cmd_empty_is_panel", "SlashCmdList.CASINOBABE('')"],
+      ["cmd_auto_status", "SlashCmdList.CASINOBABE('auto status')"],
+      ["cmd_who_auto", "SlashCmdList.CASINOBABE('who auto')"],
+      ["cmd_dealer_emote_missing_arg", "SlashCmdList.CASINOBABE('dealer emote')"],
+      ["cmd_dealer_emote_unknown", "SlashCmdList.CASINOBABE('dealer emote NOPE')"],
+      ["cmd_dealer_emote_valid", "SlashCmdList.CASINOBABE('dealer emote WAVE')"],
+      ["cmd_dealer_game_missing_args", "SlashCmdList.CASINOBABE('dealer game')"],
+      ["cmd_dealer_stake_missing_args", "SlashCmdList.CASINOBABE('dealer stake')"],
+      ["cmd_all_handlers_are_functions", "local t = {'CASINOBABE','CASINOBAE_SHOW_ENGINE','CASINOBABE_QA'}; for _, k in ipairs(t) do if type(SlashCmdList[k]) ~= 'function' then return false end end return true"],
       ["roll_rejected_symbol", "return string.find((debug and debug.getinfo and 'ROLL_REJECTED') or '', 'ROLL_REJECTED') ~= nil"],
       // Dealer/trade handlers are chunk-locals by design (not _G); what is
       // observable is the slash dispatcher they hang from.
