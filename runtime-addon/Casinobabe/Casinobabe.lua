@@ -628,6 +628,14 @@ local CasinoEmote = {
   end,
 }
 
+-- Stable, sorted list of accepted emote tokens, for help + error messages.
+local function CasinoEmoteTokens()
+  local t = {}
+  for k in pairs(CasinoEmote.PHYSICAL) do t[#t + 1] = k end
+  table.sort(t)
+  return t
+end
+
 -- ============================================================================
 -- CASINOSEQUENCE - Timed sequence engine
 --
@@ -8046,7 +8054,18 @@ SlashCmdList["CASINOBABE"]=function(msg)
     elseif subcmd=="showstatus" then
       print("|cffFFD700Casinobabe|r Show status: " .. CasinoShow:GetStatus())
     elseif subcmd=="emote" then
-      if subarg=="" then print("|cffFFD700Casinobabe|r Usage: /cb dealer emote <emote>") else CasinoEmote:PlayPhysical(subarg) end
+      -- Validate the token before acting: an unknown token used to be a
+      -- silent no-op, which reads as "the command is broken".
+      local token = (subarg or ""):gsub("^%s+",""):gsub("%s+$","")
+      if token == "" then
+        print("|cffFFD700Casinobabe|r Usage: /cb dealer emote <emote>")
+        print("|cffB3ABA6Available emotes:|r " .. table.concat(CasinoEmoteTokens(), ", "))
+      elseif not CasinoEmote.PHYSICAL[token:upper()] then
+        print("|cffEB5E4FCasinobabe|r Unknown emote '" .. token .. "'.")
+        print("|cffB3ABA6Available emotes:|r " .. table.concat(CasinoEmoteTokens(), ", "))
+      else
+        CasinoEmote:PlayPhysical(token)
+      end
     else print("|cffFFD700Casinobabe|r Dealer commands: on|off|status|ad|attract|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote") end
     
   elseif cmd=="test" then
@@ -8148,11 +8167,22 @@ SlashCmdList["CASINOBABE"]=function(msg)
     print("|cffFFD700Casinobabe|r intro reset - the panel will auto-open on your next /reload or login.")
   elseif cmd=="minimap" then
     MinimapDebug()
+  elseif cmd=="help" or cmd=="commands" or cmd=="?" then
+    print("|cffFFD700Casinobabe|r commands:")
+    print("|cffB3ABA6  panel|r   /cb                       open the customer panel")
+    print("|cffB3ABA6  dealer|r  /cb dealer on|off|status|ad|attract|zone|log")
+    print("            /cb dealer invite|game|stake|roll|record|resolve|payout|close|reset <player> [..]")
+    print("            /cb dealer show|quickad|stopshow|showstatus|emote <emote>")
+    print("|cffB3ABA6  auto|r    /cb auto | /cb auto stop | /cb auto status")
+    print("|cffB3ABA6  info|r    /cb who [auto|<text>]  /cb discord <tag>")
+    print("|cffB3ABA6  ui|r      /cb fx  /cb reset  /cb resetstats  /cb intro  /cb minimap")
+    print("|cffB3ABA6  other|r   /cbs <show>  /cbd (corpse diagnostic)  /cbfish (fishing)")
   elseif cmd=="" then
     -- Bare /cb or /casinobabe opens the player UI (must work offline).
     TogglePanel()
   else
-    print("|cffFFD700Casinobabe|r Commands: /cb dealer on|off|status|ad|attract|invite|game|stake|roll|record|resolve|payout|close|reset|log|zone|show|quickad|stopshow|showstatus|emote | /cb auto | /cb auto stop | /cb auto status | /cb who | /cb discord <text> | /cb fx | /cb resetstats | /cb reset | /cb intro")
+    print("|cffEB5E4FCasinobabe|r Unknown command: /cb " .. cmd .. (arg ~= "" and (" " .. arg) or ""))
+    print("|cffFFD700Casinobabe|r Type |cffFFFFFF/cb help|r for the full command list.")
   end
 end
 
