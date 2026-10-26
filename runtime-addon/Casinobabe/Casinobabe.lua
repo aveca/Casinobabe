@@ -511,6 +511,15 @@ local CasinoEmote = {
     WATCHES_DICE    = "watches the dice carefully.",
     PLACES_CHIP     = "places a chip on the table.",
     SMILES          = "smiles mysteriously.",
+    -- Native-emote equivalents used by the show choreography. They were called
+    -- through PlayText but only existed in PHYSICAL, so those steps silently
+    -- sent nothing. Kept here (third person, present tense) so the EMOTE
+    -- channel renders them as "Casinobae bows with a flourish."
+    BOW             = "bows with a flourish.",
+    CHEER           = "cheers loudly.",
+    GASP            = "gasps.",
+    DANCE           = "does a little victory dance.",
+    POINTS_CROWD    = "points into the crowd.",
     NODS            = "nods his head.",
     APPLAUDS        = "applauds slowly.",
     STUDIES_RESULT  = "studies the result carefully.",
@@ -545,17 +554,21 @@ local CasinoEmote = {
     WALKS_AWAY      = "walks away into the night.",
   },
   
-  -- Contextual emote suggestions for dealer buttons
+  -- Contextual emote banks. text[] holds TEXT keys only; phys holds the
+  -- PHYSICAL key suggested to the dealer's emote button. The two used to be
+  -- mixed in one list, so PlayText looked up PHYSICAL keys ("WAVE", "CHEER",
+  -- "BOW"...) in the TEXT table and silently sent nothing for WELCOME,
+  -- BIG_WIN, JACKPOT and OUTRO.
   CONTEXTUAL = {
-    WELCOME = { "WAVE", "BOW", "WELCOME" },
-    BIG_WIN = { "CHEER", "CLAP", "CHEER" },
-    JACKPOT = { "CHEER", "CLAP", "GASP", "CHEER" },
-    WIN     = { "CLAP", "NODS", "SMILES" },
-    LOSS    = { "SHRUG", "SYMPATHETIC", "VIOLIN" },
-    NEAR_MISS = { "GASP", "TAPS_TABLE", "UNIMPRESSED" },
-    OUTRO   = { "BOW", "WAVE", "GOODBYE", "TIPS_HAT" },
-    DRAMA   = { "GASP", "STUDIES_RESULT", "LEANS_BACK" },
-    TRADE   = { "CHECKS_WATCH", "POLISHES_GLASS", "NODS" },
+    WELCOME    = { text = { "WELCOMES_PLAYER", "OPENS_DOORS" },                phys = "WAVE" },
+    BIG_WIN    = { text = { "APPLAUDS", "IMPRESSED" },                         phys = "CHEER" },
+    JACKPOT    = { text = { "IMPRESSED", "APPLAUDS", "SURPRISED" },            phys = "CHEER" },
+    WIN        = { text = { "SMILES", "NODS", "APPLAUDS" },                    phys = "CLAP" },
+    LOSS       = { text = { "SYMPATHETIC", "TAPS_TABLE", "LEANS_BACK" },       phys = "VIOLIN" },
+    NEAR_MISS  = { text = { "TAPS_TABLE", "UNIMPRESSED", "WATCHES_DICE" },     phys = "GASP" },
+    OUTRO      = { text = { "TIPS_HAT", "CLOSES_TABLE", "WALKS_AWAY" },        phys = "BOW" },
+    DRAMA      = { text = { "STUDIES_RESULT", "LEANS_BACK", "LOOKS_CROWD" },   phys = "GASP" },
+    TRADE      = { text = { "CHECKS_WATCH", "POLISHES_GLASS", "NODS" },        phys = "NOD" },
   },
   
   -- Play physical emote (must be called from secure context - button click)
@@ -566,33 +579,52 @@ local CasinoEmote = {
     end
   end,
   
+  -- Automated emotes are player-visible chat traffic: throttle them and never
+  -- repeat the same line back to back. WoW forbids neither, but a dealer
+  -- spamming the EMOTE channel reads as a bot and gets reported.
+  TEXT_MIN_INTERVAL = 1.5,
+  lastTextAt = 0,
+  lastTextKey = nil,
+
   -- Play text emote (automated)
   PlayText = function(self, key)
     local text = self.TEXT[key]
-    if text and SendChatMessage then
-      SendChatMessage(text, "EMOTE")
+    if not text then return nil end
+    if not SendChatMessage then return nil end
+    local now = (GetTime and GetTime()) or 0
+    if now > 0 and self.lastTextAt and (now - self.lastTextAt) < self.TEXT_MIN_INTERVAL then
+      return nil                      -- throttled: stay silent rather than spam
     end
+    self.lastTextAt = now
+    self.lastTextKey = key
+    SendChatMessage(text, "EMOTE")
+    return text
   end,
-  
-  -- Play contextual emote (text + optional physical)
+
+  -- Play contextual emote (text + optional physical suggestion)
   PlayContext = function(self, context, includePhysical)
-    local list = self.CONTEXTUAL[context]
-    if not list then return end
-    
-    -- Play random text emote from context
-    local textKey = list[math.random(#list)]
+    local bank = self.CONTEXTUAL[context]
+    if not bank then return nil end
+    local list = bank.text
+    if not list or #list == 0 then return nil end
+
+    -- Prefer a line other than the last one sent, then fall back to rotation.
+    local textKey = list[1]
+    for i = 1, #list do
+      if list[i] ~= self.lastTextKey then textKey = list[i]; break end
+    end
     self:PlayText(textKey)
-    
+
     -- Suggest physical emote (dealer must click button)
-    if includePhysical and list[1] then
-      return list[1]
+    if includePhysical and bank.phys then
+      return bank.phys
     end
   end,
   
   -- Get suggested physical emote for context
   GetSuggestedPhysical = function(self, context)
-    local list = self.CONTEXTUAL[context]
-    return list and list[1]
+    local bank = self.CONTEXTUAL[context]
+    return bank and bank.phys
   end,
 }
 
@@ -1308,18 +1340,17 @@ local CasinoAnnouncer = {
         { delay = 0,   fn = function() CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
         { delay = 1.5, fn = function() SendChatMessage(CasinoVariants:Get("SHOW_INTRO"), "EMOTE") end },
         { delay = 3,   fn = function() CasinoSound:Play("DRAMA_PAUSE") end },
-        { delay = 3.5, fn = function() SendChatMessage("ðŸŽ° The table is OPEN.", "SAY") end },
+        { delay = 3.5, fn = function() SendChatMessage("The table is OPEN.", "SAY") end },
         { delay = 5,   fn = function() CasinoEmote:PlayText("FLIPS_COIN") end },
         { delay = 6,   fn = function() SendChatMessage("Step right up...", "SAY") end },
-        { delay = 8,   fn = function() CasinoSound:Play("CTA"); SendChatMessage("ðŸŽ° CASINOBAE CASINO IS OPEN ðŸŽ°", "YELL") end },
+        { delay = 8,   fn = function() CasinoSound:Play("CTA"); SendChatMessage("CASINOBAE CASINO IS OPEN", "YELL") end },
         { delay = 10,  fn = function() CasinoEmote:PlayText("POINTS_CROWD") end },
-        -- Games reveal
-        { delay = 12,  fn = function() SendChatMessage("ðŸŽ° NORMAL â€” 59+ x2, 100 x3", "SAY") end },
-        { delay = 13.5, fn = function() SendChatMessage("ðŸ”¥ HIGH RISK â€” 76+ x3, 100 x4", "SAY") end },
-        { delay = 15,  fn = function() SendChatMessage("ðŸƒ BLACKJACK â€” Beat the house", "SAY") end },
-        { delay = 16.5, fn = function() SendChatMessage("ðŸ”´ ROULETTE â€” Red/Black x2, Green x5", "SAY") end },
-        { delay = 18,  fn = function() SendChatMessage("ðŸŽ² DICE â€” Over/Under x2, 7 x4", "SAY") end },
-        { delay = 19.5, fn = function() SendChatMessage("ðŸ€ LUCKY 7 â€” Ends in 7 = x7", "SAY") end },
+        { delay = 12,  fn = function() SendChatMessage("NORMAL: 59+ x2, 100 x3.", "SAY") end },
+        { delay = 13.5, fn = function() SendChatMessage("HIGH RISK: 76+ x3, 100 x4.", "SAY") end },
+        { delay = 15,  fn = function() SendChatMessage("BLACKJACK: beat the house.", "SAY") end },
+        { delay = 16.5, fn = function() SendChatMessage("ROULETTE: red/black x2, green x5.", "SAY") end },
+        { delay = 18,  fn = function() SendChatMessage("DICE: over/under x2, seven x4.", "SAY") end },
+        { delay = 19.5, fn = function() SendChatMessage("LUCKY 7: a roll ending in 7 pays x7.", "SAY") end },
         { delay = 21,  fn = function() CasinoSound:Play("SUSPENSE") end },
         { delay = 22,  fn = function() SendChatMessage(CasinoVariants:Get("SHOW_CTA"), "SAY") end },
         { delay = 24,  fn = function() CasinoEmote:PlayText("SMILES"); CasinoSound:Play("CURTAIN") end },
@@ -1330,15 +1361,15 @@ local CasinoAnnouncer = {
       weight = 20,
       steps = {
         { delay = 0,   fn = function() CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("ADJUSTS_COAT") end },
-        { delay = 2,   fn = function() SendChatMessage("/me incline la tête avec élégance.", "EMOTE") end },
-        { delay = 4,   fn = function() SendChatMessage("ðŸŽ° The house welcomes you.", "SAY") end },
+        { delay = 2,   fn = function() CasinoEmote:PlayText("BOW") end },
+        { delay = 4,   fn = function() SendChatMessage("The house welcomes you.", "SAY") end },
         { delay = 6,   fn = function() CasinoEmote:PlayText("SMILES") end },
-        { delay = 7,   fn = function() SendChatMessage("ðŸŽ° NORMAL â€” 59+ x2, 100 x3", "SAY") end },
-        { delay = 8.5, fn = function() SendChatMessage("ðŸ”¥ HIGH RISK â€” 76+ x3, 100 x4", "SAY") end },
-        { delay = 10,  fn = function() SendChatMessage("ðŸƒ BLACKJACK â€” Beat the house", "SAY") end },
-        { delay = 11.5, fn = function() SendChatMessage("ðŸ”´ ROULETTE â€” Red/Black x2, Green x5", "SAY") end },
-        { delay = 13,  fn = function() SendChatMessage("ðŸŽ² DICE â€” Over/Under x2, 7 x4", "SAY") end },
-        { delay = 14.5, fn = function() SendChatMessage("ðŸ€ LUCKY 7 â€” Ends in 7 = x7", "SAY") end },
+        { delay = 7,   fn = function() SendChatMessage("NORMAL: 59+ x2, 100 x3.", "SAY") end },
+        { delay = 8.5, fn = function() SendChatMessage("HIGH RISK: 76+ x3, 100 x4.", "SAY") end },
+        { delay = 10,  fn = function() SendChatMessage("BLACKJACK: beat the house.", "SAY") end },
+        { delay = 11.5, fn = function() SendChatMessage("ROULETTE: red/black x2, green x5.", "SAY") end },
+        { delay = 13,  fn = function() SendChatMessage("DICE: over/under x2, seven x4.", "SAY") end },
+        { delay = 14.5, fn = function() SendChatMessage("LUCKY 7: a roll ending in 7 pays x7.", "SAY") end },
         { delay = 16,  fn = function() CasinoSound:Play("CTA"); SendChatMessage("The table is open. /w Casinobae JOIN", "SAY") end },
         { delay = 18,  fn = function() CasinoEmote:PlayText("BOW") end },
       },
@@ -1348,14 +1379,14 @@ local CasinoAnnouncer = {
       weight = 15,
       steps = {
         { delay = 0,   fn = function() CasinoSound:Play("CTA"); CasinoEmote:PlayText("DANCE") end },
-        { delay = 1,   fn = function() SendChatMessage("ðŸŽ°ðŸŽ°ðŸŽ° CASINOBAE IS OPEN! ðŸŽ°ðŸŽ°ðŸŽ°", "YELL") end },
+        { delay = 1,   fn = function() SendChatMessage("CASINOBAE IS OPEN!", "YELL") end },
         { delay = 2,   fn = function() CasinoEmote:PlayText("CHEER") end },
-        { delay = 2.5, fn = function() SendChatMessage("ðŸŽ° NORMAL â€” 59+ x2, 100 x3!", "SAY") end },
-        { delay = 3,   fn = function() SendChatMessage("ðŸ”¥ HIGH RISK â€” 76+ x3, 100 x4!", "SAY") end },
-        { delay = 3.5, fn = function() SendChatMessage("ðŸƒ BLACKJACK â€” BEAT THE HOUSE!", "SAY") end },
-        { delay = 4,   fn = function() SendChatMessage("ðŸ”´ ROULETTE â€” RED/BLACK x2, GREEN x5!", "SAY") end },
-        { delay = 4.5, fn = function() SendChatMessage("ðŸŽ² DICE â€” OVER/UNDER x2, 7 x4!", "SAY") end },
-        { delay = 5,   fn = function() SendChatMessage("ðŸ€ LUCKY 7 â€” ENDS IN 7 = x7!", "SAY") end },
+        { delay = 2.5, fn = function() SendChatMessage("NORMAL: 59+ x2, 100 x3!", "SAY") end },
+        { delay = 3,   fn = function() SendChatMessage("HIGH RISK: 76+ x3, 100 x4!", "SAY") end },
+        { delay = 3.5, fn = function() SendChatMessage("BLACKJACK: beat the house!", "SAY") end },
+        { delay = 4,   fn = function() SendChatMessage("ROULETTE: red/black x2, green x5!", "SAY") end },
+        { delay = 4.5, fn = function() SendChatMessage("DICE: over/under x2, seven x4!", "SAY") end },
+        { delay = 5,   fn = function() SendChatMessage("LUCKY 7: ends in 7 = x7!", "SAY") end },
         { delay = 5.5, fn = function() CasinoEmote:PlayText("CHEER") end },
         { delay = 6,   fn = function() SendChatMessage("JOIN NOW! /w Casinobae JOIN", "YELL") end },
         { delay = 7,   fn = function() CasinoEmote:PlayText("CHEER") end },
@@ -1366,10 +1397,10 @@ local CasinoAnnouncer = {
       weight = 10,
       steps = {
         { delay = 0,   fn = function() CasinoSound:Play("CURTAIN"); CasinoEmote:PlayText("FLIPS_COIN") end },
-        { delay = 2,   fn = function() SendChatMessage("ðŸ€ Tonight... the stars align.", "SAY") end },
-        { delay = 3,   fn = function() SendChatMessage("ðŸ€ LUCKY 7 â€” Ends in 7 = x7", "SAY") end },
-        { delay = 4.5, fn = function() SendChatMessage("ðŸŽ² DICE â€” 7 pays quadruple!", "SAY") end },
-        { delay = 5.5, fn = function() SendChatMessage("ðŸŽ° NORMAL â€” 100 = JACKPOT x3", "SAY") end },
+        { delay = 2,   fn = function() SendChatMessage("Tonight... the stars align.", "SAY") end },
+        { delay = 3,   fn = function() SendChatMessage("LUCKY 7: a roll ending in 7 pays x7.", "SAY") end },
+        { delay = 4.5, fn = function() SendChatMessage("DICE: a seven pays quadruple.", "SAY") end },
+        { delay = 5.5, fn = function() SendChatMessage("NORMAL: 100 is the jackpot x3.", "SAY") end },
         { delay = 7,   fn = function() SendChatMessage("The stars favor the bold. /w Casinobae JOIN", "SAY") end },
         { delay = 8,   fn = function() CasinoEmote:PlayText("FLIPS_COIN") end },
       },
@@ -1379,8 +1410,8 @@ local CasinoAnnouncer = {
       weight = 10,
       steps = {
         { delay = 0,   fn = function() CasinoSound:Play("DRAMA_PAUSE"); CasinoEmote:PlayText("GASP") end },
-        { delay = 1,   fn = function() SendChatMessage("ðŸ”¥ HIGH RISK. 76+ x3. 100 x4.", "YELL") end },
-        { delay = 2,   fn = function() SendChatMessage("1-75... the house keeps it ALL.", "SAY") end },
+        { delay = 1,   fn = function() SendChatMessage("HIGH RISK. 76+ x3. 100 x4.", "YELL") end },
+        { delay = 2,   fn = function() SendChatMessage("1 to 75... the house keeps it all.", "SAY") end },
         { delay = 3.5, fn = function() SendChatMessage("Dare you? /w Casinobae JOIN", "SAY") end },
         { delay = 5,   fn = function() CasinoEmote:PlayText("GASP") end },
       },
@@ -1401,7 +1432,7 @@ local CasinoAnnouncer = {
       weight = 0, -- Manual only
       steps = {
         { delay = 0,   fn = function() CasinoSound:Play("CTA") end },
-        { delay = 0.5, fn = function() SendChatMessage("ðŸŽ° Casinobae Casino OPEN â€” /w Casinobae JOIN â€” Games + /roll", "SAY") end },
+        { delay = 0.5, fn = function() SendChatMessage("Casinobae Casino OPEN. /w Casinobae JOIN - games + /roll", "SAY") end },
       },
     },
   },
