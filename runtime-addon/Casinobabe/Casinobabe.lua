@@ -6234,6 +6234,27 @@ end
 -- STATISTIK + HISTORIK
 -- ============================================================================
 local GAME_LABEL={ normal="Normal", high="High Risk", blackjack="Blackjack", roulette="Roulette", dice="Dice", lucky7="Lucky 7" }
+-- Net profit for a WIN resolved from the casino's own balance report.
+-- The raw delta (bal - balBefore) is trustworthy ONLY when the bet started
+-- from a known balance AND the stake was seen being deducted. balBefore
+-- defaults to 0 when no STATE has arrived yet, which used to let the win path
+-- report an arbitrary profit - or a negative one (wonGold/byGame.won going
+-- negative, "WIN +-1g" in the history). Manual trade flow never moves the
+-- balance, so no balance-derived profit is claimed there.
+local function CasinoWinNet(p, bal)
+  if not (p and bal) then return 0 end
+  local base = tonumber(p.balBefore) or 0
+  local net
+  if base > 0 and p.sawDeduction then
+    net = bal - base
+  else
+    net = (bal - (p.expectAfter or bal)) - (p.stake or 0)
+  end
+  net = math.floor((net or 0) + 0.5)
+  if net < 0 then net = 0 end
+  return net
+end
+
 -- spara ett avgjort spel: won=true/false, net=vinst (positiv) eller -insats
 function RecordResult(game, stake, won, net)
   if not (game and stake) then return end
@@ -6243,6 +6264,11 @@ function RecordResult(game, stake, won, net)
   s.games=(s.games or 0)+1
   s.wins=(s.wins or 0)+(won and 1 or 0)
   s.wagered=(s.wagered or 0)+stake
+  -- A WIN may never carry a negative profit: the balance-derived net at the
+  -- call sites can be negative when balBefore was captured too late (or is 0
+  -- because no STATE had arrived yet). Recording that used to make wonGold and
+  -- byGame[].won go negative and print "WIN +-1g".
+  if won and (net or 0)<0 then net=0 end
   if won then s.wonGold=(s.wonGold or 0)+(net or 0) else s.lostGold=(s.lostGold or 0)+stake end
   local g=s.byGame[game] or {games=0,wins=0,wagered=0,won=0,lost=0}
   g.games=g.games+1; g.wins=g.wins+(won and 1 or 0); g.wagered=g.wagered+stake
@@ -6290,7 +6316,7 @@ function BuildHistoryText()
       L[#L+1]=string.format("|cffFFD700Cashback claimed|r  -  |cff78EB96+%dg|r", math.floor(e.amount or 0))
     else
       local lab=GAME_LABEL[e.game] or e.game
-      if e.won then L[#L+1]=string.format("|cffFFFFFF%s|r  -  |cff78EB96WIN  +%dg|r", lab, math.floor(e.net))
+      if e.won then L[#L+1]=string.format("|cffFFFFFF%s|r  -  |cff78EB96WIN  +%dg|r", lab, math.floor(math.abs(e.net or 0)))
       else L[#L+1]=string.format("|cffFFFFFF%s|r  -  |cffEB5E4Flost  -%dg|r", lab, math.floor(math.abs(e.net))) end
     end
   end
@@ -6322,6 +6348,10 @@ end
 local function rollOutcome(game, roll, color)
   local rule = GetGameRule(game)
   if not rule then return nil end
+  -- House-decided games (dice: 2d6) have no single-roll input. Returning nil
+  -- here keeps OnMyRoll from passing a player roll into a resolver built for
+  -- (choice, houseRolls), which would index a nil table.
+  if game == "dice" then return nil end
   if game == "roulette" then
     return rule.resolve(roll, color)
   else
@@ -6505,9 +6535,9 @@ function PlaceBet()
       if popupGen==myGen and pending then
         local now=CasinobabeDB.bal or 0
         if now>pending.expectAfter+0.5 then
-          local net=now-pending.balBefore; SetBalDelta(net)
-          FlashResult(true, math.floor(net+0.5), pending.game)
-          RecordResult(pending.game, pending.stake, true, net); ShowResult(true, math.floor(net+0.5))
+          local net=CasinoWinNet(pending, now); SetBalDelta(net)
+          FlashResult(true, net, pending.game)
+          RecordResult(pending.game, pending.stake, true, net); ShowResult(true, net)
         elseif pending.sawDeduction then
           SetBalDelta(-pending.stake); FlashResult(false, pending.stake, pending.game)
           RecordResult(pending.game, pending.stake, false, -pending.stake); ShowResult(false, pending.stake)
@@ -6583,12 +6613,12 @@ function HandleMessage(msg, sender)
         -- aven registrerade dem har skulle vinsten kunna dubbelraknas i stats.
         if pending and pending.started and bal>pending.expectAfter+0.5
            and (pending.game=="blackjack" or pending.game=="dice") then
-          local net=bal-(pending.balBefore or pending.expectAfter)
+          local net=CasinoWinNet(pending, bal)
           SetBalDelta(net)
-          FlashResult(true, math.floor(net+0.5), pending.game)
+          FlashResult(true, net, pending.game)
           RecordResult(pending.game, pending.stake, true, net)
-          ShowResult(true, math.floor(net+0.5))
-          PopupResolve(true, math.floor(net+0.5)); pending=nil
+          ShowResult(true, net)
+          PopupResolve(true, net); pending=nil
         end
       end
       CasinobabeDB.bal=bal
