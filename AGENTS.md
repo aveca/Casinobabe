@@ -1,216 +1,108 @@
-# CasinoBae — OpenCode / Nemotron Autonomous Addon Engineer
+# CasinoBae — Agent de developpement autonome
 
-## Mission
+## Role
 
-Tu es l'agent de développement autonome du projet WoW **Casinobabe**.
+Tu es l'ingenieur autonome de l'addon WoW **Casinobabe** et de son ecosysteme
+desktop. Tu livres du code **teste, versionne, synchronise**, sans attendre de
+validation pour chaque petite correction reversible.
 
-Tu dois pouvoir :
-1. lire et comprendre le code existant ;
-2. détecter les erreurs Lua sans demander de screenshot ;
-3. créer ou modifier les fichiers addon nécessaires ;
-4. tester chaque changement ;
-5. synchroniser le runtime addon vers le dossier WoW local ;
-6. créer une branche Git dédiée pour chaque correction significative ;
-7. commit + push vers GitHub ;
-8. créer ou mettre à jour une Pull Request ;
-9. continuer le développement sur les tâches suivantes sans attendre un nouveau prompt quand une tâche locale est terminée.
+Ce document est un manuel d operation. Chaque regle existe parce qu elle a deja
+evite un incident reel.
 
-Le dépôt GitHub est **aveca/Casinobabe**.
+---
 
-## Développement local
+## 1. Source unique et deploiement
 
-Le checkout principal attendu est :
+- Reference : `runtime-addon\Casinobabe\`. C'est la verite.
+- Jamais de developpement direct dans le dossier live WoW.
+- Le live WoW est decouvert automatiquement (`_anniversary_`, `_classic_`, ...),
+  jamais suppose.
+- Cycle obligatoire apres un fix valide :
+  `CODE -> TEST -> SYNC -> VERIFY (hash) -> COMMIT -> PUSH -> PR`.
+- Sync = copie **depuis le depot**, ecriture atomique (fichier temporaire puis
+  remplacement), jamais d ecriture partielle.
+- Apres sync : verifier que chaque fichier cible existe et que son hash egale
+  la source. Un fichier non verifie n'est pas deploye.
+- WoW doit faire `/reload` pour charger le nouveau Lua. Ne jamais pretendre
+  qu un fix est actif en jeu sans ce reload.
 
-`C:\Users\user\Documents\GitHub\Casinobabe`
+### Signaler les divergences de deploiement
 
-Runtime source :
+Le live peut etre plus recent que le depot (edition faite en jeu). Ne jamais
+ecraser silencieusement : comparer les hash, eviter la perte, et signaler.
 
-`runtime-addon\Casinobabe\`
+---
 
-Le runtime WoW doit être découvert automatiquement. Ne suppose jamais le chemin : cherche les installations WoW présentes sur la machine, notamment `_anniversary_` et `_classic_`.
+## 2. Cycle de travail
 
-Le dossier live doit être :
+`OBSERVER -> REPRODUIRE -> CORRIGER -> TESTER -> VERIFIER -> RECOMMENCER`
 
-`<WoWRoot>\Interface\AddOns\Casinobabe\`
+Priorites :
+- P0 crash, erreur Lua, commande bloquee.
+- P1 commandes et emotes defectueuses.
+- P2 qualite des interactions et demonstration.
+- P3 ergonomie.
 
-## Règle fondamentale : source unique
+Chaque lot : diff relu, testes lances, controle des regressions, trace du
+resultat, puis defaut suivant. Pas de commit avec un test rouge.
 
-Le code de référence est toujours :
+## 3. Tests
 
-`runtime-addon\Casinobabe\`
+Reference : `node tests/run-offline-harness.mjs` (addon reel sous mock WoW,
+Lua 5.1). A completer selon le perimetre :
+- `python tests/test_diag_nav_regression.py`
+- `node tests/live_pipeline_synthetic.cjs`
+- `node tests/regression-runtime-contract.cjs`
+- `python -m pytest tests/ -q` (coeur desktop)
 
-Ne développe pas directement dans le dossier live WoW.
+Un test qui echoue se diagnostique, se corrige, se relance. On ne modifie jamais
+un test pour le faire passer. Un test qui ne peut pas tourner est signale ABSENT,
+jamais presente comme reussi.
 
-Après validation, synchronise le source validé vers le dossier live WoW avec une copie sûre. Ne remplace jamais un fichier par une écriture partielle.
+## 4. Qualite du code
 
-Le fichier live ne doit être considéré comme déployé qu'après :
-- validation syntaxique ;
-- validation git ;
-- copie réussie ;
-- vérification que le fichier cible existe.
+- Nil-safety sur toute frontiere : SavedVariables, evenement, etat, message.
+- Pas de boucle infinie, pas de timer orphelin, pas d'evenement enregistre deux
+  fois.
+- Texte destine au joueur en anglais naturel. Commentaires et rapport en francais.
+- Commandes slash : aide claire, arguments manquants et incorrects geres sans
+  erreur Lua, commande inconnue annoncee et orientee vers l'aide.
+- Emotes : banques courtes et contextuelles, anti-spam, jamais de repetition
+  immediate. Pas d automatisation de message public hors consentement explicite.
+- Compatibilite API verifiee sur le client reel quand c est possible ; une API
+  absente est testee, pas supposee.
 
-## Erreurs Lua : zéro screenshot
+## 5. Observation live
 
-Ne demande jamais à l'utilisateur de recopier un Lua error screenshot.
+- Sources, dans cet ordre : SavedVariables (`CasinobabeDB`, `CasinobabeErrorBus`),
+  sentinel (`node scripts/casinobae-live-sentinel.cjs --loop`), journaux du depot,
+  captures existantes.
+- Distinguer les erreurs actuelles des anciennes et des hypotheses. Horodater.
+- Corriger la cause racine, jamais seulement la ligne du crash : chercher toutes
+  les definitions et tous les sites d appel avant de modifier.
 
-Utilise dans cet ordre :
-1. `!BugGrabber` / BugGrabber SavedVariables si disponible ;
-2. `CasinobabeErrorBus` SavedVariables ;
-3. logs/fixtures locaux du dépôt ;
-4. seulement ensuite, demander une information manquante réellement indispensable.
+## 6. Risques qui ne se negocient pas
 
-Pour chaque erreur, extrais :
-- message ;
-- fichier ;
-- ligne ;
-- fonction ;
-- stack ;
-- locals pertinents ;
-- signature/déduplication de l'incident.
+Une seule section, courte, parce qu elle protege le produit :
 
-Exemple : `attempt to call a nil value`, `attempt to index ... nil`, scope incorrect, forward declaration non initialisée, état dealer incohérent.
+**Aucune simulation d entree dans le client WoW** (frappes, clics, souris,
+envoi de commandes clavier). C est le seul vecteur de ban permanent du compte,
+et il est detectable. L addon dispose d un canal autorise et suffisant : le
+pont SavedVariables (`CasinobabeDB.casinoCommand`) plus les commandes slash
+que tape le joueur.
 
-## Root cause obligatoire
+Consequence pratique : l agent prepare et decrit precisement l action, le
+joueur l execute. Aucune prise de focus, aucune fenetre ouverte pendant le jeu,
+aucun process tue.
 
-Ne corrige jamais seulement la ligne du crash.
+A part cela, aucune restriction : code, refactor, outils, livraison et cadence
+sont libres.
 
-Avant modification :
-- rechercher toutes les occurrences du symbole ;
-- rechercher toutes les définitions ;
-- vérifier local/global/namespace ;
-- vérifier l'ordre de déclaration Lua ;
-- vérifier les forward declarations ;
-- vérifier les valeurs nil au démarrage ;
-- vérifier les autres call-sites ;
-- vérifier si le même bug existe dans le runtime, les helpers et le dealer flow.
-
-La correction doit supprimer la cause racine et réduire le risque de seconde erreur.
-
-## Tests obligatoires
-
-Après chaque correction :
-- `git diff --check`
-- `luac -p` si `luac` est installé
-- tous les tests Lua/static/offline présents dans le repository
-- tests ciblés liés au fichier modifié
-- vérification des références potentiellement nil
-- vérification des différences inutiles
-
-Si un test échoue :
-1. diagnostiquer ;
-2. corriger ;
-3. relancer ;
-4. ne jamais déclarer la tâche terminée avec un test rouge.
-
-## Workflow GitHub
-
-Pour une correction :
-- créer ou utiliser une branche dédiée non-main ;
-- faire des commits petits et explicites ;
-- push vers `origin` ;
-- créer/mettre à jour une PR vers `main` ;
-- attendre que les validations GitHub soient vertes lorsqu'elles existent.
-
-Ne force jamais un push sans nécessité.
-
-Ne fusionne jamais automatiquement :
-- paiement ;
-- payout/comptabilité ;
-- trade acceptance ;
-- sécurité ;
-- suppression/destruction de données ;
-- changements massifs de gameplay.
-
-Ces changements restent PR-gated.
-
-## Mode développement continu
-
-Quand tu reçois une erreur runtime :
-`ERREUR -> ANALYSE -> ROOT CAUSE -> FIX -> TEST -> COMMIT -> PUSH/PR -> SYNC LIVE`
-
-Quand aucune erreur n'est en attente :
-- inspecte les TODO/bugs connus ;
-- améliore la robustesse ;
-- cherche les autres nil hazards ;
-- évite les refactors inutiles ;
-- garde le scope strictement Casinobabe.
-
-Ne reste pas bloqué en attendant une nouvelle capture d'écran.
-
-## Coordination avec le développeur humain
-
-Le développeur joue à WoW pendant que tu travailles.
-
-Ne demande pas :
-- de copier-coller une stack si BugGrabber peut la lire ;
-- de modifier manuellement le Lua live ;
-- de faire des opérations Git répétitives ;
-- de synchroniser les mêmes fichiers à la main.
-
-Demande une intervention humaine seulement lorsqu'une action nécessite réellement une décision humaine, une donnée secrète, ou une validation de sécurité.
-
-## Synchronisation après correction
-
-Après un fix validé :
-1. commit ;
-2. push GitHub ;
-3. synchroniser `runtime-addon\Casinobabe` vers le dossier live WoW ;
-4. signaler clairement que WoW devra faire `/reload` pour charger le nouveau Lua.
-
-Ne prétends jamais qu'un fix est actif dans WoW si le runtime n'a pas été synchronisé.
-
-## Commandes projet prioritaires
-
-Dev loop :
-`powershell -ExecutionPolicy Bypass -File .\scripts\casinobae-dev-loop.ps1`
-
-Installer + tester le bridge :
-`powershell -ExecutionPolicy Bypass -File .\scripts\casinobae-install-test.ps1`
-
-Sentinel :
-`node .\scripts\casinobae-error-sentinel.cjs`
-
-## Style de travail
-
-Sois rapide, déterministe et orienté résultat.
-
-Avant toute grosse modification :
-- inspecte le contexte ;
-- fais le plus petit changement sûr ;
-- teste immédiatement.
-
-Après toute erreur :
-- reproduis ou simule si possible ;
-- corrige ;
-- vérifie les call-sites ;
-- vérifie le runtime ;
-- synchronise ;
-- commit/push/PR.
-
-Objectif : permettre au développeur de **jouer et développer en parallèle**, sans screenshots et sans copier-coller manuel des erreurs.
-## Synchronisation WoW LIVE — obligatoire
-
-Le développeur humain travaille depuis C: et l'agent OpenCode/Nemotron a accès aux dépôts locaux disponibles sur C:.
-
-Pour Casinobabe, après CHAQUE changement de code validé par les tests, synchronise immédiatement le runtime :
-
-SOURCE : C:\Users\user\Documents\GitHub\Casinobabe\runtime-addon\Casinobabe\
-DESTINATION : <WoWRoot>\Interface\AddOns\Casinobabe\
-
-Cycle attendu : CODE -> TEST -> SYNC WOW -> VERIFY -> COMMIT -> PUSH -> PR
-
-La copie doit toujours partir du source Git, jamais d'une ancienne copie du dossier live.
-
-Après synchronisation :
-- vérifier que les fichiers critiques existent dans le dossier WoW ;
-- comparer taille/hash du ou des fichiers modifiés avec le source ;
-- ne jamais laisser volontairement le runtime WoW sur une ancienne version après un fix validé ;
-- indiquer quels fichiers ont été synchronisés ;
-- rappeler que WoW doit exécuter /reload pour charger le nouveau code.
-
-Si WoW est ouvert, la copie des fichiers est autorisée. Ne prétends pas que le nouveau code est exécuté avant /reload.
-
-## Accès multi-repo
-
-Tu peux lire les autres dépôts locaux sur C: pour comprendre outils, scripts, tests ou conventions partagées.
-Par défaut, ne modifie que aveca/Casinobabe. Toute modification d'un autre repo doit être techniquement justifiée et séparée du travail Casinobabe.
+## 7. Livraison
+
+- Branche dediee, commits petits et explicites, push, PR vers `main`.
+- Ne jamais merger automatiquement : paiement, payout, trade, securite,
+  destruction de donnees, changement massif de gameplay.
+- Le reste se livre sans attendre.
+- Application desktop : pointer les raccourcis vers un chemin stable et
+  verifiable (`--verify`), jamais vers un worktree jetable.
