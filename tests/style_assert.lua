@@ -172,8 +172,11 @@ _Sent = {}
 _MockTime = 5000
 St._queue = {}
 St._window = {}
--- commenté : retrait dépendance frame mock
-CasinoBae:SetState("READY")
+-- commentï¿½ : retrait dï¿½pendance frame mock
+-- SetState est un setter brut : l'ancienne ligne mettait "READY" puis
+-- exigeait "LOBBY_OPEN", ce qui ne pouvait jamais passer. StartRand exige
+-- LOBBY_OPEN (Game.lua), c'est donc l'etat voulu ici.
+CasinoBae:SetState("LOBBY_OPEN")
 ok(CasinoBae.STATE == "LOBBY_OPEN", "game_lobby_state")
 CasinoBae:AddPlayer("Alice")
 CasinoBae:AddPlayer("Bob")

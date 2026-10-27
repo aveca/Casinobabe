@@ -670,18 +670,32 @@ def test_journal_filtre_par_niveau_et_erreur(workspace):
 def test_fenetre_de_bouton_refusee_si_wow_ferme_pendant_laction(workspace, monkeypatch):
     """Le garde-fou NE doit PAS refuser : une disparition de WoW pendant une
     commande n'est pas attribuable (l'utilisateur peut l'avoir fermee). Elle
-    doit etre consignee comme observation. Seule une panne du garde-fou refuse."""
-    real_snapshot = window_guard.snapshot
+    doit etre consignee comme observation. Seule une panne du garde-fou refuse.
+
+    Le "avant" est injecte, pas lu sur la machine : un snapshot reel renvoie
+    `present=False` quand WoW est ferme, et le test ne verifiait alors plus
+    rien du tout (il passait ou echouait selon l'etat du poste).
+    """
+    wow_open = {
+        "present": True, "hwnd": 4242, "minimized": False,
+        "visible": True, "rect": (0, 0, 800, 600),
+    }
+    wow_closed = {
+        "present": False, "hwnd": 0, "minimized": None,
+        "visible": False, "rect": None,
+    }
+    base = {"wow": wow_open, "foreground": {"hwnd": 1},
+            "cursor": (100, 100), "windows": []}
+
     calls = {"n": 0}
 
     def flaky_snapshot():
         calls["n"] += 1
-        snap = real_snapshot()
         if calls["n"] > 1:
-            snap = dict(snap)
-            snap["wow"] = {"present": False, "hwnd": 0, "minimized": None,
-                           "visible": False, "rect": None}
-        return snap
+            snap = dict(base)
+            snap["wow"] = dict(wow_closed)
+            return snap
+        return dict(base)
 
     monkeypatch.setattr(window_guard, "snapshot", flaky_snapshot)
     ok, detail = window_guard.safe_call("read_state", lambda: "fait")

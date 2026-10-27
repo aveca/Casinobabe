@@ -91,11 +91,21 @@ function CreateFrame(ftype, name, parent, template)
   function f:EnableMouse(...) end
   function f:RegisterForDrag(...) end
   function f:RegisterEvent(...) end
-  function f:SetScript(k, fn) self._scripts[k] = fn end
+  function f:SetScript(k, fn)
+    self._scripts[k] = fn
+    -- Track the frame that actually receives OnEvent, not merely the last one
+    -- created: Events.lua sets up its handler first and several frames are
+    -- created afterwards, which used to clobber _EventFrame and make every
+    -- _Event() call fail with "event handler missing".
+    if k == "OnEvent" then _EventFrame = self end
+  end
   function f:StartMoving() end
   function f:StopMovingOrSizing() end
   function f:CreateFontString(...) return makeFontString(self) end
-  _EventFrame = f
+  -- NOTE: _EventFrame is deliberately NOT assigned here. The frame that owns
+  -- OnEvent is identified by SetScript below; assigning on every CreateFrame
+  -- used to clobber it as soon as any later UI frame was built, and every
+  -- _Event() call then failed with "event handler missing".
   return f
 end
 function _Event(...)

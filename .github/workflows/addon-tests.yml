@@ -48,6 +48,9 @@ jobs:
       - name: Run legacy addon harness
         run: lua5.4 tests/casinobae_harness.lua
 
+      - name: Run style/RP harness (437 asserts)
+        run: node tests/style_harness.mjs
+
       - name: Upload factory reports
         if: always()
         uses: actions/upload-artifact@v4
