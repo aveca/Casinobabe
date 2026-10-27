@@ -1153,6 +1153,18 @@ local function makeButton(parent, w, h, label, onClick)
 end
 
 local function buildUI()
+  -- The fishing panel is NOT built unless the player explicitly asks for it
+  -- (`/cbfish ui`). It used to be created on every load and then anchored over
+  -- the casino panel, which is what got in the way. Building nothing at all is
+  -- stronger than hiding it: there is no frame left to overlap anything.
+  -- The module, its state, its counters and every /cbfish command work either
+  -- way - only the visual panel is absent.
+  local early = DB()
+  if early.uiHidden ~= false then
+    early.uiHidden = true
+    F.UI = nil
+    return nil
+  end
   if F.UI then return F.UI end
   local BackdropTemplate = Gv("BackdropTemplateMixin")
   local fb = CreateFrame("Frame", "Casinobabe_FishingBar", UIParent,
@@ -1292,24 +1304,13 @@ local function buildUI()
   if fdb.barPos then
     pcall(fb.SetPoint, fb, fdb.barPos.p, UIParent, fdb.barPos.rp, fdb.barPos.x, fdb.barPos.y)
   end
-  -- The fishing bar is OFF the casino panel by default: it was anchored to the
-  -- casino frame's TOPRIGHT and covered it. It stays hidden unless the player
-  -- asks for it (`/cbfish ui`), which flips uiHidden to false and persists it.
-  -- The module, its counters and all /cbfish commands keep working either way.
-  if fdb.uiHidden ~= false then
-    fdb.uiHidden = true
-    fb:Hide()
-  else
-    fb:Show()
-  end
-  F.UI.Toggle = function()
-    local d = DB()
-    d.uiHidden = not (d.uiHidden == true)
-    if d.uiHidden then fb:Hide() else fb:Show() end
-    Log(d.uiHidden and "Fishing panel hidden (state and counters still live)."
-                    or "Fishing panel shown.")
-    return d.uiHidden
-  end
+  -- Reaching this point means the player explicitly asked for the panel, so it
+  -- starts visible.
+  fb:Show()
+
+  -- Reaching this point means the player explicitly asked for the panel, so it
+  -- starts visible.
+  fb:Show()
   F.UI.Refresh()
 
   -- Rafraîchissement léger (1 s) via ticker — aucune entrée simulée
@@ -1324,6 +1325,33 @@ local function buildUI()
     end)
   end
   return F.UI
+end
+
+-- ---------------------------------------------------------------------------
+-- Bascule du panneau (niveau module, donc disponible meme si le panneau n a
+-- jamais ete construit). Le panneau n est PAS construit par defaut : il
+-- recouvrait le panel casino. `/cbfish ui` le construit a la demande ; le
+-- choix est persiste. L etat, les compteurs et toutes les commandes /cbfish
+-- fonctionnent dans les deux cas.
+-- ---------------------------------------------------------------------------
+F.ToggleUI = function()
+  local d = DB()
+  d.uiHidden = not (d.uiHidden == true)
+  if d.uiHidden then
+    if F.UI and F.UI.frame then F.UI.frame:Hide() end
+    Log("Fishing panel hidden (state and counters still live).")
+    return true
+  end
+  F.UI = nil
+  buildUI()
+  if not (F.UI and F.UI.frame) then
+    d.uiHidden = true
+    Log("Fishing panel could not be built.")
+    return true
+  end
+  F.UI.frame:Show()
+  Log("Fishing panel shown.")
+  return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -1390,10 +1418,10 @@ SlashCmdList["CASINOBABEFISH"] = function(msg)
     elseif sub == "remove" then F.SetTarget(name, false)
     else Log("Usage : /cbfish target add <nom> | target remove <nom>") end
   elseif cmd == "ui" then
-    -- Hidden by default (it used to overlap the casino panel). This is the
-    -- only way to bring it back; the choice is persisted.
-    if F.UI and F.UI.Toggle then F.UI.Toggle()
-    else Log("Fishing UI not built yet.") end
+    -- The panel is not built by default (it used to overlap the casino panel).
+    -- This is the only way to bring it back; the choice is persisted.
+    if F.ToggleUI then F.ToggleUI()
+    else Log("Fishing UI unavailable in this build.") end
   elseif cmd == "test" then
     -- INJECTION DE TEST UNIQUEMENT (hors production) : simule un message de butin
     F.RecordLootMessage(arg or "")
