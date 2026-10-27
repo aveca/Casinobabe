@@ -7329,6 +7329,9 @@ local PROSPECT_COOLDOWN = 10 -- seconds
 local currentZone = ""
 local currentSubZone = ""
 local currentInstanceType = ""
+-- Last capital zone the auto-show already fired for, so sub-zone changes inside
+-- the same capital never re-trigger it.
+local capitalShowZone = nil
 
 -- Normalize text for intent detection
 local function NormalizeText(text)
@@ -7508,6 +7511,32 @@ function UpdateZoneContext()
     if panel and panel.dealerPanel and panel.dealerPanel.UpdateZone then
       panel.dealerPanel:UpdateZone(zone, subZone, inInstance, instanceType)
     end
+
+    -- AHA MOMENT: walking into a capital starts the casino show on its own.
+    -- Triggered by the client's own zone event - nothing is typed or injected.
+    -- Gated three ways so it can never spam:
+    --   1. dealer mode must be ON (running a casino is the consent),
+    --   2. only in a capital (DealerCanAdvertiseHere),
+    --   3. once per capital zone, plus the Announcer's own SHOW_COOLDOWN.
+    -- Opt out with `/cb autoshow off`; the choice is persisted.
+    local function AutoShowOnCapital()
+      if not dealerEnabled or not CasinoShow or not DealerCanAdvertiseHere then return end
+      if CasinobabeDB.autoShowOnCapital == false then return end
+      -- Identity is the CAPITAL only, never the sub-zone: moving inside the
+      -- same capital (district changes fire ZONE_CHANGED too) must not replay
+      -- the show. Leaving a capital clears the marker, so walking back in
+      -- replays it.
+      local inCapital = DealerCanAdvertiseHere()
+      local key = inCapital and zone or nil
+      if capitalShowZone == key then return end
+      capitalShowZone = key
+      if not inCapital then return end
+      local ok, err = pcall(function() return CasinoShow:StartShow() end)
+      if not ok then
+        print("|cffEB5E4FCasinobabe|r Capital show failed: " .. tostring(err))
+      end
+    end
+    pcall(AutoShowOnCapital)
   end
 end
 
@@ -8166,6 +8195,20 @@ SlashCmdList["CASINOBABE"]=function(msg)
     print("  Character: " .. charStatus)
   end
     
+  elseif cmd=="autoshow" then
+    -- Controls the automatic casino show fired when the dealer walks into a
+    -- capital. Default: on (dealer mode is the consent). Persisted.
+    if arg=="off" or arg=="0" or arg=="no" then
+      CasinobabeDB.autoShowOnCapital = false
+      print("|cffFFD700Casinobabe|r Automatic capital show DISABLED - use /cb dealer show")
+    elseif arg=="on" or arg=="1" or arg=="yes" or arg=="" then
+      CasinobabeDB.autoShowOnCapital = true
+      capitalShowZone = nil   -- allow it to fire again on the next capital
+      print("|cff78EB96Casinobabe|r Automatic capital show ENABLED - it fires when you enter a capital")
+    else
+      local st = CasinobabeDB.autoShowOnCapital
+      print("|cffFFD700Casinobabe|r autoShow: " .. ((st == nil or st) and "|cff78EB96ON|r" or "|cffEB5E4FOFF|r"))
+    end
   elseif cmd=="who" and arg=="" then
     -- visa vad som kanns av pa DENNA klienten (felsokningshjalp)
     local loc=(GetLocale and GetLocale()) or "?"
@@ -8202,6 +8245,7 @@ SlashCmdList["CASINOBABE"]=function(msg)
     print("            /cb dealer invite|game|stake|roll|record|resolve|payout|close|reset <player> [..]")
     print("            /cb dealer show|quickad|stopshow|showstatus|emote <emote>")
     print("|cffB3ABA6  auto|r    /cb auto | /cb auto stop | /cb auto status")
+    print("|cffB3ABA6  show|r    /cb autoshow on|off   (show auto quand tu entres en capitale)")
     print("|cffB3ABA6  info|r    /cb who [auto|<text>]  /cb discord <tag>")
     print("|cffB3ABA6  ui|r      /cb fx  /cb reset  /cb resetstats  /cb intro  /cb minimap")
     print("|cffB3ABA6  other|r   /cbs <show>  /cbd (corpse diagnostic)  /cbfish (fishing)")

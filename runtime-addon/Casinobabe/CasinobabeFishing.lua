@@ -1292,6 +1292,24 @@ local function buildUI()
   if fdb.barPos then
     pcall(fb.SetPoint, fb, fdb.barPos.p, UIParent, fdb.barPos.rp, fdb.barPos.x, fdb.barPos.y)
   end
+  -- The fishing bar is OFF the casino panel by default: it was anchored to the
+  -- casino frame's TOPRIGHT and covered it. It stays hidden unless the player
+  -- asks for it (`/cbfish ui`), which flips uiHidden to false and persists it.
+  -- The module, its counters and all /cbfish commands keep working either way.
+  if fdb.uiHidden ~= false then
+    fdb.uiHidden = true
+    fb:Hide()
+  else
+    fb:Show()
+  end
+  F.UI.Toggle = function()
+    local d = DB()
+    d.uiHidden = not (d.uiHidden == true)
+    if d.uiHidden then fb:Hide() else fb:Show() end
+    Log(d.uiHidden and "Fishing panel hidden (state and counters still live)."
+                    or "Fishing panel shown.")
+    return d.uiHidden
+  end
   F.UI.Refresh()
 
   -- Rafraîchissement léger (1 s) via ticker — aucune entrée simulée
@@ -1371,11 +1389,16 @@ SlashCmdList["CASINOBABEFISH"] = function(msg)
     if sub == "add" then F.SetTarget(name, true)
     elseif sub == "remove" then F.SetTarget(name, false)
     else Log("Usage : /cbfish target add <nom> | target remove <nom>") end
+  elseif cmd == "ui" then
+    -- Hidden by default (it used to overlap the casino panel). This is the
+    -- only way to bring it back; the choice is persisted.
+    if F.UI and F.UI.Toggle then F.UI.Toggle()
+    else Log("Fishing UI not built yet.") end
   elseif cmd == "test" then
     -- INJECTION DE TEST UNIQUEMENT (hors production) : simule un message de butin
     F.RecordLootMessage(arg or "")
   else
-    Log("Commandes : /cbfish on|off|pause|resume|status|reset confirm|export [csv]|spots|targets|target add/remove <nom>|pool seen|gone|bait")
+    Log("Commandes : /cbfish on|off|pause|resume|status|reset confirm|export [csv]|spots|targets|target add/remove <nom>|pool seen|gone|bait|ui")
   end
   if F.UI then pcall(function() F.UI.Refresh() end) end
 end
@@ -1386,14 +1409,9 @@ end
   local ok, err = pcall(function()
     buildUI()
     installEvents()
-    local panel = Gv("Casinobabe_Panel")
-    local fdb = DB()
-    if panel and not fdb.barPos then
-      pcall(function()
-        F.UI.frame:ClearAllPoints()
-        F.UI.frame:SetPoint("TOPLEFT", panel, "TOPRIGHT", 8, -8)
-      end)
-    end
+    -- Deliberately NOT re-anchored to the casino panel any more: anchoring the
+    -- fishing frame to the panel's TOPRIGHT made it overlap the casino UI.
+    -- The fishing bar keeps its own position (drag to move, saved in barPos).
   end)
 F.state = F.state or F.STATES.INACTIF -- réaffirmé après init (aucune dépendance à la réussite UI)
 if not ok then
