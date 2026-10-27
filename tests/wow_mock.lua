@@ -104,7 +104,7 @@ local function isKnownWoWGlobal(name)
         "UIParent", "Minimap", "BackdropTemplateMixin", "UISpecialFrames",
         "C_Timer", "LibStub", "LibDBIcon10_Casinobabe",
         -- CasinoBae internal
-        "CasinobabeDB", "CasinobabeErrorBus", "CB", "CasinoBae",
+        "CasinobabeDB", "CasinobabeErrorBus", "CB", "CasinoBae", "Casinobabe", "AddonPrint",
         -- Event names
         "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "ADDON_LOADED", "CHAT_MSG_ADDON",
         "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER_INFORM",
@@ -163,7 +163,7 @@ for _, name in ipairs({
     "C_ChatInfo", "C_FriendList", "C_TradeInfo", "GetNumWhoResults", "SendWho", "SetWhoToUi",
     "FlashClientIcon", "GetCursorPosition", "GetScreenWidth", "GetScreenHeight",
     "UIParent", "Minimap", "BackdropTemplateMixin", "UISpecialFrames", "LibStub",
-    "CasinobabeDB", "CasinobabeErrorBus", "CB", "CasinoBae",
+    "CasinobabeDB", "CasinobabeErrorBus", "CB", "CasinoBae", "Casinobabe", "AddonPrint",
     "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "ADDON_LOADED", "CHAT_MSG_ADDON",
     "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_WHISPER_INFORM", "CHAT_MSG_SAY",
     "CHAT_MSG_YELL", "CHAT_MSG_EMOTE", "CHAT_MSG_TEXT_EMOTE", "CHAT_MSG_CHANNEL",
@@ -172,7 +172,21 @@ for _, name in ipairs({
     "CHAT_MSG_OFFICER", "CHAT_MSG_CHANNEL_NOTICE", "GROUP_ROSTER_UPDATE",
     "PARTY_MEMBERS_CHANGED", "RAID_ROSTER_UPDATE", "PLAYER_TARGET_CHANGED",
     "ZONE_CHANGED", "ZONE_CHANGED_NEW_AREA", "TRADE_SHOW", "TRADE_ACCEPT_UPDATE",
-    "TRADE_CLOSED", "UI_INFO_MESSAGE", "WHO_LIST_UPDATE"
+    "TRADE_CLOSED", "UI_INFO_MESSAGE", "WHO_LIST_UPDATE",
+    -- Client APIs that exist on every retail/classic build. The addon reaches
+    -- them defensively (rawget / pcall) precisely so a missing one degrades
+    -- instead of crashing; the strict check used to record that defensive read
+    -- as an error and made /cbd, /cbqa and the show engine look broken when
+    -- they were only reporting "this API is not available here".
+    "UnitPosition", "UnitIsGhost", "UnitIsPlayer", "UnitFactionGroup", "GetRealmName",
+    "GetLocale", "GetRealZoneText", "GetSubZoneText", "DoEmote",
+    "C_Map", "C_DeathInfo", "C_Spell", "C_ChatInfo", "C_Timer",
+    "GetCorpseMapPosition", "RetrieveCorpse", "CastSpellByName",
+    "ChatFrame1", "DEFAULT_CHAT_FRAME", "ShowEngine",
+    "LOCALIZED_CLASS_NAMES_MALE", "LOCALIZED_CLASS_NAMES_FEMALE",
+    "ReloadUI", "IsQATarget", "IsDealerCharacter", "GetContextLabel",
+    "Casinobabe_Panel", "Casinobabe_FishingBar", "Casinobabe_FishingEvents",
+    "Casinobabe_BaitButton", "CasinobabeDiagStrip"
 }) do
     declareGlobal(name)
 end
@@ -312,6 +326,41 @@ end
 function GetZoneText()
     logApiCall("GetZoneText", {})
     return WoWMock.config.zone
+end
+
+-- UnitPosition exists on every real client (yards, world space). The corpse
+-- diagnostic reads it; without it /cbd aborted before it could report anything.
+function UnitPosition(unit)
+    logApiCall("UnitPosition", { unit = unit })
+    local p = WoWMock.config.playerPos or { 0, 0, 0 }
+    return p[1] or p.x or 0, p[2] or p.y or 0, p[3] or p.z or 0
+end
+
+-- Client identity / locale globals. They exist on every real client; the
+-- addon reads them for its localised /who query and its dealer zone report,
+-- so the strict global check must know them or every /cb who run is logged
+-- as an "undefined global" error that cannot happen in the game.
+function GetLocale()
+    logApiCall("GetLocale", {})
+    return "enUS"
+end
+
+function UnitFactionGroup(unit)
+    logApiCall("UnitFactionGroup", { unit = unit })
+    return WoWMock.config.faction or "Alliance"
+end
+
+LOCALIZED_CLASS_NAMES_MALE = {
+    "Warrior", "Paladin", "Hunter", "Rogue", "Priest", "Death Knight",
+    "Shaman", "Mage", "Warlock", "Monk", "Druid", "Demon Hunter",
+    "Evoker",
+}
+LOCALIZED_CLASS_NAMES_FEMALE = LOCALIZED_CLASS_NAMES_MALE
+
+function DoEmote(token)
+    logApiCall("DoEmote", { token = token })
+    WoWMock.config.lastEmote = token
+    return true
 end
 
 function IsInInstance()
@@ -544,6 +593,16 @@ function FramePrototype:SetSize(w, h)
     self.height = h
 end
 
+-- Real frames expose SetWidth/SetHeight separately from SetSize. The dealer
+-- session list calls SetHeight, so without it every dealer update aborted.
+function FramePrototype:SetWidth(w)
+    self.width = w
+end
+
+function FramePrototype:SetHeight(h)
+    self.height = h
+end
+
 function FramePrototype:GetWidth()
     return self.width or 0
 end
@@ -592,6 +651,80 @@ function FramePrototype:SetClampedToScreen(clamped)
     self.clampedToScreen = clamped
 end
 
+-- Layout / movement / visibility helpers present on every real WoW frame.
+-- Without them the addon's panel construction aborts on the first missing
+-- call and the harness reports a defect that cannot happen in the client.
+function FramePrototype:SetAllPoints(other)
+    self.allPoints = other or true
+    self.points = self.points or {}
+    table.insert(self.points, { "ALL", other, nil, nil, nil })
+end
+
+function FramePrototype:ClearAllPoints()
+    self.points = {}
+    self.allPoints = nil
+end
+
+function FramePrototype:GetNumPoints()
+    return #(self.points or {})
+end
+
+function FramePrototype:GetChildren()
+    return unpack(self.children or {})
+end
+
+function FramePrototype:GetNumChildren()
+    return #(self.children or {})
+end
+
+function FramePrototype:GetChildRects()
+    return unpack(self.children or {})
+end
+
+function FramePrototype:GetFrameStrata()
+    return self.strata or "MEDIUM"
+end
+
+function FramePrototype:StartMoving()
+    self.moving = true
+end
+
+function FramePrototype:StopMovingOrSizing()
+    self.moving = false
+end
+
+function FramePrototype:SetScale(scale)
+    self.scale = scale
+end
+
+function FramePrototype:GetScale()
+    return self.scale or 1
+end
+
+function FramePrototype:SetAlpha(alpha)
+    self.alpha = alpha
+end
+
+function FramePrototype:GetAlpha()
+    return self.alpha or 1
+end
+
+function FramePrototype:IsVisible()
+    return self.visible ~= false
+end
+
+function FramePrototype:SetParent(parent)
+    self.parent = parent
+end
+
+function FramePrototype:GetParent()
+    return self.parent
+end
+
+function FramePrototype:SetHitRectInsets(l, r, t, b)
+    self.hitInsets = { l, r, t, b }
+end
+
 function FramePrototype:SetBackdrop(backdrop)
     self.backdrop = backdrop
 end
@@ -623,7 +756,15 @@ function FramePrototype:CreateTexture(name, layer)
         SetAlpha = function(self, a) self.alpha = a end,
         GetAlpha = function(self) return self.alpha or 1 end,
         Hide = function(self) self.visible = false end,
-        Show = function(self) self.visible = true end
+        Show = function(self) self.visible = true end,
+        SetTexCoord = function(self, l, r, t, b) self.texCoord = { l, r, t, b } end,
+        SetVertexColor = function(self, r, g, b, a) self.vertexColor = { r, g, b, a or 1 } end,
+        SetWidth = function(self, w) self.width = w end,
+        SetHeight = function(self, h) self.height = h end,
+        SetSize = function(self, w, h) self.width = w; self.height = h end,
+        SetRotation = function(self, r) self.rotation = r end,
+        SetBlendMode = function(self, m) self.blendMode = m end,
+        SetDesaturated = function(self, d) self.desaturated = d end
     }
     return tex
 end
@@ -696,12 +837,26 @@ function FramePrototype:CreateButton(name, inherits)
             return fs
         end
     }, FramePrototype)
+
+    -- Attach the real Button widget methods too (SetEnabled, SetChecked, ...).
+    if UIObjectPrototypes and UIObjectPrototypes.Button then
+        for k, v in pairs(UIObjectPrototypes.Button) do
+            if btn[k] == nil then btn[k] = v end
+        end
+    end
+
     return btn
 end
 
 function FramePrototype:CreateFrame(frameType, name, parent, template)
     return CreateFrame(frameType, name, parent, template)
 end
+
+-- Forward declaration: the widget prototypes below are assigned to THIS local,
+-- so CreateFrame (defined before them) can attach them by frameType. Without
+-- the forward declaration the name resolves to a nil global and typed frames
+-- (EditBox, Button, StatusBar...) lose their own methods.
+local UIObjectPrototypes
 
 -- Global CreateFrame
 function CreateFrame(frameType, name, parent, template)
@@ -721,6 +876,17 @@ function CreateFrame(frameType, name, parent, template)
         buttons = {},
         children = {}
     }, FramePrototype)
+
+    -- Typed frames must carry their own widget methods, exactly like the real
+    -- client (`CreateFrame("EditBox")` returns an object with SetAutoFocus,
+    -- SetFocus, HighlightText, ...). Without this the addon's panel
+    -- construction aborts on the first widget-only call.
+    local proto = frameType and UIObjectPrototypes[frameType]
+    if proto then
+        for k, v in pairs(proto) do
+            if frame[k] == nil then frame[k] = v end
+        end
+    end
 
     if parent then
         parent.children = parent.children or {}
@@ -756,7 +922,9 @@ end
 -- UI OBJECTS (Texture, FontString, StatusBar, ScrollFrame, etc.)
 -- ============================================================================
 
-local UIObjectPrototypes = {}
+-- Widget prototypes. Assigned to the forward-declared local above so CreateFrame
+-- can attach them by frameType.
+UIObjectPrototypes = {}
 
 -- Texture
 UIObjectPrototypes.Texture = {
@@ -822,6 +990,25 @@ UIObjectPrototypes.ScrollFrame = {
 UIObjectPrototypes.Button = {
     SetText = function(self, text) self.text = text end,
     GetText = function(self) return self.text end,
+    -- Modern clients use SetEnabled/IsEnabled; Enable/Disable are the classic
+    -- spellings. Both must work or panel construction aborts on the first call.
+    SetEnabled = function(self, v)
+        self.enabled = (v == nil) and true or v
+    end,
+    GetEnabled = function(self) return self.enabled ~= false end,
+    SetChecked = function(self, v) self.checked = v end,
+    GetChecked = function(self) return self.checked end,
+    SetNormalFontObject = function(self, f) self.normalFontObject = f end,
+    SetHighlightFontObject = function(self, f) self.highlightFontObject = f end,
+    SetDisabledFontObject = function(self, f) self.disabledFontObject = f end,
+    SetButtonState = function(self, s) self.buttonState = s end,
+    GetButtonState = function(self) return self.buttonState or "NORMAL" end,
+    RegisterForClicks = function(self, ...) self.clickTypes = { ... } end,
+    LockHighlight = function(self) self.highlightLocked = true end,
+    UnlockHighlight = function(self) self.highlightLocked = false end,
+    GetNormalTexture = function(self) return self.normalTexture end,
+    GetFontString = function(self) return self.fontString end,
+    SetFontString = function(self, fs) self.fontString = fs end,
     SetNormalTexture = function(self, tex) self.normalTexture = tex end,
     SetHighlightTexture = function(self, tex) self.highlightTexture = tex end,
     SetPushedTexture = function(self, tex) self.pushedTexture = tex end,
@@ -862,7 +1049,32 @@ UIObjectPrototypes.EditBox = {
     end,
     SetSize = function(self, w, h) self.width = w; self.height = h end,
     Hide = function(self) self.visible = false end,
-    Show = function(self) self.visible = true end
+    Show = function(self) self.visible = true end,
+    SetFontObject = function(self, fontObject) self.fontObject = fontObject end,
+    SetFocus = function(self) self.hasFocus = true end,
+    HighlightText = function(self, a, b) self.highlight = { a, b } end,
+    ClearHighlightText = function(self) self.highlight = nil end,
+    SetTextInsets = function(self, l, r, t, b) self.textInsets = { l, r, t, b } end,
+    SetMaxLetters = function(self, n) self.maxLetters = n end,
+    SetMaxBytes = function(self, n) self.maxBytes = n end,
+    SetCountInvisibleLetters = function(self, v) self.countInvisibleLetters = v end,
+    SetJustifyH = function(self, h) self.justifyH = h end,
+    SetJustifyV = function(self, v) self.justifyV = v end,
+    GetJustifyH = function(self) return self.justifyH or "LEFT" end,
+    SetCursorPosition = function(self, p) self.cursorPosition = p end,
+    GetCursorPosition = function(self) return self.cursorPosition or 0 end,
+    SetBlinkSpeed = function(self, s) self.blinkSpeed = s end,
+    SetAltArrowKeyMode = function(self, m) self.altArrowKeyMode = m end,
+    Insert = function(self, text) self.text = (self.text or "") .. tostring(text) end,
+    SetNumber = function(self, n) self.number = n end,
+    GetNumber = function(self) return self.number or 0 end,
+    IsInIMECompositionMode = function(self) return false end,
+    SetEnabled = function(self, v) self.enabled = v end,
+    IsEnabled = function(self) return self.enabled ~= false end,
+    GetName = function(self) return self.name end,
+    GetStringHeight = function(self) return self.stringHeight or 12 end,
+    GetSpacing = function(self) return self.spacing or 0 end,
+    SetSpacing = function(self, s) self.spacing = s end
 }
 
 -- ============================================================================
@@ -906,6 +1118,15 @@ end
 
 -- Mock LibDBIcon-1.0
 local libDBIcon = LibStub:NewLibrary("LibDBIcon-1.0", 1)
+
+-- Real LibStub is CALLABLE: LibStub("LibDBIcon-1.0", true) returns the library
+-- or nil. As a plain table it is not, and the addon's guarded call
+-- (LibStub and LibStub("...")) aborts with "attempt to call ... (a table value)".
+setmetatable(LibStub, {
+    __call = function(self, major, silent)
+        return self:GetLibrary(major, silent)
+    end,
+})
 if libDBIcon then
     libDBIcon.registry = {}
     libDBIcon.buttons = {}
@@ -970,13 +1191,7 @@ math.randomseed(os.time())
 
 -- Initialize SavedVariables
 CasinobabeDB = CasinobabeDB or {}
-CasinobabeDB.dealer = CasinobabeDB.dealer or { enabled = false, log = {} }
-CasinobabeDB.stats = CasinobabeDB.stats or { games = 0, wagered = 0, wins = 0, wonGold = 0, lostGold = 0, byGame = {} }
-CasinobabeDB.history = CasinobabeDB.history or {}
-CasinobabeDB.sessions = CasinobabeDB.sessions or {}
-CasinobabeDB.pos = CasinobabeDB.pos or {}
-CasinobabeDB.minimap = CasinobabeDB.minimap or {}
-CasinobabeErrorBus = CasinobabeErrorBus or { version = 1, seq = 0, pending = {}, last = nil }
+CasinobabeErrorBus = CasinobabeErrorBus or {}
 
 -- Initialize CB namespace
 CB = CB or {}
@@ -1006,16 +1221,6 @@ rawset(_G, "YES", "Yes")
 declaredGlobals["YES"] = true
 rawset(_G, "NO", "No")
 declaredGlobals["NO"] = true
-
--- Addon-specific globals that exist in real WoW but not in mock
-rawset(_G, "Casinobabe", {})
-declaredGlobals["Casinobabe"] = true
-rawset(_G, "AddonPrint", function(...) print("[AddonPrint]", ...) end)
-declaredGlobals["AddonPrint"] = true
-rawset(_G, "UnitFactionGroup", function() return "Horde" end)
-declaredGlobals["UnitFactionGroup"] = true
-rawset(_G, "GetLocale", function() return "enUS" end)
-declaredGlobals["GetLocale"] = true
 
 -- Expose WoWMock globally for test control
 _G.WoWMock = WoWMock
