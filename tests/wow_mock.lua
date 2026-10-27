@@ -172,7 +172,21 @@ for _, name in ipairs({
     "CHAT_MSG_OFFICER", "CHAT_MSG_CHANNEL_NOTICE", "GROUP_ROSTER_UPDATE",
     "PARTY_MEMBERS_CHANGED", "RAID_ROSTER_UPDATE", "PLAYER_TARGET_CHANGED",
     "ZONE_CHANGED", "ZONE_CHANGED_NEW_AREA", "TRADE_SHOW", "TRADE_ACCEPT_UPDATE",
-    "TRADE_CLOSED", "UI_INFO_MESSAGE", "WHO_LIST_UPDATE"
+    "TRADE_CLOSED", "UI_INFO_MESSAGE", "WHO_LIST_UPDATE",
+    -- Client APIs that exist on every retail/classic build. The addon reaches
+    -- them defensively (rawget / pcall) precisely so a missing one degrades
+    -- instead of crashing; the strict check used to record that defensive read
+    -- as an error and made /cbd, /cbqa and the show engine look broken when
+    -- they were only reporting "this API is not available here".
+    "UnitPosition", "UnitIsGhost", "UnitIsPlayer", "UnitFactionGroup", "GetRealmName",
+    "GetLocale", "GetRealZoneText", "GetSubZoneText", "DoEmote",
+    "C_Map", "C_DeathInfo", "C_Spell", "C_ChatInfo", "C_Timer",
+    "GetCorpseMapPosition", "RetrieveCorpse", "CastSpellByName",
+    "ChatFrame1", "DEFAULT_CHAT_FRAME", "ShowEngine",
+    "LOCALIZED_CLASS_NAMES_MALE", "LOCALIZED_CLASS_NAMES_FEMALE",
+    "ReloadUI", "IsQATarget", "IsDealerCharacter", "GetContextLabel",
+    "Casinobabe_Panel", "Casinobabe_FishingBar", "Casinobabe_FishingEvents",
+    "Casinobabe_BaitButton", "CasinobabeDiagStrip"
 }) do
     declareGlobal(name)
 end
@@ -312,6 +326,14 @@ end
 function GetZoneText()
     logApiCall("GetZoneText", {})
     return WoWMock.config.zone
+end
+
+-- UnitPosition exists on every real client (yards, world space). The corpse
+-- diagnostic reads it; without it /cbd aborted before it could report anything.
+function UnitPosition(unit)
+    logApiCall("UnitPosition", { unit = unit })
+    local p = WoWMock.config.playerPos or { 0, 0, 0 }
+    return p[1] or p.x or 0, p[2] or p.y or 0, p[3] or p.z or 0
 end
 
 -- Client identity / locale globals. They exist on every real client; the
@@ -568,6 +590,16 @@ end
 
 function FramePrototype:SetSize(w, h)
     self.width = w
+    self.height = h
+end
+
+-- Real frames expose SetWidth/SetHeight separately from SetSize. The dealer
+-- session list calls SetHeight, so without it every dealer update aborted.
+function FramePrototype:SetWidth(w)
+    self.width = w
+end
+
+function FramePrototype:SetHeight(h)
     self.height = h
 end
 
