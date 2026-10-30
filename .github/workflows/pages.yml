@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths-ignore:
       - 'AGENTS.md'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
