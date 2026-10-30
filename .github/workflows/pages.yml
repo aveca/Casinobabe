@@ -2,6 +2,8 @@ name: Deploy CasinoBae site
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'AGENTS.md'
   workflow_dispatch:
 
 permissions:

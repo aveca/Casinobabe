@@ -214,3 +214,51 @@ Si WoW est ouvert, la copie des fichiers est autorisée. Ne prétends pas que le
 
 Tu peux lire les autres dépôts locaux sur C: pour comprendre outils, scripts, tests ou conventions partagées.
 Par défaut, ne modifie que aveca/Casinobabe. Toute modification d'un autre repo doit être techniquement justifiée et séparée du travail Casinobabe.
+
+## ChatGPT ↔ OpenCode : protocole de collaboration
+
+Ce protocole complète les consignes spécifiques du dépôt ; il ne les remplace pas. Les règles de sécurité, produit et runtime propres au projet restent prioritaires.
+
+### Responsabilités
+- **ChatGPT** pilote : inspecte les éléments publiés sur GitHub, fixe les objectifs et critères d'acceptation, puis contrôle le diff et la CI.
+- **OpenCode** exécute localement : code, terminal, tests, navigateur, YouTube, extensions et outils réellement disponibles.
+- **GitHub** conserve la vérité partagée : commits poussés, branches, PR, rapports et Actions.
+- **L'utilisateur** transmet le prompt à OpenCode puis son rapport à ChatGPT ; ne lui délègue pas l'analyse technique ni les validations ordinaires.
+
+### Cycle
+1. Vérifier remote, dépôt, branche, SHA et `git status --short`.
+2. Lire ces consignes ainsi que les fichiers d'état pertinents. Éviter les audits répétés.
+3. Définir une tâche cohérente, un périmètre précis et un résultat mesurable.
+4. Préserver tout changement local préexistant ; ne jamais l'écraser ni le nettoyer.
+5. Travailler sur une branche dédiée pour le code applicatif.
+6. Lancer les tests pertinents, inspecter le diff complet et `git diff --check`.
+7. Si les contrôles passent, commit ciblé et push de la branche. Pas de push direct sur la branche par défaut pour du code applicatif ordinaire.
+8. Ne donner une URL de PR qu'après confirmation de sa création.
+
+### Rapport obligatoire
+```text
+MISSION: <nom court>
+REPOSITORY: <owner/repo>
+BRANCH: <branche>
+COMMIT: <SHA complet ou aucun>
+PUSH: oui/non
+MODIFICATIONS: <résumé + fichiers>
+TESTS: <commandes exactes + résultats réels>
+CI: <URL + statut, ou non déclenchée>
+TESTS LOCAUX RÉELS: <faits + résultats>
+NON VÉRIFIÉ: <limites, ou aucun>
+BLOCAGE: oui/non — <raison>
+```
+
+### Boucle de contrôle
+À réception du rapport, ChatGPT vérifie le commit, le diff réel et les résultats CI sur GitHub, puis renvoie le prompt correctif ou la mission suivante. Le rapport seul n'est pas une preuve. Ne demander aucune validation ordinaire à l'utilisateur.
+
+### Efficacité et sécurité
+- Modification minimale ; pas de refonte ni dépendance sans justification.
+- Après deux échecs d'une approche, changer de méthode ou signaler le blocage.
+- Séparer unit tests, intégration, navigateur/runtime réel et production. Une simulation n'est jamais une preuve réelle.
+- Ne jamais inventer de résultats, métriques ou fonctionnalités.
+- Pas de force-push, réécriture d'historique, suppression de données ou exposition de secrets.
+- Les règles locales concernant paiements, données, sécurité et production priment.
+- Pas de migration destructive, merge sur branche par défaut ou déploiement de production sans autorisation explicite.
+- Un commit documentaire ne doit pas déclencher un déploiement applicatif inutile : utiliser `paths-ignore: ['AGENTS.md']` dans les workflows de déploiement concernés, sans désactiver la CI utile.
