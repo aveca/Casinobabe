@@ -7,9 +7,6 @@
 ## X-Website: https://discord.gg/Casinobabetbc
 ## X-Category: Roleplay
 
-# Libraries (must load before the addon)
-Libs\LibStub\LibStub.lua
-Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 
 LiveErrorCapture.lua
 Casinobabe.lua
