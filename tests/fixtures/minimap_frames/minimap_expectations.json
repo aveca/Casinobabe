@@ -1,0 +1,53 @@
+{
+  "note": "captures reelles du client WoW (Lushwater Oasis), 2026-10-21 ; joueur immobile => derive attendue ~0",
+  "frames": [
+    {
+      "file": "minimap-00.png",
+      "center": [
+        2189,
+        172
+      ],
+      "radius": 106
+    },
+    {
+      "file": "minimap-01.png",
+      "center": [
+        2189,
+        172
+      ],
+      "radius": 106
+    },
+    {
+      "file": "minimap-02.png",
+      "center": [
+        2189,
+        172
+      ],
+      "radius": 106
+    },
+    {
+      "file": "minimap-03.png",
+      "center": [
+        2189,
+        172
+      ],
+      "radius": 106
+    },
+    {
+      "file": "minimap-04.png",
+      "center": [
+        2189,
+        172
+      ],
+      "radius": 106
+    },
+    {
+      "file": "minimap-05.png",
+      "center": [
+        2189,
+        172
+      ],
+      "radius": 106
+    }
+  ]
+}

@@ -1,0 +1,303 @@
+{
+  "schema": 1,
+  "generated_at": "2026-10-19T07:10:54.616341+00:00",
+  "root": "C:\\factory\\worktrees\\casinobabe\\casinobabe-1791392099272-msxoms",
+  "python": "C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python311\\python.exe",
+  "platform": "win32",
+  "snapshot": {
+    "at": "2026-10-19T03:10:54",
+    "components": [
+      {
+        "key": "fishing_bot",
+        "label": "Bot Peche",
+        "kind": "bot",
+        "available": true,
+        "controls": [
+          "start",
+          "stop",
+          "pause",
+          "resume",
+          "restart"
+        ],
+        "pause_mode": "suspend_os",
+        "state": "ARRETE",
+        "detail": "processus arrete - VERROU RESIDUEL : verrou residuel : le processus 16752 n'existe plus",
+        "pid": 16752,
+        "process_path": "",
+        "lock": {
+          "status": "STALE",
+          "pid": 16752,
+          "alive": false,
+          "path": "C:\\factory\\worktrees\\casinobabe\\casinobabe-1791392099272-msxoms\\state\\fishing-bot.pid",
+          "process": "",
+          "reason": "verrou residuel : le processus 16752 n'existe plus"
+        },
+        "heartbeat": {
+          "available": true,
+          "last_event": "WATCH",
+          "last_event_ts": "2026-10-18T21:39:20",
+          "last_age_sec": 19894.1,
+          "last_state": "WAITING FOR BITE",
+          "fresh": false,
+          "error": null,
+          "checked": true,
+          "path": "C:\\factory\\worktrees\\casinobabe\\casinobabe-1791392099272-msxoms\\reports/fishing-bot-log.jsonl",
+          "samples": 400,
+          "last_error": {
+            "event": "FOCUS_LOST_CYCLE",
+            "ts": "2026-10-18T21:39:11",
+            "detail": "focus perdu pendant le cycle - pas d'echap envoye (securite)"
+          }
+        },
+        "extra_pids": [],
+        "suspended": false
+      },
+      {
+        "key": "fishing_observer",
+        "label": "Observateur Peche",
+        "kind": "service",
+        "available": true,
+        "controls": [
+          "start",
+          "stop",
+          "restart"
+        ],
+        "pause_mode": "aucune (aucun mecanisme de pause dans fishing_observer.py)",
+        "state": "ARRETE",
+        "detail": "processus arrete - VERROU RESIDUEL : verrou residuel : le processus 14644 n'existe plus",
+        "pid": 14644,
+        "process_path": "",
+        "lock": {
+          "status": "STALE",
+          "pid": 14644,
+          "alive": false,
+          "path": "C:\\factory\\worktrees\\casinobabe\\casinobabe-1791392099272-msxoms\\state\\fishing-observer.pid",
+          "process": "",
+          "reason": "verrou residuel : le processus 14644 n'existe plus"
+        },
+        "heartbeat": {
+          "available": false,
+          "last_event": null,
+          "last_event_ts": null,
+          "last_age_sec": null,
+          "last_state": null,
+          "fresh": false,
+          "error": "ce composant n'ecrit pas de journal de progression",
+          "checked": false,
+          "path": null,
+          "samples": 0
+        },
+        "extra_pids": [],
+        "suspended": false
+      },
+      {
+        "key": "bridge",
+        "label": "Bridge Telemetrie",
+        "kind": "service",
+        "available": true,
+        "controls": [
+          "start",
+          "stop",
+          "restart"
+        ],
+        "pause_mode": "aucune",
+        "state": "ARRETE",
+        "detail": "aucun processus pour 'bridge.mjs'",
+        "pid": 0,
+        "process_path": "",
+        "lock": null,
+        "heartbeat": {
+          "available": false,
+          "last_event": null,
+          "last_event_ts": null,
+          "last_age_sec": null,
+          "last_state": null,
+          "fresh": false,
+          "error": "ce composant n'ecrit pas de journal de progression",
+          "checked": false,
+          "path": null,
+          "samples": 0
+        },
+        "extra_pids": [],
+        "suspended": false
+      },
+      {
+        "key": "supervisor",
+        "label": "Superviseur Sentinel",
+        "kind": "supervisor",
+        "available": true,
+        "controls": [
+          "start",
+          "stop"
+        ],
+        "pause_mode": "aucune",
+        "state": "ARRETE",
+        "detail": "aucun processus pour 'casinobae-live-watch.ps1'",
+        "pid": 0,
+        "process_path": "",
+        "lock": null,
+        "heartbeat": {
+          "available": false,
+          "last_event": null,
+          "last_event_ts": null,
+          "last_age_sec": null,
+          "last_state": null,
+          "fresh": false,
+          "error": "ce composant n'ecrit pas de journal de progression",
+          "checked": false,
+          "path": null,
+          "samples": 0
+        },
+        "extra_pids": [],
+        "suspended": false
+      },
+      {
+        "key": "casino_bot",
+        "label": "Bot Casino",
+        "kind": "casino",
+        "available": false,
+        "controls": [],
+        "pause_mode": "sans objet (composant absent)",
+        "state": "ABSENT",
+        "detail": "Aucun processus 'bot casino' n'existe dans le depot. Le casino n'existe que comme code Lua dans l'addon WoW (runtime-addon/Casinobabe/Casinobabe.lua, fonctions Dealer*/Casino*). Verifie par recherche de fichiers, historique git et reference dans les lanceurs. Voir docs/AUDIT_INITIAL.md section 2. Aucun demarrage n'est propose : il n'y a rien a demarrer.",
+        "pid": 0,
+        "process_path": "",
+        "lock": null,
+        "heartbeat": null,
+        "extra_pids": [],
+        "suspended": false
+      }
+    ],
+    "bot_state": "ARRETE",
+    "casino_state": "ABSENT",
+    "wow": {
+      "present": true,
+      "hwnd": 60230680,
+      "title": "World of Warcraft",
+      "minimized": true,
+      "visible": true,
+      "rect": [
+        -32000,
+        -32000,
+        -31840,
+        -31972
+      ],
+      "pid": 2588,
+      "process": ""
+    },
+    "foreground": {
+      "hwnd": 15599366,
+      "title": "OpenCode",
+      "pid": 0,
+      "process": "OpenCode.exe",
+      "is_wow": false
+    },
+    "cursor": [
+      2326,
+      38
+    ],
+    "guard": {
+      "forbidden": [
+        "steal_focus",
+        "minimize_wow",
+        "close_wow",
+        "inject_keyboard",
+        "inject_mouse",
+        "move_user_cursor",
+        "simulate_input"
+      ],
+      "allowed_count": 15
+    },
+    "settings": {
+      "refreshSec": 3.0,
+      "stopTimeoutSec": 10.0,
+      "startTimeoutSec": 25.0,
+      "autoScrollLogs": true,
+      "maxLogLines": 1500
+    }
+  },
+  "pid_locks": {
+    "fishing-bot.pid": {
+      "status": "STALE",
+      "pid": 16752,
+      "alive": false,
+      "path": "C:\\factory\\worktrees\\casinobabe\\casinobabe-1791392099272-msxoms\\state\\fishing-bot.pid",
+      "process": "",
+      "reason": "verrou residuel : le processus 16752 n'existe plus"
+    },
+    "fishing-observer.pid": {
+      "status": "STALE",
+      "pid": 14644,
+      "alive": false,
+      "path": "C:\\factory\\worktrees\\casinobabe\\casinobabe-1791392099272-msxoms\\state\\fishing-observer.pid",
+      "process": "",
+      "reason": "verrou residuel : le processus 14644 n'existe plus"
+    }
+  },
+  "fishing_config": {
+    "castKey": "2",
+    "castSettleSec": 2.0,
+    "maxBiteWaitSec": 24.0,
+    "clickAfterBiteMs": 150,
+    "bobberMinConf": 0.55,
+    "biteDiffThresh": 5.0,
+    "biteWhiteFrac": 0.03,
+    "biteMotionThresh": 3.5,
+    "biteMotionStreak": 4,
+    "biteGraceSec": 7.0,
+    "biteStrongDiff": 10.0,
+    "biteStrongWhite": 0.08,
+    "biteConsecutive": 2,
+    "manualSuspendSec": 120,
+    "manualSuspendMaxSec": 1800,
+    "captureIntervalSec": 0.1,
+    "detectScale": 1.0
+  },
+  "bridge_config": {
+    "supabaseUrl": "https://vgeoprcuzkugaecbpbjg.supabase.co",
+    "eventFunctionPath": "/functions/v1/casino-addon-event",
+    "sessionToken": "********",
+    "wowSavedVariables": "C:/Program Files (x86)/World of Warcraft/_anniversary_/WTF/Account/103329567#1/SavedVariables/Casinobabe.lua",
+    "pollMs": 1500
+  },
+  "control_center_settings": {
+    "refreshSec": 3.0,
+    "stopTimeoutSec": 10.0,
+    "startTimeoutSec": 25.0,
+    "autoScrollLogs": true,
+    "maxLogLines": 1500
+  },
+  "window_guard_policy": {
+    "forbidden": [
+      "steal_focus",
+      "minimize_wow",
+      "close_wow",
+      "inject_keyboard",
+      "inject_mouse",
+      "move_user_cursor",
+      "simulate_input"
+    ],
+    "allowed": [
+      "read_state",
+      "start_fishing_bot",
+      "stop_fishing_bot",
+      "pause_fishing_bot",
+      "resume_fishing_bot",
+      "restart_fishing_bot",
+      "start_fishing_observer",
+      "stop_fishing_observer",
+      "start_bridge",
+      "stop_bridge",
+      "sync_addon_to_wow",
+      "read_config",
+      "write_config",
+      "export_diagnostics",
+      "supervisor_once"
+    ]
+  },
+  "casino": {
+    "state": "ABSENT",
+    "reason": "Aucun processus 'bot casino' n'existe dans le depot. Le casino n'existe que comme code Lua dans l'addon WoW (runtime-addon/Casinobabe/Casinobabe.lua, fonctions Dealer*/Casino*). Verifie par recherche de fichiers, historique git et reference dans les lanceurs. Voir docs/AUDIT_INITIAL.md section 2. Aucun demarrage n'est propose : il n'y a rien a demarrer."
+  },
+  "recent_commands": []
+}

@@ -9,3 +9,7 @@ build/
 bridge/config.json
 
 .casino-errors/
+
+# Control Center : artefacts Python
+__pycache__/
+*.pyc

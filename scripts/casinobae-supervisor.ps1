@@ -23,19 +23,33 @@ function Get-WatcherProcess {
 }
 
 function Start-Watcher {
-  $args = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$Watcher,"-Mode","Watch")
-  Start-Process -FilePath "powershell.exe" -ArgumentList $args -WorkingDirectory $Repo -WindowStyle Hidden -PassThru
+  # FIX 2026-10-20 : PowerShell est INSENSIBLE A LA CASSE. `$watcher` (l'objet
+  # CIM du processus watcher) et `$Watcher` (le CHEMIN du script watcher) sont
+  # la MEME variable : dans `Supervisor-Once`, `$watcher = Get-WatcherProcess`
+  # ecraseait `$Watcher`. Quand aucun watcher ne tourne, `$watcher` vaut $null
+  # => `$Watcher` vaut $null => `Start-Process -ArgumentList` recevait un element
+  # nul et le superviseur echouait sur
+  # « Impossible de valider l'argument sur le parametre ArgumentList » — donc
+  # il ne pouvait JAMAIS redemarrer le watcher (erreur repetee toutes les 10 s
+  # dans logs/live-errors.log, capture des erreurs Lua live hors service).
+  #
+  # Correctif : variables qualifiees `$script:` (immuables par une variable
+  # locale homonyme) + nom de variable local distinct + abandon de `$args`
+  # (variable automatique de PowerShell).
+  $argList = @("-NoProfile","-ExecutionPolicy","Bypass","-File",$script:Watcher,"-Mode","Watch")
+  Start-Process -FilePath "powershell.exe" -ArgumentList $argList -WorkingDirectory $script:Repo -WindowStyle Hidden -PassThru
 }
 
 function Supervisor-Once {
-  $watcher = Get-WatcherProcess
+  # `watcherProc` (et non `watcher`) : voir la note dans Start-Watcher.
+  $watcherProc = Get-WatcherProcess
   $restarted = $false
-  if (-not $watcher) {
+  if (-not $watcherProc) {
     $proc = Start-Watcher
     $watcherPid = $proc.Id
     $restarted = $true
   } else {
-    $watcherPid = [int]$watcher.ProcessId
+    $watcherPid = [int]$watcherProc.ProcessId
   }
 
   Write-State @{
