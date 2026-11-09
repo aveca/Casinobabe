@@ -74,7 +74,7 @@ jobs:
           python -m pip install --quiet --upgrade pip
           # PIL (Pillow), mss : capture ; numpy, opencv : vision ;
           # pywin32 : uniquement sous Windows (le bot vise Windows).
-          python -m pip install --quiet numpy opencv-python-headless pillow mss
+          python -m pip install --quiet numpy opencv-python-headless pillow mss pytest
           if [ "${{ runner.os }}" = "Windows" ]; then
             python -m pip install --quiet pywin32
           fi
