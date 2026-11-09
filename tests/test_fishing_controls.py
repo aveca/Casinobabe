@@ -130,9 +130,9 @@ def test_resolution():
         "compteB": {"X": "ACTIONBUTTON10", "Z": "TOGGLEAUTORUN"},
     })
     key, diag = c.resolve_cast_key("2", account="compteB")
-    check("la touche liee au compte joue est utilisee", key == "X", "(%s)" % key)
-    check("le diagnostic explique la correction",
-          "n'est pas liee" in (diag.get("reason") or ""), "(%s)" % diag.get("reason"))
+    check("la touche configuree est conservee face au faux positif ACTIONBUTTON", key == "2", "(%s)" % key)
+    check("le diagnostic explique le faux positif ACTIONBUTTON",
+          "faux positif de detection" in (diag.get("reason") or ""), "(%s)" % diag.get("reason"))
     key2, _d2 = c.resolve_cast_key("2", account="compteA")
     check("la touche configuree est conservee si elle est correcte", key2 == "2",
           "(%s)" % key2)

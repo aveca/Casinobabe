@@ -8,7 +8,6 @@
 
 local ADDON  = "Casinobabe"
 local PREFIX = "CBABE"
-local MEDIA  = "Interface\\AddOns\\Casinobabe\\media\\background"
 
 -- Namespace for all addon state and data
 local CB = Casinobabe or {}
@@ -4938,7 +4937,7 @@ local function CreatePanel()
   -- bakgrund: beskuren till panel-aspekten (ingen ihoptryckning)
   local bg=f:CreateTexture(nil,"BACKGROUND")
   bg:SetPoint("TOPLEFT",4,-4); bg:SetPoint("BOTTOMRIGHT",-4,4)
-  bg:SetTexture(MEDIA); bg:SetTexCoord(0,1,0,0.57)
+  bg:SetColorTexture(0.035,0.018,0.045,0.98)
   local scrim=f:CreateTexture(nil,"BORDER"); scrim:SetPoint("TOPLEFT",4,-4); scrim:SetPoint("BOTTOMRIGHT",-4,4)
   scrim:SetColorTexture(0.02,0.01,0.03,0.24)
 
@@ -6712,115 +6711,82 @@ end)
 -- MINIMAP-KNAPP med haftigt "C"
 -- ============================================================================
 local function CreateMinimapButton()
-  -- FORSTAHANDSVAL: en riktig LibDBIcon-knapp (buntat bibliotek). Den samlas
-  -- garanterat in av MinimapButtonButton och alla andra minimap-samlare.
-  local ldbi = LibStub and LibStub("LibDBIcon-1.0", true)
-  print("|cffFFD700[CB MINIMAP]|r LibDBIcon available = " .. tostring(ldbi and "YES" or "NO"))
-  
-  if ldbi and ldbi.IsRegistered and not ldbi:IsRegistered("Casinobabe") then
-    CasinobabeDB.minimap = CasinobabeDB.minimap or {}
-    -- migrera gammal "angle" -> LibDBIcons "minimapPos"
-    CasinobabeDB.minimap.minimapPos = CasinobabeDB.minimap.minimapPos
-       or CasinobabeDB.minimap.angle or 210
-    -- Ensure not hidden
-    CasinobabeDB.minimap.hide = false
-    local dataObj = {
-      type="launcher", text="Casinobabe",
-      icon="Interface\\Icons\\INV_Misc_Coin_01",
-      OnClick=function(_, b) if panel and panel:IsShown() then panel:Hide() else OpenPanel() end end,
-      OnTooltipShow=function(tt)
-        tt:AddLine("|cffFFD700Casinobabe|r")
-        tt:AddLine("Click to open  -  drag to move", 0.8,0.8,0.8)
-      end,
-    }
-    local ok = pcall(function() ldbi:Register("Casinobabe", dataObj, CasinobabeDB.minimap) end)
-    print("|cffFFD700[CB MINIMAP]|r registered = " .. tostring(ok and "YES" or "NO"))
-    if ok then
-      -- Ensure not hidden in DB
-      CasinobabeDB.minimap.hide = false
-      -- Explicitly show
-      if ldbi.Show then pcall(function() ldbi:Show("Casinobabe") end) end
-      local btn = ldbi.GetMinimapButton and ldbi:GetMinimapButton("Casinobabe")
-      if btn then
-        -- behall vart "C"-utseende ovanpa LibDBIcon-knappen
-        if btn.icon then btn.icon:Hide() end
-        if not btn.casinoC then
-          local cC=btn:CreateFontString(nil,"ARTWORK"); SetFontSafe(cC,"Fonts\\MORPHEUS.TTF",18,"OUTLINE")
-          cC:SetPoint("CENTER",0,0); cC:SetText("C"); cC:SetTextColor(uc(C.gold))
-          btn.casinoC=cC
-        end
-        btn:Show()
-        print("|cffFFD700[CB MINIMAP]|r shown = YES, hide = " .. tostring(CasinobabeDB.minimap.hide))
-        print("|cffFFD700[CB MINIMAP]|r position = " .. tostring(CasinobabeDB.minimap.minimapPos or CasinobabeDB.minimap.angle or 210))
-      end
-      return btn
-    end
+  CasinobabeDB.minimap = CasinobabeDB.minimap or { angle = 210 }
+  local existing = _G.CasinobabeMinimapButton
+  if existing then
+    if existing:GetParent() ~= Minimap then existing:SetParent(Minimap) end
+    existing:Show()
+    return existing
   end
-  print("|cffFFD700[CB MINIMAP]|r using FALLBACK button")
-
-  -- FALLBACK: egen knapp (om LibDBIcon saknas eller registrering misslyckades).
-  -- Namnges anda "LibDBIcon10_Casinobabe" + standardstruktur for basta chans.
-  if LibDBIcon10_Casinobabe then 
-    print("|cffFFD700[CB MINIMAP]|r fallback button already exists")
-    return LibDBIcon10_Casinobabe 
-  end
-  local btn=CreateFrame("Button","LibDBIcon10_Casinobabe", Minimap)
-  btn:SetSize(31,31); btn:SetFrameStrata("MEDIUM"); btn:SetFrameLevel(8)
+  local btn = CreateFrame("Button", "CasinobabeMinimapButton", Minimap)
+  btn:SetSize(31, 31)
+  btn:SetFrameStrata("MEDIUM")
+  btn:SetFrameLevel(8)
+  btn:RegisterForClicks("LeftButtonUp")
+  btn:RegisterForDrag("LeftButton")
   btn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-  local bgc=btn:CreateTexture(nil,"BACKGROUND"); bgc:SetSize(22,22); bgc:SetPoint("CENTER")
-  bgc:SetTexture("Interface\\Minimap\\UI-Minimap-Background"); bgc:SetVertexColor(0.06,0.03,0.08,0.9)
-  local cC=btn:CreateFontString(nil,"ARTWORK"); SetFontSafe(cC,"Fonts\\MORPHEUS.TTF",20,"OUTLINE")
-  cC:SetPoint("CENTER",0,0); cC:SetText("C"); cC:SetTextColor(uc(C.gold))
-  local ring=btn:CreateTexture(nil,"OVERLAY"); ring:SetSize(53,53); ring:SetPoint("TOPLEFT"); ring:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-  local function pos() if btn:GetParent()~=Minimap then return end local a=(CasinobabeDB.minimap.angle or 210)*math.pi/180; btn:ClearAllPoints(); btn:SetPoint("CENTER", Minimap, "CENTER", math.cos(a)*80, math.sin(a)*80) end
-  btn:RegisterForDrag("LeftButton","RightButton")
+  local bg = btn:CreateTexture(nil, "BACKGROUND")
+  bg:SetSize(22, 22)
+  bg:SetPoint("CENTER")
+  bg:SetColorTexture(0.06, 0.03, 0.08, 0.9)
+  local label = btn:CreateFontString(nil, "ARTWORK")
+  SetFontSafe(label, "Fonts\\MORPHEUS.TTF", 20, "OUTLINE")
+  label:SetPoint("CENTER", 0, 0)
+  label:SetText("C")
+  label:SetTextColor(uc(C.gold))
+  local ring = btn:CreateTexture(nil, "OVERLAY")
+  ring:SetSize(53, 53)
+  ring:SetPoint("TOPLEFT")
+  ring:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+  local function updatePosition()
+    if btn:GetParent() ~= Minimap then return end
+    local angle = math.rad(tonumber(CasinobabeDB.minimap.angle) or 210)
+    btn:ClearAllPoints()
+    btn:SetPoint("CENTER", Minimap, "CENTER", math.cos(angle) * 80, math.sin(angle) * 80)
+  end
   btn:SetScript("OnDragStart", function(self)
-    if self:GetParent()~=Minimap then return end
+    if self:GetParent() ~= Minimap then return end
     self:SetScript("OnUpdate", function()
-    local mx,my=Minimap:GetCenter(); local px,py=GetCursorPosition(); local s=UIParent:GetScale()
-    CasinobabeDB.minimap.angle=math.deg(math.atan2(py/s-my, px/s-mx)); pos() end) end)
+      local mx, my = Minimap:GetCenter()
+      local px, py = GetCursorPosition()
+      local scale = UIParent:GetScale()
+      CasinobabeDB.minimap.angle = math.deg(math.atan2(py / scale - my, px / scale - mx))
+      updatePosition()
+    end)
+  end)
   btn:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
-  btn:SetScript("OnClick", function() if panel and panel:IsShown() then panel:Hide() else OpenPanel() end end)
-  btn:SetScript("OnEnter", function(self) GameTooltip:SetOwner(self,"ANCHOR_LEFT"); GameTooltip:AddLine("|cffFFD700Casinobabe|r"); GameTooltip:AddLine("Click to open  -  drag to move",0.8,0.8,0.8); GameTooltip:Show() end)
+  btn:SetScript("OnClick", function()
+    if panel and panel:IsShown() then panel:Hide() else OpenPanel() end
+  end)
+  btn:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+    GameTooltip:AddLine("|cffFFD700Casinobabe|r")
+    GameTooltip:AddLine("Click to open  -  drag to move", 0.8, 0.8, 0.8)
+    GameTooltip:Show()
+  end)
   btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-  pos(); return btn
+  updatePosition()
+  return btn
 end
 
 -- ============================================================================
 -- MINIMAP DEBUG COMMAND
 -- ============================================================================
 local function MinimapDebug()
-  local ldbi = LibStub and LibStub("LibDBIcon-1.0", true)
+  local button = _G.CasinobabeMinimapButton
   print("|cffFFD700[CB MINIMAP DEBUG]|r === Minimap Status ===")
-  print("|cffFFD700[CB MINIMAP DEBUG]|r LibDBIcon available = " .. tostring(ldbi and "YES" or "NO"))
-  if ldbi then
-    print("|cffFFD700[CB MINIMAP DEBUG]|r IsRegistered(Casinobabe) = " .. tostring(ldbi:IsRegistered("Casinobabe") and "YES" or "NO"))
-    if ldbi.GetMinimapButton then
-      local btn = ldbi:GetMinimapButton("Casinobabe")
-      print("|cffFFD700[CB MINIMAP DEBUG]|r GetMinimapButton = " .. tostring(btn and "FOUND" or "NIL"))
-      if btn then
-        print("|cffFFD700[CB MINIMAP DEBUG]|r btn:IsShown() = " .. tostring(btn:IsShown() and "YES" or "NO"))
-        print("|cffFFD700[CB MINIMAP DEBUG]|r btn:GetParent() = " .. tostring(btn:GetParent() and btn:GetParent():GetName() or "NIL"))
-      end
-    end
-  end
-  local fallback = _G.LibDBIcon10_Casinobabe
-  print("|cffFFD700[CB MINIMAP DEBUG]|r Fallback button = " .. tostring(fallback and "EXISTS" or "NIL"))
-  if fallback then
-    print("|cffFFD700[CB MINIMAP DEBUG]|r fallback:IsShown() = " .. tostring(fallback:IsShown() and "YES" or "NO"))
+  print("|cffFFD700[CB MINIMAP DEBUG]|r Native button = " .. tostring(button and "YES" or "NO"))
+  if button then
+    print("|cffFFD700[CB MINIMAP DEBUG]|r shown = " .. tostring(button:IsShown() and "YES" or "NO"))
+    print("|cffFFD700[CB MINIMAP DEBUG]|r parent = " .. tostring(button:GetParent() and button:GetParent():GetName() or "NIL"))
   end
   print("|cffFFD700[CB MINIMAP DEBUG]|r CasinobabeDB.minimap = " .. tostring(CasinobabeDB.minimap and "EXISTS" or "NIL"))
   if CasinobabeDB.minimap then
-    print("|cffFFD700[CB MINIMAP DEBUG]|r   hide = " .. tostring(CasinobabeDB.minimap.hide))
-    print("|cffFFD700[CB MINIMAP DEBUG]|r   minimapPos = " .. tostring(CasinobabeDB.minimap.minimapPos))
-    print("|cffFFD700[CB MINIMAP DEBUG]|r   angle = " .. tostring(CasinobabeDB.minimap.angle))
+    print("|cffFFD700[CB MINIMAP DEBUG]|r angle = " .. tostring(CasinobabeDB.minimap.angle))
   end
-  -- Force re-create if missing
-  if not ldbi or not ldbi:IsRegistered("Casinobabe") then
-    if not fallback then
-      print("|cffFFD700[CB MINIMAP DEBUG]|r FORCING RE-CREATE...")
-      CreateMinimapButton()
-    end
+  if not button then
+    print("|cffFFD700[CB MINIMAP DEBUG]|r FORCING RE-CREATE...")
+    CreateMinimapButton()
   end
 end
 
@@ -7017,7 +6983,7 @@ loader:SetScript("OnEvent", function(self, event, ...)
     -- Skapa minimap-knappen redan vid ADDON_LOADED (innan inloggning) sa den finns
     -- pa Minimap NAR samlar-addon som MinimapButtonButton gor sin insamling. Skapas
     -- knappen forst vid PLAYER_LOGIN kan samlaren hinna scanna fore oss och missa den.
-    if not LibDBIcon10_Casinobabe then CreateMinimapButton() end
+    if not _G.CasinobabeMinimapButton then CreateMinimapButton() end
 
     -- Initialize ShowEngine (registers shows, slash commands)
     if _G.ShowEngine and _G.ShowEngine.OnLoad then
@@ -7027,7 +6993,7 @@ loader:SetScript("OnEvent", function(self, event, ...)
     myName=CB.shortName(UnitName("player"))
     myRealm=GetRealmName and GetRealmName() or "Unknown"
     CasinobabeDB.casino=nil   -- rensa gammalt felaktigt sparat namn; vi visar raid-ledaren
-    if not LibDBIcon10_Casinobabe then CreateMinimapButton() end   -- fallback
+    if not _G.CasinobabeMinimapButton then CreateMinimapButton() end   -- fallback
     RequestState()
     -- Auto-detect dealer mode for Casinobae
     AutoDetectDealerMode()
